@@ -11,7 +11,7 @@ Scope stops before PR and deploy.
 ## Pipeline
 
 ```mermaid
-flowchart LR
+flowchart TD
     A[1 AC Confirm] --> B[2 Plan]
     B --> C[3 Tests TDD red]
     C --> D[4 Code TDD green]
