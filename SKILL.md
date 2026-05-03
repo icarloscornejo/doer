@@ -225,21 +225,85 @@ Record the choice in `metadata.json` under `stages.<N>.loop_outcome`.
 
 ## Stage 1 — AC Confirm
 
-**Goal:** produce unambiguous, testable acceptance criteria written to `ac.md`.
+**Goal:** produce unambiguous, testable acceptance criteria written to `ac.md`. Also detect and incorporate any pre-existing work the user has already done on this ticket.
 
 **No subagent — orchestrator does this directly.**
 
 1. Read `ticket.md`.
 2. Read all files in `./.doer/knowledge/lessons/` (if any) and note any lesson whose `when_it_applies` matches this ticket type or area.
-3. If raw ACs were provided in intake:
-   a. Present them back to the user, restated in **Given/When/Then** form.
-   b. Ask: "These are the restated ACs. Are they complete and accurate? [Y / edit / add]"
-   c. Apply changes until the user approves.
-4. If ACs are to be derived:
-   a. Based on description + context, propose 3–7 Given/When/Then ACs.
-   b. Present to user, iterate until approved.
-5. Also surface: **Out of scope** items and **Open questions**. Ask the user to confirm each.
-6. Write the final result to `ac.md`:
+
+3. **Pre-existing work detection** (ask the user):
+
+   "Have you already done any work on this ticket before invoking `/doer`? [y/N]"
+
+   If **no** → skip to step 4.
+
+   If **yes** → ask each of these, one at a time via `AskUserQuestion`:
+
+   | Question | If "yes", follow up with |
+   |----------|--------------------------|
+   | "Do you already have a written plan (mental or on paper/file)?" | "Paste or summarize it." |
+   | "Did you already write tests?" | "Where are they? Do they currently pass or fail?" |
+   | "Did you already write implementation code?" | "Where are the changes? Committed, staged, or uncommitted?" |
+   | "Did you already update any documentation?" | "Which files?" |
+
+   Also detect the repo state automatically:
+   - Run `git status --porcelain` → detect uncommitted changes
+   - Run `git log --oneline <base-branch>..HEAD` → detect commits ahead of base
+   - Run `git branch --show-current` → confirm which branch the user is on
+
+   Present what was detected: "I see you are on branch `X` with Y uncommitted files and Z commits ahead of main. Is this the work you meant? [Y/n/explain]"
+
+4. **Decide the entry point.** Based on what the user has:
+
+   | User has... | Suggested entry stage | Mark as `imported` |
+   |-------------|----------------------|--------------------|
+   | Nothing | Stage 1 (this one) | — |
+   | Plan only | Stage 3 (tests) | Stage 2 |
+   | Plan + failing tests | Stage 4 (code) | Stages 2, 3 |
+   | Plan + tests + partial code | Stage 4 (code) — continue coding | Stages 2, 3 |
+   | Plan + tests + complete code | Stage 5 (reflect) | Stages 2, 3, 4 |
+   | Everything, ready for review | Stage 6 (code-review) | Stages 2, 3, 4, 5 |
+
+   Present the suggestion to the user: "Based on what you have, I suggest starting at Stage {N} ({name}) and importing stages {list} as pre-existing work. Proceed? [Y / start from Stage 1 anyway / pick a different stage]"
+
+5. **Preserve the pre-existing work as a baseline commit**. Before imported stages are marked, create a checkpoint commit so future agents can see the baseline:
+
+   ```bash
+   # If there are uncommitted changes:
+   git add -A
+   git commit -m "doer(<TICKET-ID>): import pre-existing work as baseline"
+   ```
+
+   If there are already commits ahead of the base branch, no extra commit is needed — the existing commits serve as the baseline.
+
+6. **Mark imported stages in `metadata.json`**:
+
+   ```json
+   "stages": {
+     "2": {"name": "plan", "status": "imported", "imported_at": "<ISO8601>", "note": "<what the user had>"},
+     "3": {"name": "tests", "status": "imported", "imported_at": "<ISO8601>", "note": "..."}
+   }
+   ```
+
+   If the user imported a plan but it's not written down anywhere, ask them to write it quickly into `./.doer/tickets/<TICKET-ID>/plan.md` (or the orchestrator drafts it based on their summary + the diff, then the user confirms).
+
+   Similarly, if tests/code are imported, note their file paths in the metadata so downstream agents know where to look.
+
+7. Now proceed with **AC confirmation** proper (same logic as before, whether or not pre-existing work was imported):
+
+   a. If raw ACs were provided in intake:
+      - Present them back to the user, restated in **Given/When/Then** form.
+      - Ask: "These are the restated ACs. Are they complete and accurate? [Y / edit / add]"
+      - Apply changes until the user approves.
+
+   b. If ACs are to be derived:
+      - Based on description + context (+ any pre-existing code/tests if imported), propose 3–7 Given/When/Then ACs.
+      - Present to user, iterate until approved.
+
+8. Also surface: **Out of scope** items and **Open questions**. Ask the user to confirm each.
+
+9. Write the final result to `ac.md`:
 
    ```markdown
    # <TICKET-ID> — Acceptance Criteria
@@ -258,14 +322,14 @@ Record the choice in `metadata.json` under `stages.<N>.loop_outcome`.
    - [lesson-slug]: <one-line takeaway>
    ```
 
-7. Initialize `./.doer/knowledge/assumptions/<TICKET-ID>.md` with any assumptions surfaced during AC confirmation.
-8. Commit:
-   ```bash
-   git add .doer/tickets/<TICKET-ID>/ac.md .doer/knowledge/assumptions/<TICKET-ID>.md
-   git commit -m "doer(<TICKET-ID>): confirm acceptance criteria"
-   ```
-9. Update `metadata.json`: stage 1 complete, advance to 2.
-10. Narrate and ask to continue.
+10. Initialize `./.doer/knowledge/assumptions/<TICKET-ID>.md` with any assumptions surfaced during AC confirmation.
+11. Commit:
+    ```bash
+    git add .doer/tickets/<TICKET-ID>/ac.md .doer/knowledge/assumptions/<TICKET-ID>.md
+    git commit -m "doer(<TICKET-ID>): confirm acceptance criteria"
+    ```
+12. Update `metadata.json`: stage 1 complete. Advance `current_stage` to the entry point decided in step 4 (not necessarily 2).
+13. Narrate the full picture to the user: "Stage 1 complete. Imported stages: {list}. Starting next at Stage {N}. Continue? [Y/n]"
 
 ---
 
