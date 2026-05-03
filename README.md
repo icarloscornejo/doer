@@ -69,13 +69,17 @@ Findings are categorized:
 
 ## Pre-Existing Work
 
-If you already started on the ticket (plan, tests, code, docs), Stage 1 detects it and skips ahead.
+If you already started on the ticket (plan, tests, code, docs), Stage 1 detects it and skips ahead. The orchestrator **reads your commits, classifies touched files, and runs the test suite** to infer where you are — not just counts commits.
 
 ```mermaid
 flowchart TD
     Q{Any prior work?}:::decision -- "no" --> S1[Start at Stage 1]:::normal
     Q -- "yes" --> Detect[Detect repo state: branch, uncommitted, commits ahead]:::detect
-    Detect --> Decide{What do you have?}:::decision
+    Detect --> Inspect[Inspect commits: git show, classify files, run tests]:::detect
+    Inspect --> Summary[Present inferred summary: plan? tests passing/failing? code? docs?]:::detect
+    Summary --> Confirm{User confirms?}:::decision
+    Confirm -- "no / correct-me" --> Summary
+    Confirm -- "yes" --> Decide{What do you have?}:::decision
     Decide -- "plan only" --> J3[Jump to Stage 3 - tests]:::jump
     Decide -- "plan + tests" --> J4[Jump to Stage 4 - code]:::jump
     Decide -- "code partial" --> J4
