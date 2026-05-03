@@ -249,13 +249,46 @@ Record the choice in `metadata.json` under `stages.<N>.loop_outcome`.
    | "Did you already update any documentation?" | "Which files?" |
 
    Also detect the repo state automatically:
-   - Run `git status --porcelain` → detect uncommitted changes
-   - Run `git log --oneline <base-branch>..HEAD` → detect commits ahead of base
    - Run `git branch --show-current` → confirm which branch the user is on
+   - Run `git status --porcelain` → detect uncommitted changes
+   - Run `git log --oneline <base-branch>..HEAD` → list commits ahead of base
+   - Determine the base branch: prefer `main`, fall back to `master`, or ask the user if unclear
 
-   Present what was detected: "I see you are on branch `X` with Y uncommitted files and Z commits ahead of main. Is this the work you meant? [Y/n/explain]"
+3b. **Inspect the existing work.** Do NOT just count commits — read them to understand what's already done:
 
-4. **Decide the entry point.** Based on what the user has:
+   For each commit ahead of base, run:
+   - `git show --stat <sha>` → see which files were touched and how much
+   - `git show <sha>` (full diff) if the commit is small enough, OR read the commit message + stat and open key files directly
+
+   For uncommitted changes, run:
+   - `git diff <base-branch>...HEAD` → full diff of committed work
+   - `git diff` → unstaged changes
+   - `git diff --cached` → staged changes
+
+   Based on the inspection, classify each file touched:
+   - **Test files** (match repo test conventions: `*_test.*`, `*.test.*`, `tests/`, `spec/`) → user has tests
+   - **Source files** (everything else that's code) → user has implementation
+   - **Docs** (`.md`, `docs/`) → user has documentation
+   - **Planning artifacts** (`.doer/` or PLAN.md at repo root) → user has a plan written down
+
+   Then run tests if any were found:
+   - `<detected-test-command>` → note which pass and which fail. This tells you whether you're in TDD red, TDD green, or a broken state.
+
+   Present the analysis to the user:
+
+   ```
+   Based on your commits, I see:
+   - Plan: <yes/no + where>
+   - Tests: <count> test files touched (<X passing, Y failing>)
+   - Implementation: <count> source files touched (~<LOC> changed)
+   - Docs: <count> doc files touched
+
+   Summary: <one-paragraph inferred description of where you are>
+
+   Is this accurate? [Y/n/correct-me]
+   ```
+
+4. **Decide the entry point.** Based on what the inspection + user answers revealed:
 
    | User has... | Suggested entry stage | Mark as `imported` |
    |-------------|----------------------|--------------------|
