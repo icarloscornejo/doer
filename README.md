@@ -12,24 +12,22 @@ Scope stops before PR and deploy.
 
 ```mermaid
 flowchart TD
-    A[1 AC Confirm] --> B[2 Plan]
-    B --> C[3 Tests TDD red]
-    C --> D[4 Code TDD green]
-    D --> E[5 Reflect]
-    E --> F[6 Code Review]
-    F --> G[7 Quality Gate]
-    G --> H[8 Docs Sync]
-    H --> I[9 Wrapup]
+    A[1 AC Confirm]:::gate --> B[2 Plan]:::loop
+    B --> C[3 Tests TDD red]:::loop
+    C --> D[4 Code TDD green]:::loop
+    D --> E[5 Reflect]:::plain
+    E --> F[6 Code Review]:::loop
+    F --> G[7 Quality Gate]:::gate
+    G --> H[8 Docs Sync]:::plain
+    H --> I[9 Wrapup]:::final
 
-    classDef loop fill:#e0f2fe,stroke:#0369a1
-    classDef gate fill:#fef3c7,stroke:#b45309
-    classDef final fill:#dcfce7,stroke:#15803d
-    class B,C,D,F loop
-    class A,G gate
-    class I final
+    classDef loop fill:#1e3a5f,stroke:#60a5fa,stroke-width:2px,color:#e0f2fe
+    classDef gate fill:#78350f,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
+    classDef final fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7
+    classDef plain fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
 ```
 
-Blue = doer/reviewer loop (max 5 iterations). Yellow = validation gate. Green = wrapup (lessons captured).
+**Blue** = doer/reviewer loop (max 5 iterations) · **Amber** = validation gate · **Green** = wrapup (lessons captured) · **Slate** = single-pass stage
 
 Every stage ends with a commit on the feature branch, creating a trail of evidence that later agents can read with `git diff`.
 
@@ -41,20 +39,22 @@ Stages 2, 3, 4, and 6 run a delta-aware convergence loop.
 
 ```mermaid
 flowchart TD
-    Start([Start iteration]) --> Doer[Doer produces artifact + changelog]
-    Doer --> Reviewer[Reviewer categorizes findings]
-    Reviewer --> Check{BLOCKERs?}
-    Check -- "0 BLOCKERs" --> Done([Converged])
-    Check -- "> 0 BLOCKERs" --> Max{Iteration < 5?}
-    Max -- "yes" --> DoerD[Doer addresses BLOCKERs]
-    DoerD --> ReviewerD[Reviewer checks fixes only, scans changes for new issues]
+    Start([Start iteration]):::plain --> Doer[Doer produces artifact + changelog]:::doer
+    Doer --> Reviewer[Reviewer categorizes findings]:::reviewer
+    Reviewer --> Check{BLOCKERs?}:::decision
+    Check -- "0 BLOCKERs" --> Done([Converged]):::success
+    Check -- "> 0 BLOCKERs" --> Max{Iteration < 5?}:::decision
+    Max -- "yes" --> DoerD[Doer addresses BLOCKERs]:::doer
+    DoerD --> ReviewerD[Reviewer checks fixes only, scans changes for new issues]:::reviewer
     ReviewerD --> Check
-    Max -- "no" --> Ask([Ask user: retry / accept / pause])
+    Max -- "no" --> Ask([Ask user: retry / accept / pause]):::warn
 
-    classDef green fill:#dcfce7,stroke:#15803d
-    classDef yellow fill:#fef3c7,stroke:#b45309
-    class Done green
-    class Ask yellow
+    classDef plain fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
+    classDef doer fill:#1e3a5f,stroke:#60a5fa,stroke-width:2px,color:#e0f2fe
+    classDef reviewer fill:#4c1d95,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
+    classDef decision fill:#374151,stroke:#9ca3af,stroke-width:2px,color:#f3f4f6
+    classDef success fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7
+    classDef warn fill:#78350f,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
 ```
 
 **Iteration 1** — reviewer is clean-slate.
@@ -73,19 +73,25 @@ If you already started on the ticket (plan, tests, code, docs), Stage 1 detects 
 
 ```mermaid
 flowchart TD
-    Q{Any prior work?} -- "no" --> S1[Start at Stage 1]
-    Q -- "yes" --> Detect[Detect repo state: branch, uncommitted, commits ahead]
-    Detect --> Decide{What do you have?}
-    Decide -- "plan only" --> J3[Jump to Stage 3 - tests]
-    Decide -- "plan + tests" --> J4[Jump to Stage 4 - code]
+    Q{Any prior work?}:::decision -- "no" --> S1[Start at Stage 1]:::normal
+    Q -- "yes" --> Detect[Detect repo state: branch, uncommitted, commits ahead]:::detect
+    Detect --> Decide{What do you have?}:::decision
+    Decide -- "plan only" --> J3[Jump to Stage 3 - tests]:::jump
+    Decide -- "plan + tests" --> J4[Jump to Stage 4 - code]:::jump
     Decide -- "code partial" --> J4
-    Decide -- "code complete" --> J5[Jump to Stage 5 - reflect]
-    Decide -- "ready for review" --> J6[Jump to Stage 6]
+    Decide -- "code complete" --> J5[Jump to Stage 5 - reflect]:::jump
+    Decide -- "ready for review" --> J6[Jump to Stage 6]:::jump
 
-    J3 --> Import[Mark skipped stages as imported, baseline commit, continue AC confirm]
+    J3 --> Import[Mark skipped stages as imported, baseline commit, continue AC confirm]:::import
     J4 --> Import
     J5 --> Import
     J6 --> Import
+
+    classDef decision fill:#374151,stroke:#9ca3af,stroke-width:2px,color:#f3f4f6
+    classDef normal fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
+    classDef detect fill:#4c1d95,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
+    classDef jump fill:#1e3a5f,stroke:#60a5fa,stroke-width:2px,color:#e0f2fe
+    classDef import fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7
 ```
 
 ---
