@@ -43,8 +43,9 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 | `/doer continue <TICKET-ID>` | Resume a paused ticket from its last stage. |
 | `/doer status <TICKET-ID>` | Show current stage, loop state, and blockers. |
 | `/doer list` | List all tickets in `./.doer/tickets/`. |
-| `/doer stage <N> <TICKET-ID>` | Jump to stage N (with warnings if skipping). |
 | `/doer pause` | Persist current state and stop. |
+
+**Stages cannot be skipped manually.** Every stage must run. The only way to skip stages is through Stage 1's pre-existing-work detection (see Stage 1 below). This is by design: the orchestrator decides which stages to skip, not the user.
 
 **Implicit activation:** If the user writes natural language (e.g. "sigue", "continúa", "pausa aquí", "el plan se ve bien") and an active ticket exists in `./.doer/tickets/*/metadata.json` with `status == "in_progress"`, treat the message as a directive to the active orchestrator rather than a new query.
 
@@ -673,21 +674,6 @@ ABC-123   [in_progress]  Stage 4 (code)         fix-login-timeout
 ABC-119   [complete]     —                      add-redis-cache
 ABC-110   [paused]       Stage 2 (plan)         refactor-auth
 ```
-
----
-
-## `/doer stage <N> <TICKET-ID>`
-
-Jump to stage N. If jumping forward:
-
-```
-Warning: jumping from stage {current} to stage {N} will skip: {list}.
-Skipped stages will NOT run. This may leave artifacts missing.
-
-Proceed? [Y/n]
-```
-
-If skipping doer/reviewer loop stages, require explicit confirmation (`type the stage names to confirm`).
 
 ---
 
