@@ -1198,10 +1198,49 @@ Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
    ```bash
    git checkout <branch-name>
    ```
-4. **Run the Workspace Guard** (see Workspace Guard section). This catches tickets started before the `.doer/` exclusion rule existed. Idempotent — near-zero cost when already satisfied.
-5. Read the last stage's loop state (if any). If mid-loop, resume at the same iteration.
-6. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}. Continue? [Y/n]"
-7. Proceed.
+4. **Workspace Guard — RUN INLINE, do NOT just reference it.** These exact bash commands MUST execute before step 5. Do NOT skip, do NOT defer, do NOT replace with a comment saying "the Guard will run".
+
+   ```bash
+   # 4a. Cheap idempotency check
+   GUARD_OK=$(jq -r '.workspace_guard // empty' .doer/tickets/<TICKET-ID>/metadata.json 2>/dev/null)
+   EXCLUDE_HAS_DOER=$(grep -qxF '.doer/' .git/info/exclude 2>/dev/null && echo yes || echo no)
+   if [ "$GUARD_OK" = "ok" ] && [ "$EXCLUDE_HAS_DOER" = "yes" ]; then
+     echo "Workspace Guard: already satisfied (skipping)."
+   else
+     # 4b. Ensure exclude file exists and contains .doer/
+     mkdir -p .git/info
+     [ -f .git/info/exclude ] || touch .git/info/exclude
+     grep -qxF '.doer/' .git/info/exclude || echo '.doer/' >> .git/info/exclude
+
+     # 4c. Verify the rule actually takes effect
+     mkdir -p .doer && touch .doer/.guard-test
+     STATUS=$(git status --porcelain .doer/.guard-test 2>/dev/null)
+     rm -f .doer/.guard-test
+     if [ -n "$STATUS" ]; then
+       echo "ERROR: .doer/ exclude rule did not take effect. Investigate before proceeding."
+       exit 1
+     fi
+
+     # 4d. Detect already-tracked .doer/ files (handle once per ticket)
+     TRACKED=$(git ls-files .doer/ 2>/dev/null | head -1)
+     # If TRACKED non-empty, surface the 3-option prompt to the user (see Workspace Guard section
+     # for the exact prompt text and default to option 3).
+
+     # 4e. Mark satisfied
+     # Update metadata.json: set workspace_guard = "ok"
+     echo "Workspace Guard: applied."
+   fi
+   ```
+
+5. **Self-check before proceeding.** Verify both conditions are now true:
+   - `.git/info/exclude` contains `.doer/` (run `grep -qxF '.doer/' .git/info/exclude`)
+   - The active ticket's `metadata.json` has `"workspace_guard": "ok"`
+
+   If either fails, STOP. Do NOT continue resuming. Narrate the failure and ask the user how to proceed. The Guard is a precondition, not a suggestion — proceeding without it pollutes the team's PR.
+
+6. Read the last stage's loop state (if any). If mid-loop, resume at the same iteration.
+7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}. Continue? [Y/n]"
+8. Proceed.
 
 ---
 
@@ -1250,7 +1289,8 @@ ABC-110   [paused]       Stage 2 (plan)         refactor-auth
 1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`.
 2. If the ticket does not exist → error: "Ticket <TICKET-ID> not found."
 3. If `status != "complete"` → error: "Ticket <TICKET-ID> is currently {status}. Use `/doer continue` instead of verify."
-4. **Run the Workspace Guard** (see Workspace Guard section). Required before any retroactive stage runs.
+4. **Workspace Guard — RUN INLINE.** Execute the same bash block as `/doer continue` step 4 (the cheap idempotency check + ensure exclude + verify + detect-tracked + mark satisfied). Do NOT skip. Do NOT replace with a comment. The Guard is a precondition.
+5. **Self-check before proceeding.** Verify `.git/info/exclude` contains `.doer/` AND the ticket's metadata has `"workspace_guard": "ok"`. If either fails, STOP and ask the user.
 
 ### Step 2: Compute missing stages (by name)
 
