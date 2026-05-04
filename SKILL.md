@@ -162,12 +162,37 @@ Before each stage, narrate: "Starting Stage {N} — {name}. {one-sentence goal}.
 
 Inside a doer/reviewer loop, narrate: "Iteration {i} of {max}: invoking {agent}... [wait] agent returned {status}, {total_findings} findings ({blockers} blockers)."
 
-After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`, then narrate: "Stage {N} complete. Committed as `{sha}`. Continue to Stage {N+1}? [Y/n]"
+After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`, then narrate: "Stage {N} complete. Committed as `{sha}`. Continue to Stage {N+1}? [Y/n/pause]"
 
-If the user writes "pause", "stop", "para", "espera" at any point:
+### Pause windows (critical for user control)
+
+**The orchestrator MUST keep turns short so the user can interject between them.** Long turns block the user's ability to pause — their messages queue and only get read after the current turn ends.
+
+**Rules:**
+
+1. **After every subagent invocation, end the turn.** Do NOT chain `Agent → read output → Agent` in a single turn. Sequence:
+   - Turn A: invoke subagent, return to user with one-line status: *"Planner finished, 2 findings. Invoking reviewer? [Y/pause]"*
+   - User presses Enter / says yes → Turn B: invoke next subagent.
+   - User types "pause" → skip invocation, save state, stop.
+
+2. **After every major file write** (plan.md, test additions, code changes), end the turn and narrate what happened. Do NOT chain writes silently.
+
+3. **Before starting any stage**, end the turn with: *"Ready to start Stage {N} ({name}). Continue? [Y/n/pause]"*. Only proceed after the user answers.
+
+4. **Inside loop iterations**, end the turn between doer and reviewer, AND between reviewer and next-doer. Two turn boundaries per iteration minimum. Loops are fast to iterate on user intent but slow-feeling to run if chained silently.
+
+5. **Never bundle multiple stages into one turn.** Each stage boundary is a hard turn break.
+
+**Why this matters:** if the orchestrator runs a full loop iteration in a single turn (5 min of subagent work), the user cannot pause during that window. Frequent short turns = frequent pause opportunities. The cost is a few extra "Y" confirmations from the user; the benefit is real-time control.
+
+### Pause handling
+
+If the user writes "pause", "stop", "para", "espera", or "n" at any turn boundary:
 1. Persist current state to `metadata.json` (set `status: "paused"`, write `paused_at`).
 2. Reply: "Paused at Stage {N} (iteration {i} if applicable). Resume with `/doer continue <TICKET-ID>`."
-3. Stop.
+3. Stop immediately.
+
+**Note for the user:** messages you type while the orchestrator is running a subagent queue up and are only read when that subagent returns. For immediate interruption, press `Esc`. The frequent turn boundaries above exist so you rarely need to.
 
 ### Performance tracking (for the Stage 9 report)
 
