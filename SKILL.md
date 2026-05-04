@@ -783,7 +783,7 @@ git add -A
 git commit -m "doer(<TICKET-ID>): [TEMP] runtime debug logs — DO NOT MERGE"
 ```
 
-Record the commit SHA in `metadata.json → stages.8.temp_log_commit_sha`. This SHA is what the cleanup step will revert.
+The commit is identified later by its message, not by a stored SHA. The prefix `doer(<TICKET-ID>): [TEMP] runtime debug logs` is unique enough to grep unambiguously. Do NOT store the SHA in metadata — it would be one more field to keep in sync, and metadata writes in this stage have historically drifted out of commits.
 
 ### Step 3: Hand off to the dev
 
@@ -854,11 +854,18 @@ Branches:
 
 ### Step 5: Cleanup (no logs reach the final branch)
 
-Strategy: `git revert` the temporary commit so the logs are removed AND the history records that they existed.
+Strategy: find the temporary commit by its message (unique grep pattern), revert it so the logs are removed AND history records that they existed.
 
 ```bash
-TEMP_SHA=<stages.8.temp_log_commit_sha>
-git revert --no-edit $TEMP_SHA
+TEMP_SHA=$(git log --grep="^doer(<TICKET-ID>): \[TEMP\] runtime debug logs" --format="%H" | head -n1)
+
+if [ -z "$TEMP_SHA" ]; then
+  echo "ERROR: Could not find the temporary log commit for <TICKET-ID>."
+  echo "Expected commit message prefix: 'doer(<TICKET-ID>): [TEMP] runtime debug logs'"
+  exit 1
+fi
+
+git revert --no-edit "$TEMP_SHA"
 git commit --amend -m "doer(<TICKET-ID>): remove runtime debug logs"
 ```
 
@@ -873,21 +880,46 @@ fi
 
 If residuals are found (shouldn't happen, but defensive), invoke the logger agent once more with: *"Remove every line matching `DOER - <TICKET-ID>`. Do not touch anything else."*
 
-Narrate to user: *"Runtime logs removed. Final commit: <sha>. Proceeding to docs sync."*
+Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
 
-### Step 6: Record outcome
+### Step 6: Record outcome (flush, then commit)
 
-Update `metadata.json → stages.8`:
-```json
-{
-  "name": "runtime-verify",
-  "status": "complete",
-  "temp_log_commit_sha": "<sha>",
-  "revert_commit_sha": "<sha>",
-  "ac_verdicts": {"AC-1": "PASS", "AC-2": "PASS"},
-  "returns_triggered": []  // or ["stage-4"] if the loop returned
-}
-```
+**Ordering matters.** Write all metadata fields first, then commit in a single atomic operation. Do not split into multiple writes.
+
+1. Update `metadata.json → stages.8` with the complete final state:
+   ```json
+   {
+     "name": "runtime-verify",
+     "status": "complete",
+     "ac_verdicts": {"AC-1": "PASS", "AC-2": "PASS"},
+     "returns_triggered": [],
+     "completed_at": "<ISO8601>"
+   }
+   ```
+   Note: no `temp_log_commit_sha`, no `revert_commit_sha` — the commit history IS the source of truth for those events.
+
+2. Amend or commit:
+   ```bash
+   if git diff --quiet -- .doer/ && git diff --cached --quiet -- .doer/; then
+     : # nothing to persist
+   else
+     git add .doer/
+     LAST_MSG=$(git log -1 --pretty=%s)
+     if [[ "$LAST_MSG" == "doer(<TICKET-ID>): remove runtime debug logs" ]]; then
+       git commit --amend --no-edit
+     else
+       git commit -m "doer(<TICKET-ID>): runtime-verify metadata"
+     fi
+   fi
+   ```
+
+3. Defensive verification — zero pending writes:
+   ```bash
+   if ! git diff --quiet -- .doer/ || ! git diff --cached --quiet -- .doer/; then
+     echo "WARNING: .doer/ has uncommitted changes after Stage 8 finalization."
+     git status --short -- .doer/
+   fi
+   ```
 
 ---
 
@@ -1130,10 +1162,26 @@ For each approved stage, in the order it appears in the current skill:
      "completed_at": "<ISO8601>"
    }
    ```
-5. **If the stage's verdict is a RETURN_TO_STAGE_N or equivalent "reopen" signal:**
+5. **End-of-substage flush (MANDATORY).** Before moving to the next retroactive stage, sync `.doer/` to git. Even with stages that commit correctly, a retroactive run can still leave pending writes (blocking conditions, timestamps, verdicts recorded after a stage's own commit). Run:
+   ```bash
+   if ! git diff --quiet -- .doer/ || ! git diff --cached --quiet -- .doer/; then
+     git add .doer/
+     # Amend onto the stage's last commit if one exists in this substage,
+     # else create a fresh flush commit.
+     LAST_MSG=$(git log -1 --pretty=%s)
+     if [[ "$LAST_MSG" == doer\(*\):* ]]; then
+       git commit --amend --no-edit
+     else
+       git commit -m "doer(<TICKET-ID>): flush <stage-name> metadata"
+     fi
+   fi
+   ```
+   This guarantees every metadata field produced by a substage lives inside its own commit — never floating uncommitted into the next substage or into Step 6.
+6. **If the stage's verdict is a RETURN_TO_STAGE_N or equivalent "reopen" signal:**
    - Set top-level `status: "in_progress"`.
    - Set `current_stage: N`.
    - Add a blocking condition explaining the retroactive reopen: `{"type": "retroactive-return", "from_stage": "<retroactive-stage-name>", "reason": "<analyzer-recommendation>"}`.
+   - Run the same flush block from step 5 so the reopen state is committed.
    - Narrate: *"Retroactive stage `<name>` returned `<verdict>`. Ticket reopened at Stage N. Run `/doer continue <TICKET-ID>` to proceed."*
    - Stop. Do NOT run the remaining retroactive stages — the dev needs to fix the earlier issue first.
 
