@@ -180,13 +180,25 @@ After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`
 | **Confirm** | Before presenting artifacts the user should review (plan.md, ac.md, review findings), before the final wrapup, when a loop hits max iterations | End the turn with an explicit question and wait for the user's answer. |
 | **Decide** | Genuine forks where the user must choose a path (import pre-existing work? skip docs?) | Same as Confirm — wait for answer. |
 
-**Rules:**
+**Rules — IMPERATIVE, NOT SUGGESTIONS. The orchestrator MUST obey every rule on every turn. There is no "efficiency exception".**
 
-1. **After every subagent invocation, end the turn.** Narrate one line of status, announce the next step, and stop. Default behavior: auto-proceed on the next turn unless the user interrupted.
-2. **After every major file write**, end the turn with a one-line summary. Auto-proceed.
-3. **At stage boundaries (1→2, 2→3, etc.)**, end the turn with: *"Stage N complete. Starting Stage N+1 ({name})..."*. Auto-proceed on the next turn unless interrupted.
-4. **Inside loop iterations**, end the turn between doer and reviewer, AND between reviewer and next-doer. Auto-proceed.
-5. **Never bundle multiple stages or subagent invocations into one turn.** One invocation per turn, max.
+1. **MUST end the turn after every Agent tool invocation.** As soon as a subagent returns, narrate one line of status + announce the next step, then STOP the turn. The next turn auto-proceeds unless the user interrupted.
+
+2. **MUST NOT invoke Agent twice in the same turn.** If you have already called the Agent tool once in this turn, STOP. Any further Agent call belongs to a new turn. This rule is absolute.
+   - Wrong: `Agent(planner) → [planner returns] → Agent(reviewer) → narrate` (one turn, two Agent calls — FORBIDDEN)
+   - Right: `Agent(planner) → [planner returns] → narrate "Planner done, invoking reviewer next" → END TURN` → next turn: `Agent(reviewer) → [reviewer returns] → narrate → END TURN`
+
+3. **MUST end the turn after every Write/Edit to a meaningful artifact** (plan.md, ac.md, tests, code, review files, changelogs). One-line summary, then stop.
+
+4. **MUST end the turn at every stage boundary.** Narrate "Stage N complete. Starting Stage N+1 ({name})..." and STOP. Auto-proceed on the next turn unless interrupted.
+
+5. **MUST end the turn at every loop iteration boundary.** Between doer and reviewer: end the turn. Between reviewer and next-doer: end the turn. Two turn breaks minimum per loop iteration.
+
+6. **MUST NOT bundle multiple stages into one turn under any circumstances.**
+
+**Self-check before every response:** before finalizing a turn, ask yourself *"Did I call Agent more than once in this turn?"* If yes, that is a bug — the extra Agent calls belonged to future turns. Narrate what you actually did so the user sees the state, and STOP. Do not "fix it" by bundling more work.
+
+**Why these rules are absolute:** when the orchestrator chains subagent invocations silently within a single turn, the user loses two things — visibility (no narration between steps) and control (cannot interrupt between steps). Both are core guarantees of this skill. Chaining to "feel faster" breaks the skill's contract.
 
 **When to Confirm (not auto-proceed):**
 - After the planner finishes plan.md → present plan, ask "approve / edit / redo?"
@@ -333,28 +345,37 @@ Record the choice in `metadata.json` under `stages.<N>.loop_outcome`.
 1. Read `ticket.md`.
 2. Read all files in `./.doer/knowledge/lessons/` (if any) and note any lesson whose `when_it_applies` matches this ticket type or area.
 
-3. **Pre-existing work detection** (ask the user):
+3. **Pre-existing work detection.**
 
-   "Have you already done any work on this ticket before invoking `/doer`? [y/N]"
+   **MUST-DO rule:** Before running ANY git command, before reading any existing file under `.doer/`, before inspecting branches or commits or diffs, the orchestrator MUST ask the user this exact question via `AskUserQuestion` and wait for the answer:
 
-   If **no** → skip to step 4.
+   > "Have you already done any work on this ticket before invoking `/doer`? [y/N]"
 
-   If **yes** → ask each of these, one at a time via `AskUserQuestion`:
+   **MUST-NOT rules:**
+   - Do NOT auto-detect pre-existing work by running `git status`, `git log`, or `git diff` before the user answers.
+   - Do NOT assume the answer based on uncommitted changes, commits ahead of base, or branch name.
+   - Do NOT skip the question "because it seems obvious". Ask it verbatim, every time.
 
-   | Question | If "yes", follow up with |
-   |----------|--------------------------|
-   | "Do you already have a written plan (mental or on paper/file)?" | "Paste or summarize it." |
-   | "Did you already write tests?" | "Where are they? Do they currently pass or fail?" |
-   | "Did you already write implementation code?" | "Where are the changes? Committed, staged, or uncommitted?" |
-   | "Did you already update any documentation?" | "Which files?" |
+   **Flow after the user answers:**
 
-   Also detect the repo state automatically:
-   - Run `git branch --show-current` → confirm which branch the user is on
-   - Run `git status --porcelain` → detect uncommitted changes
-   - Run `git log --oneline <base-branch>..HEAD` → list commits ahead of base
-   - Determine the base branch: prefer `main`, fall back to `master`, or ask the user if unclear
+   - **If the user answers NO (or defaults to N)** → skip this entire section. Go directly to step 4 (Decide the entry point with "Nothing" row). Do NOT run git inspection, do NOT run the test suite, do NOT classify files. The user has told you there is no prior work; respect that.
 
-3b. **Inspect the existing work.** Do NOT just count commits — read them to understand what's already done:
+   - **If the user answers YES** → continue below. Ask each follow-up one at a time via `AskUserQuestion`:
+
+     | Question | If "yes", follow up with |
+     |----------|--------------------------|
+     | "Do you already have a written plan (mental or on paper/file)?" | "Paste or summarize it." |
+     | "Did you already write tests?" | "Where are they? Do they currently pass or fail?" |
+     | "Did you already write implementation code?" | "Where are the changes? Committed, staged, or uncommitted?" |
+     | "Did you already update any documentation?" | "Which files?" |
+
+     Only after the user has confirmed YES and answered these questions, detect the repo state automatically:
+     - Run `git branch --show-current` → confirm which branch the user is on
+     - Run `git status --porcelain` → detect uncommitted changes
+     - Run `git log --oneline <base-branch>..HEAD` → list commits ahead of base
+     - Determine the base branch: prefer `main`, fall back to `master`, or ask the user if unclear
+
+3b. **Inspect the existing work (only if step 3 answer was YES).** Do NOT just count commits — read them to understand what's already done:
 
    For each commit ahead of base, run:
    - `git show --stat <sha>` → see which files were touched and how much
