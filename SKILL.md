@@ -43,6 +43,7 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 | `/doer continue <TICKET-ID>` | Resume a paused ticket from its last stage. |
 | `/doer status <TICKET-ID>` | Show current stage, loop state, and blockers. |
 | `/doer list` | List all tickets in `./.doer/tickets/`. |
+| `/doer verify <TICKET-ID>` | Run stages that exist in the current skill but were missing when the ticket was closed. |
 | `/doer pause` | Persist current state and stop. |
 
 **Stages cannot be skipped manually.** Every stage must run. The only way to skip stages is through Stage 1's pre-existing-work detection (see Stage 1 below). This is by design: the orchestrator decides which stages to skip, not the user.
@@ -1051,6 +1052,118 @@ ABC-123   [in_progress]  Stage 4 (code)         fix-login-timeout
 ABC-119   [complete]     —                      add-redis-cache
 ABC-110   [paused]       Stage 2 (plan)         refactor-auth
 ```
+
+---
+
+## `/doer verify <TICKET-ID>`
+
+**Goal:** run stages that exist in the current skill but did NOT exist when the ticket was closed. Useful when the pipeline has been extended (new stages added) and you want to retroactively apply them to previously completed tickets.
+
+**Scope:** only runs stages **missing by name** from the ticket's `metadata.json → stages`. Does NOT re-run stages that existed before but whose internal logic changed (those are out of scope — rerunning them would create an infinite catch-up treadmill).
+
+### Step 1: Load ticket
+
+1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`.
+2. If the ticket does not exist → error: "Ticket <TICKET-ID> not found."
+3. If `status != "complete"` → error: "Ticket <TICKET-ID> is currently {status}. Use `/doer continue` instead of verify."
+
+### Step 2: Compute missing stages (by name)
+
+1. Extract `executed_stage_names`: all values of `stages.*.name` from the ticket metadata.
+2. Extract `current_stage_names`: the stage name list from the skill's default metadata template (the `stages` block under the intake section of this SKILL.md — the authoritative list).
+3. `missing = current_stage_names \ executed_stage_names` (set difference, preserving the order they appear in the current skill).
+4. If `missing` is empty → narrate "Nothing to verify. Ticket <TICKET-ID> already ran all stages that the current skill defines." → stop.
+
+### Step 3: Present missing stages, ask per stage
+
+Present the list with a one-line description of each missing stage and ask for each:
+
+```
+Ticket <TICKET-ID> was closed with {executed_count} stages. Current skill has {current_count}.
+
+Missing stages (not executed at close time):
+  - 8 runtime-verify: On-device AC validation via temporary debug logs.
+  - 11 security-audit: (example)
+
+Which of these should I run retroactively?
+```
+
+Ask per missing stage, one at a time via `AskUserQuestion`: *"Run `<stage-name>` retroactively? [Y/n/skip-all]"*. Record the decision. `skip-all` aborts the remaining questions and proceeds only with what was already approved.
+
+### Step 4: Checkout the ticket branch
+
+Before running any retroactive stage:
+
+```bash
+git fetch --all
+BRANCH="<metadata.branch>"
+# If the branch still exists locally or remotely, check it out.
+# If the branch was deleted after merge, check out the final commit SHA stored
+# in metadata.commits[last] and warn the user we are operating in detached HEAD.
+```
+
+Narrate which state the dev is working against (live branch vs detached HEAD on merged commit).
+
+### Step 5: Run each approved missing stage
+
+For each approved stage, in the order it appears in the current skill:
+
+1. Narrate: *"Running retroactive stage: <name>."*
+2. Mark it in metadata BEFORE running so resume works:
+   ```json
+   "stages": {
+     "<N>": {
+       "name": "<stage-name>",
+       "status": "retroactive_in_progress",
+       "added_retroactively": true,
+       "started_at": "<ISO8601>"
+     }
+   }
+   ```
+3. Execute the stage using the **current** skill's logic (the same sections dev would run in a normal flow). All artifacts, subagent calls, loops, and commits work exactly as in a normal ticket run.
+4. On completion, update:
+   ```json
+   {
+     "status": "complete",
+     "added_retroactively": true,
+     "retroactive_verdict": "<stage-specific outcome, e.g. APPROVED, RETURN_TO_STAGE_4>",
+     "completed_at": "<ISO8601>"
+   }
+   ```
+5. **If the stage's verdict is a RETURN_TO_STAGE_N or equivalent "reopen" signal:**
+   - Set top-level `status: "in_progress"`.
+   - Set `current_stage: N`.
+   - Add a blocking condition explaining the retroactive reopen: `{"type": "retroactive-return", "from_stage": "<retroactive-stage-name>", "reason": "<analyzer-recommendation>"}`.
+   - Narrate: *"Retroactive stage `<name>` returned `<verdict>`. Ticket reopened at Stage N. Run `/doer continue <TICKET-ID>` to proceed."*
+   - Stop. Do NOT run the remaining retroactive stages — the dev needs to fix the earlier issue first.
+
+### Step 6: Finalize
+
+If all approved retroactive stages completed without reopening:
+
+1. Update `metadata.json`:
+   ```json
+   "verify_runs": [
+     {
+       "verified_at": "<ISO8601>",
+       "stages_added_retroactively": ["runtime-verify", "..."],
+       "all_verdicts_approved": true
+     }
+   ]
+   ```
+   (Keep this as an array so multiple `verify` runs accumulate.)
+2. Commit if anything changed:
+   ```bash
+   git add -A
+   git commit -m "doer(<TICKET-ID>): retroactive verify — <comma-separated stage names>"
+   ```
+3. Narrate: *"Verify complete. <N> stages added retroactively, all approved. Ticket <TICKET-ID> is up to date with the current skill."*
+
+### Edge cases
+
+- **Stage exists in metadata but with different name than current skill:** treat as not-missing (names match is the contract). If the dev genuinely renamed a stage and wants it re-run, they do that manually.
+- **Ticket has stages the current skill does not:** that's fine, they stay. Verify is additive only.
+- **Dev aborts mid-verify:** whatever was persisted stays. Next `/doer verify` recomputes missing stages and picks up where it left off.
 
 ---
 

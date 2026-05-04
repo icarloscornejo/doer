@@ -136,6 +136,7 @@ One pull refreshes every symlinked Claude at once.
 | `/doer continue <TICKET-ID>` | Resume a paused ticket from its last stage. |
 | `/doer status <TICKET-ID>` | Show current stage, loop state, blockers. |
 | `/doer list` | List all tickets under `./.doer/tickets/`. |
+| `/doer verify <TICKET-ID>` | Run stages that exist in the current skill but were missing when the ticket was closed. Useful after the pipeline gains new stages. |
 | `/doer pause` | Persist current state and stop. |
 
 Once a ticket is active, natural language works too: "keep going", "pause here", "the plan looks good, continue". The orchestrator picks up the active ticket from `./.doer/tickets/*/metadata.json`.
