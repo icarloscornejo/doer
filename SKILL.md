@@ -32,10 +32,11 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 4. **Bounded loops** — Max 5 iterations per doer/reviewer loop. If not converged, the user decides.
 5. **Lessons accumulate** — Every ticket captures what went well and what did not. Future tickets read those lessons before planning.
 6. **No hidden state** — Everything the orchestrator knows lives in `./.doer/` on disk. Context compression never loses progress.
-7. **All commits use `git cmnv`, NOT `git commit`.** This is a hard rule.
-   - `git cmnv` is the user's local alias for `git commit --no-verify` (skips pre-commit hooks). The orchestrator runs in **developer mode**: pre-commit hooks (linters, formatters, fast tests) are noise that interrupts flow without adding value mid-stage. The dev runs the real checks manually before opening the PR (Stage 10 wrapup or just before push).
-   - Throughout this skill, every code block that says `git commit -m "..."` MUST be executed as `git cmnv -m "..."` instead. Same for `git commit --amend ...` → `git cmnv --amend ...`. The literal text in code blocks below uses `git commit` for readability of the message, but the orchestrator MUST substitute `git cmnv` at execution time.
-   - If `git cmnv` is not defined as an alias on the current machine, fall back to `git commit --no-verify` (functionally equivalent). Do NOT silently fall back to `git commit` — the hook bypass is intentional.
+7. **All commits use `git commit --no-verify`, NEVER plain `git commit`.** This is a hard rule.
+   - Why: the orchestrator runs in **developer mode**. Pre-commit hooks (linters, formatters, fast tests) interrupt flow mid-stage without adding value at that point — the agents may produce intermediate states that fail a hook but are correct for the stage. The dev runs the real pre-commit checks **manually before opening the PR**, after reviewing and reorganizing the commit history.
+   - The orchestrator MUST execute every commit as `git commit --no-verify -m "..."`. Same for amends: `git commit --no-verify --amend ...`.
+   - The code blocks throughout this SKILL show `git commit --no-verify` explicitly so it is portable to any machine (no aliases required) and visible to anyone reading the skill.
+   - **The dev's responsibility before PR**: run pre-commit hooks (`pre-commit run --all-files`, `npm run lint`, `./gradlew detektAll`, etc.), squash/reorder commits as desired, then push. The orchestrator does not push.
 
 8. **`.doer/` NEVER reaches the team's git history.** This is a hard, non-negotiable rule.
    - The intake step ensures `.doer/` is added to `.git/info/exclude` (per-clone gitignore, never committed). The team has zero visibility into doer's existence in the repo.
@@ -511,7 +512,7 @@ Record the choice in `metadata.json` under `stages.<N>.loop_outcome`.
    ```bash
    # If there are uncommitted changes:
    git add -A
-   git commit -m "doer(<TICKET-ID>): import pre-existing work as baseline"
+   git commit --no-verify -m "doer(<TICKET-ID>): import pre-existing work as baseline"
    ```
 
    If there are already commits ahead of the base branch, no extra commit is needed — the existing commits serve as the baseline.
@@ -669,7 +670,7 @@ Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no �
 Run loop until convergence. Commit:
 ```bash
 git add -A
-git commit -m "doer(<TICKET-ID>): failing tests (TDD red)"
+git commit --no-verify -m "doer(<TICKET-ID>): failing tests (TDD red)"
 ```
 
 ---
@@ -725,7 +726,7 @@ Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no �
 Run loop until convergence. Commit:
 ```bash
 git add -A
-git commit -m "doer(<TICKET-ID>): implementation (TDD green)"
+git commit --no-verify -m "doer(<TICKET-ID>): implementation (TDD green)"
 ```
 
 ---
@@ -762,7 +763,7 @@ If you find BLOCKERs, fix them now in the same commit.
 Commit:
 ```bash
 git add -A
-git commit -m "doer(<TICKET-ID>): self-reflect"
+git commit --no-verify -m "doer(<TICKET-ID>): self-reflect"
 ```
 
 ---
@@ -792,7 +793,7 @@ In addition to the standard review scope, explicitly verify:
 Commit:
 ```bash
 git add -A
-git commit -m "doer(<TICKET-ID>): address code review"
+git commit --no-verify -m "doer(<TICKET-ID>): address code review"
 ```
 
 ---
@@ -874,7 +875,7 @@ Once the logger agent returns, commit the logs so they survive pause/resume and 
 
 ```bash
 git add -A
-git commit -m "doer(<TICKET-ID>): [TEMP] runtime debug logs — DO NOT MERGE"
+git commit --no-verify -m "doer(<TICKET-ID>): [TEMP] runtime debug logs — DO NOT MERGE"
 ```
 
 The commit is identified later by its message, not by a stored SHA. The prefix `doer(<TICKET-ID>): [TEMP] runtime debug logs` is unique enough to grep unambiguously. Do NOT store the SHA in metadata — it would be one more field to keep in sync, and metadata writes in this stage have historically drifted out of commits.
@@ -960,7 +961,7 @@ if [ -z "$TEMP_SHA" ]; then
 fi
 
 git revert --no-edit "$TEMP_SHA"
-git commit --amend -m "doer(<TICKET-ID>): remove runtime debug logs"
+git commit --no-verify --amend -m "doer(<TICKET-ID>): remove runtime debug logs"
 ```
 
 Verify cleanup:
@@ -1000,9 +1001,9 @@ Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
      git add .doer/
      LAST_MSG=$(git log -1 --pretty=%s)
      if [[ "$LAST_MSG" == "doer(<TICKET-ID>): remove runtime debug logs" ]]; then
-       git commit --amend --no-edit
+       git commit --no-verify --amend --no-edit
      else
-       git commit -m "doer(<TICKET-ID>): runtime-verify metadata"
+       git commit --no-verify -m "doer(<TICKET-ID>): runtime-verify metadata"
      fi
    fi
    ```
@@ -1030,7 +1031,7 @@ Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
 4. Commit:
    ```bash
    git add -A
-   git commit -m "doer(<TICKET-ID>): sync documentation"
+   git commit --no-verify -m "doer(<TICKET-ID>): sync documentation"
    ```
 
 ---
@@ -1180,7 +1181,7 @@ Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
    ```bash
    if ! git diff --quiet || ! git diff --cached --quiet; then
      git add -A
-     git commit -m "doer(<TICKET-ID>): wrapup"
+     git commit --no-verify -m "doer(<TICKET-ID>): wrapup"
    fi
    ```
    Skip silently if nothing to commit.
@@ -1322,9 +1323,9 @@ For each approved stage, in the order it appears in the current skill:
      # else create a fresh flush commit.
      LAST_MSG=$(git log -1 --pretty=%s)
      if [[ "$LAST_MSG" == doer\(*\):* ]]; then
-       git commit --amend --no-edit
+       git commit --no-verify --amend --no-edit
      else
-       git commit -m "doer(<TICKET-ID>): flush <stage-name> metadata"
+       git commit --no-verify -m "doer(<TICKET-ID>): flush <stage-name> metadata"
      fi
    fi
    ```
@@ -1369,7 +1370,7 @@ If all approved retroactive stages completed without reopening, execute these st
 3. **Single atomic commit** containing everything from Step 1:
    ```bash
    git add -A
-   git commit -m "doer(<TICKET-ID>): retroactive verify — <comma-separated stage names>"
+   git commit --no-verify -m "doer(<TICKET-ID>): retroactive verify — <comma-separated stage names>"
    ```
 
 4. **Verify nothing was left uncommitted** (defensive check for the bug this pattern prevents):
