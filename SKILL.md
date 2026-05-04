@@ -27,11 +27,17 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 ## Core Principles
 
 1. **Narration first** — The orchestrator announces what it is about to do, what it is doing, and what just happened. The user should be able to pause at any moment.
-2. **One branch, one ticket** — All work happens on a single feature branch. Every stage ends with a commit that serves as evidence for future agents.
+2. **One branch, one ticket** — All work happens on a single feature branch. Stages that produce real code commit it; stages that only produce `.doer/` artifacts do NOT commit (see principle 7).
 3. **Delta-aware reviewers** — After iteration 1, reviewers receive prior findings + a changelog from the doer. They verify fixes and scan for new issues, rather than re-analyzing from scratch.
 4. **Bounded loops** — Max 5 iterations per doer/reviewer loop. If not converged, the user decides.
 5. **Lessons accumulate** — Every ticket captures what went well and what did not. Future tickets read those lessons before planning.
 6. **No hidden state** — Everything the orchestrator knows lives in `./.doer/` on disk. Context compression never loses progress.
+7. **`.doer/` NEVER reaches the team's git history.** This is a hard, non-negotiable rule.
+   - The intake step ensures `.doer/` is added to `.git/info/exclude` (per-clone gitignore, never committed). The team has zero visibility into doer's existence in the repo.
+   - Commits made by the orchestrator MUST NOT include any path under `.doer/`. Use `git add <specific-code-paths>` or `git add -A` (which respects the exclude). Do NOT use `git add .doer/...` explicitly — that bypasses the ignore.
+   - If a stage's only output is `.doer/` artifacts (Stage 1 AC, Stage 2 Plan, Stage 5 Reflect, Stage 10 Wrapup), SKIP the commit step entirely. The artifacts live on disk for the orchestrator and subagents to read; they don't belong in the PR.
+   - Stages that DO produce real code (Stage 3 Tests, Stage 4 Code, Stage 6 Code Review fixes, Stage 8 Runtime Verify temp logs, Stage 9 Docs Sync) commit the code only.
+   - The runtime-verify temp commit + revert dance still works because it modifies real source files, not `.doer/`.
 
 ---
 
@@ -152,9 +158,59 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
    If the branch already exists (local or remote), ask:
    "Branch `<branch-name>` already exists. Options: 1) Check out existing, 2) Pick a different name. Which?"
 
-6. Narrate to the user: "Ticket <TICKET-ID> initialized on branch `<branch-name>`. Starting Stage 1: AC Confirm."
+6. **Workspace setup — ensure `.doer/` is gitignored locally (never reaches the team).** This step is MANDATORY and runs on every new ticket, even if the orchestrator already ran it in this repo before:
 
-7. Proceed to Stage 1.
+   a. Ensure `.git/info/exclude` exists:
+      ```bash
+      mkdir -p .git/info
+      [ -f .git/info/exclude ] || touch .git/info/exclude
+      ```
+
+   b. Add `.doer/` to it if not already present:
+      ```bash
+      if ! grep -qxF '.doer/' .git/info/exclude; then
+        echo '.doer/' >> .git/info/exclude
+      fi
+      ```
+
+      Note: `.git/info/exclude` is a per-clone, never-committed gitignore. The user's team has zero visibility into `.doer/`. This is a hard requirement of the skill.
+
+   c. Detect if `.doer/` is currently tracked in the repo (e.g. from a prior ticket run before this rule existed). Run:
+      ```bash
+      git ls-files .doer/ 2>/dev/null | head -1
+      ```
+      If output is non-empty, `.doer/` is tracked. Tell the user:
+
+      ```
+      ⚠ .doer/ is currently tracked in this repo. Some files may already be in
+      committed history. To prevent NEW commits from including .doer/ files
+      from now on, I can untrack them with `git rm -r --cached .doer/` (this
+      keeps the files on disk but removes them from the index).
+
+      This change has to be committed somewhere — your options:
+      1) Commit it on this feature branch as part of the ticket (one extra
+         "remove .doer/ from index" commit appears in the PR).
+      2) Skip for now; keep tracking. .doer/ files will continue to land in
+         commits until you clean it manually later.
+      3) Untrack silently (stage the change but don't commit). You decide
+         when/whether to commit later.
+
+      Which? [1/2/3]
+      ```
+
+      Default to option 3 (silent stage) if the user does not respond — least invasive.
+
+   d. **Verify the setup worked** before proceeding:
+      ```bash
+      mkdir -p .doer && touch .doer/.setup-test
+      git status --porcelain .doer/.setup-test
+      rm .doer/.setup-test
+      ```
+      `git status` MUST output nothing for `.doer/.setup-test` (because it's now ignored). If it shows the file as untracked, the exclude rule did not take effect — investigate before proceeding.
+
+7. Narrate to the user: "Ticket <TICKET-ID> initialized on branch `<branch-name>`. `.doer/` is gitignored locally — your team will never see these files. Starting Stage 1: AC Confirm."
+
+8. Proceed to Stage 1.
 
 ---
 
@@ -478,11 +534,7 @@ Record the choice in `metadata.json` under `stages.<N>.loop_outcome`.
    ```
 
 10. Initialize `./.doer/knowledge/assumptions/<TICKET-ID>.md` with any assumptions surfaced during AC confirmation.
-11. Commit:
-    ```bash
-    git add .doer/tickets/<TICKET-ID>/ac.md .doer/knowledge/assumptions/<TICKET-ID>.md
-    git commit -m "doer(<TICKET-ID>): confirm acceptance criteria"
-    ```
+11. **No commit at the end of Stage 1.** AC confirm only writes to `.doer/`, which is gitignored. There is no code change to commit. The artifacts live on disk; the orchestrator and subagents read them directly. Skip the commit step entirely.
 12. Update `metadata.json`: stage 1 complete. Advance `current_stage` to the entry point decided in step 4 (not necessarily 2).
 13. Narrate the full picture to the user: "Stage 1 complete. Imported stages: {list}. Starting next at Stage {N}. Continue? [Y/n]"
 
@@ -542,10 +594,7 @@ Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no �
 ```
 
 Run the doer/reviewer loop until convergence. Commit:
-```bash
-git add .doer/tickets/<TICKET-ID>/
-git commit -m "doer(<TICKET-ID>): implementation plan"
-```
+**No commit at the end of Stage 2.** The plan lives in `.doer/tickets/<TICKET-ID>/plan.md`, which is gitignored. The plan stays on disk for the next stages to read; nothing goes to git history.
 
 ---
 
@@ -728,12 +777,8 @@ git commit -m "doer(<TICKET-ID>): address code review"
 2. If any test fails:
    - Narrate the failures.
    - Ask: "Tests failing: {list}. Options: 1) Return to Stage 4 to fix, 2) Return to Stage 6 to re-review, 3) Pause for manual fix. Which?"
-3. If all tests pass, commit the test log as evidence:
-   ```bash
-   git add .doer/tickets/<TICKET-ID>/test-log.txt
-   git commit -m "doer(<TICKET-ID>): quality gate passed"
-   ```
-4. Narrate and continue.
+3. If all tests pass, write the log to `.doer/tickets/<TICKET-ID>/test-log.txt` for the dev's reference (lives on disk only — gitignored, no commit).
+4. Narrate "Quality gate passed: <N>/<N> tests green. Continuing." and proceed.
 
 ---
 
