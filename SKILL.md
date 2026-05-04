@@ -176,7 +176,7 @@ After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`
 |------|------|----------|
 | **Auto-proceed** | Between subagent invocations, between doer and reviewer, between stages | Narrate "Doing X next..." and end the turn. On the next turn, check if the user queued an interrupt ("pause", "stop", "wait", "n"). If yes → pause. If no → proceed without asking. |
 | **Confirm** | Before presenting artifacts the user should review (plan.md, ac.md, review findings), before the final wrapup, when a loop hits max iterations | End the turn with an explicit question and wait for the user's answer. |
-| **Decide** | Genuine forks where the user must choose a path (import pre-existing work? accept SUGGESTIONs? skip docs?) | Same as Confirm — wait for answer. |
+| **Decide** | Genuine forks where the user must choose a path (import pre-existing work? skip docs?) | Same as Confirm — wait for answer. |
 
 **Rules:**
 
@@ -189,9 +189,15 @@ After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`
 **When to Confirm (not auto-proceed):**
 - After the planner finishes plan.md → present plan, ask "approve / edit / redo?"
 - After the AC Confirm draft → present, ask "these accurate?"
-- After the reviewer returns findings with SUGGESTIONs → ask "apply any of these?"
 - Before the final wrapup commit → ask "ready to close?"
 - When a convergence loop hits max iterations → ask "retry / accept / pause?"
+
+**SUGGESTIONs are NEVER a reason to pause.** When a reviewer returns findings with only SUGGESTIONs (zero BLOCKERs), the loop has converged. Do NOT ask the user whether to apply SUGGESTIONs. Instead:
+1. Record all SUGGESTIONs in the review file (`review/{stage}-review-{iter}.md`) for the user's later reference.
+2. Narrate one line at the turn boundary: *"Converged with N SUGGESTIONs logged in review/{stage}-review-{iter}.md. Continuing to next stage."*
+3. Auto-proceed without waiting for an answer.
+
+The user can read the review file anytime and manually apply suggestions outside the pipeline. The pipeline's job is forward motion; optional improvements are optional.
 
 **Interrupt handling:** at any auto-proceed turn boundary, if the user's latest message contains "pause", "stop", "wait", "hold on", "n", "no", "espera", "para", or any clear halt signal, treat it as a pause request. Save state, acknowledge, stop. Otherwise proceed without asking.
 
@@ -264,7 +270,7 @@ Convergence = zero BLOCKERs remaining.
 1. Invoke doer with the stage input.
 2. Doer writes its artifact AND a `changelog.md` describing what it produced and why.
 3. Invoke reviewer with the artifact. Reviewer produces findings categorized BLOCKER/SUGGESTION/INFO.
-4. If zero BLOCKERs → converged. Exit loop. If SUGGESTIONs exist, present them to the user: "Optional improvements: {list}. Apply any? [numbers / n]".
+4. If zero BLOCKERs → converged. Exit loop. Log any SUGGESTIONs to the review file for later reference, narrate one line ("Converged with N SUGGESTIONs logged"), and auto-proceed. Do NOT ask the user to apply SUGGESTIONs inline.
 5. If BLOCKERs > 0 → proceed to Iteration 2.
 
 ### Iteration 2+ (delta-aware)
