@@ -841,9 +841,13 @@ The orchestrator (this skill) is the sole user-facing voice. Subagents must NOT 
 
 ## Locale override
 
-If the user invokes the skill with the suffix `--es` (e.g. `/doer ABC-123 --es`) or writes `locale: es` at any point during the conversation, the orchestrator and every subagent it spawns MUST produce all user-facing narration, questions, confirmations, summaries, reports, and artifact prose in Spanish. File names, git commit messages, commands, JSON keys, code, and technical identifiers stay in English. Persist `"locale": "es"` in `metadata.json` so the preference survives pause/resume. When spawning any subagent, append to its prompt: "Produce all user-facing prose in Spanish. Keep code, commands, file names, and JSON keys in English."
+The default locale for all user-facing prose is **English**. Three ways to override:
 
-Default locale when no override is given: English.
+1. **Per-ticket flag:** invoke the skill with `--es` suffix (e.g. `/doer ABC-123 --es`).
+2. **Inline directive:** write `locale: es` at any point during the conversation.
+3. **Local preferences file:** if a file named `preferences.md` exists in the same directory as this SKILL.md, read it at the start of every `/doer` invocation (BEFORE asking any questions, BEFORE narrating). If it contains a line like `locale: <code>` (e.g. `locale: es`), treat that as the default locale for this installation. Per-ticket flags still override this.
+
+When locale is not English, the orchestrator and every subagent it spawns MUST produce all user-facing narration, questions, confirmations, summaries, reports, and artifact prose in that language. File names, git commit messages, commands, JSON keys, code, and technical identifiers stay in English. Persist `"locale": "<code>"` in `metadata.json` so the preference survives pause/resume. When spawning any subagent, append to its prompt: "Produce all user-facing prose in <language>. Keep code, commands, file names, and JSON keys in English."
 
 ---
 
