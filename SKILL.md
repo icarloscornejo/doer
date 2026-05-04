@@ -1137,27 +1137,57 @@ For each approved stage, in the order it appears in the current skill:
    - Narrate: *"Retroactive stage `<name>` returned `<verdict>`. Ticket reopened at Stage N. Run `/doer continue <TICKET-ID>` to proceed."*
    - Stop. Do NOT run the remaining retroactive stages — the dev needs to fix the earlier issue first.
 
-### Step 6: Finalize
+### Step 6: Finalize (commit-last pattern)
 
-If all approved retroactive stages completed without reopening:
+**CRITICAL ordering rule:** the final commit MUST be the last filesystem write of the `/doer verify` run. Do NOT write to `metadata.json` (or anywhere else) after the final commit. If anything needs to be persisted, it happens BEFORE the commit. After the commit: narration only.
 
-1. Update `metadata.json`:
-   ```json
-   "verify_runs": [
-     {
-       "verified_at": "<ISO8601>",
-       "stages_added_retroactively": ["runtime-verify", "..."],
-       "all_verdicts_approved": true
-     }
-   ]
+If all approved retroactive stages completed without reopening, execute these steps in strict order:
+
+1. **Flush all pending metadata writes.** Consolidate every deferred update that accumulated during Step 5 into a single write:
+   - Final `stages.<N>.completed_at` for each retroactive stage (if any stage deferred it)
+   - Final `stages.<N>.status = "complete"` and `retroactive_verdict` per stage
+   - Accumulated `agent_invocations` counters from Step 5
+   - The new `verify_runs` entry:
+     ```json
+     "verify_runs": [
+       {
+         "verified_at": "<ISO8601 — compute ONCE, use this same value below>",
+         "stages_added_retroactively": ["runtime-verify", "..."],
+         "all_verdicts_approved": true
+       }
+     ]
+     ```
+     Keep `verify_runs` as an array so multiple runs accumulate (append, do not overwrite).
+
+2. **Verify the working tree has changes** (defensive check):
+   ```bash
+   if git diff --quiet && git diff --cached --quiet; then
+     echo "No changes to commit — retroactive stages produced no persisted state."
+   fi
    ```
-   (Keep this as an array so multiple `verify` runs accumulate.)
-2. Commit if anything changed:
+
+3. **Single atomic commit** containing everything from Step 1:
    ```bash
    git add -A
    git commit -m "doer(<TICKET-ID>): retroactive verify — <comma-separated stage names>"
    ```
-3. Narrate: *"Verify complete. <N> stages added retroactively, all approved. Ticket <TICKET-ID> is up to date with the current skill."*
+
+4. **Verify nothing was left uncommitted** (defensive check for the bug this pattern prevents):
+   ```bash
+   if ! git diff --quiet || ! git diff --cached --quiet; then
+     echo "WARNING: Uncommitted changes remain after verify finalization. This should never happen."
+     git status --short
+   fi
+   ```
+   If the warning fires, something wrote to disk after Step 3. Investigate.
+
+5. **Narrate only — no more writes.** *"Verify complete. <N> stages added retroactively, all approved. Ticket <TICKET-ID> is up to date with the current skill."*
+
+**What the orchestrator MUST NOT do after Step 3:**
+- Do NOT update `current_stage` (the ticket is complete, stays complete)
+- Do NOT update performance tracking (`agent_invocations`, timing — those belong to the verify run itself, flush them in Step 1)
+- Do NOT write a final timestamp like `metadata.last_modified` (if you want such a field, write it in Step 1)
+- Do NOT emit lessons or anything else that writes to disk. Verify is not a ticket-creation path, it should not touch knowledge/ files.
 
 ### Edge cases
 
