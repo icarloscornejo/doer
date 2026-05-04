@@ -2,7 +2,7 @@
 
 **Ticket execution orchestrator for Claude Code.**
 
-Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops, narration you can pause at any moment.
+Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Ten sequential stages, delta-aware doer/reviewer loops, on-device runtime verification, narration you can pause at any moment.
 
 Scope stops before PR and deploy.
 
@@ -18,16 +18,18 @@ flowchart TD
     D --> E[5 Reflect]:::plain
     E --> F[6 Code Review]:::loop
     F --> G[7 Quality Gate]:::gate
-    G --> H[8 Docs Sync]:::plain
-    H --> I[9 Wrapup]:::final
+    G --> H[8 Runtime Verify]:::runtime
+    H --> I[9 Docs Sync]:::plain
+    I --> J[10 Wrapup]:::final
 
     classDef loop fill:#1e3a5f,stroke:#60a5fa,stroke-width:2px,color:#e0f2fe
     classDef gate fill:#78350f,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
     classDef final fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7
     classDef plain fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
+    classDef runtime fill:#4c1d95,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
 ```
 
-**Blue** = doer/reviewer loop (max 5 iterations) · **Amber** = validation gate · **Green** = wrapup (lessons captured) · **Slate** = single-pass stage
+**Blue** = doer/reviewer loop (max 5 iterations) · **Amber** = validation gate · **Purple** = on-device runtime verification with temporary debug logs · **Green** = wrapup (lessons captured) · **Slate** = single-pass stage
 
 Every stage ends with a commit on the feature branch, creating a trail of evidence that later agents can read with `git diff`.
 

@@ -69,7 +69,7 @@ All state lives under `./.doer/` in the current working directory (scoped to the
         ├── ac.md                   # Confirmed acceptance criteria (Stage 1 output)
         ├── plan.md                 # Implementation plan (Stage 2 output)
         ├── reflect.md              # Self-review notes (Stage 5 output)
-        ├── wrapup.md               # Captured lessons (Stage 9 output)
+        ├── wrapup.md               # Captured lessons (Stage 10 output)
         └── review/
             ├── plan-review-{iter}.md
             ├── tests-review-{iter}.md
@@ -126,15 +126,16 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
      "current_stage": 1,
      "created_at": "<ISO8601>",
      "stages": {
-       "1": {"name": "ac-confirm",    "status": "pending"},
-       "2": {"name": "plan",          "status": "pending", "loop": true},
-       "3": {"name": "tests",         "status": "pending", "loop": true},
-       "4": {"name": "code",          "status": "pending", "loop": true},
-       "5": {"name": "reflect",       "status": "pending"},
-       "6": {"name": "code-review",   "status": "pending", "loop": true},
-       "7": {"name": "quality-gate",  "status": "pending"},
-       "8": {"name": "docs-sync",     "status": "pending"},
-       "9": {"name": "wrapup",        "status": "pending"}
+       "1":  {"name": "ac-confirm",      "status": "pending"},
+       "2":  {"name": "plan",            "status": "pending", "loop": true},
+       "3":  {"name": "tests",           "status": "pending", "loop": true},
+       "4":  {"name": "code",            "status": "pending", "loop": true},
+       "5":  {"name": "reflect",         "status": "pending"},
+       "6":  {"name": "code-review",     "status": "pending", "loop": true},
+       "7":  {"name": "quality-gate",    "status": "pending"},
+       "8":  {"name": "runtime-verify",  "status": "pending"},
+       "9":  {"name": "docs-sync",       "status": "pending"},
+       "10": {"name": "wrapup",          "status": "pending"}
      },
      "blocking_conditions": [],
      "commits": []
@@ -212,7 +213,7 @@ If the user writes "pause", "stop", or "n" at any turn boundary:
 
 **Note for the user:** messages you type while the orchestrator is running a subagent queue up and are only read when that subagent returns. For immediate interruption, press `Esc`. The frequent turn boundaries above exist so you rarely need to.
 
-### Performance tracking (for the Stage 9 report)
+### Performance tracking (for the Stage 10 report)
 
 Every time the orchestrator calls the `Agent` tool, increment a counter in `metadata.json`:
 
@@ -714,7 +715,182 @@ git commit -m "doer(<TICKET-ID>): address code review"
 
 ---
 
-## Stage 8 — Docs Sync
+## Stage 8 — Runtime Verify (Live Debug Logs, Temporary)
+
+**Goal:** verify on-device/runtime behavior against the ACs by injecting dense temporary debug logs, having the dev exercise the feature, and analyzing the output together. Logs are NEVER kept in the final branch.
+
+**Skip conditions:** if the dev says "no runtime context" for this ticket (pure helper, config-only, docs-only, etc.), the orchestrator records `stages.8.status = "skipped"` with a reason and proceeds to Stage 9. Ask once at the start: *"Does this ticket produce runtime behavior worth exercising on device? [Y/n]"*. If `n`, skip.
+
+### Log format
+
+All temporary logs use the same shape for easy filtering:
+
+```
+println("DOER - <TICKET-ID> - <function/context> - <message or key=value>")
+```
+
+The prefix `DOER - <TICKET-ID>` is the unique tag. Nothing in the target codebase matches it, so cleanup at the end is a grep + remove with zero risk of collateral damage.
+
+### Step 1: Inject logs
+
+Invoke a general-purpose agent with:
+
+```
+You are the runtime-logger agent for ticket <TICKET-ID>.
+
+Read:
+- .doer/tickets/<TICKET-ID>/ac.md
+- .doer/tickets/<TICKET-ID>/plan.md
+- git diff <base-branch>..HEAD → the full diff for this ticket
+
+Scope of logging (file selection):
+1. Every file in the diff for this ticket.
+2. Every file that sits in the call path exercised by the ACs (dependencies,
+   shared helpers, repositories, view models, etc.). Follow imports and
+   call chains outward from the diff until you cover the full runtime flow
+   the dev will exercise. Stop at framework/SDK boundaries.
+
+What to log (in scope files):
+- Entry of every function/method involved in the AC flow (log arguments).
+- Every conditional branch: which branch was taken and why (key values).
+- Every meaningful state change: "set X to Y".
+- Every external boundary: API calls, DB reads/writes, IO, threads, coroutines.
+- Every exception catch (even if re-thrown or logged elsewhere).
+- Exit of every function (log return value or "void complete").
+
+Format — ALWAYS this exact shape:
+  println("DOER - <TICKET-ID> - <ClassName.fnName> - <message or key=value>")
+
+Rules:
+- Use println, NOT the app's logger. This is throwaway instrumentation,
+  we want it to stand out and be trivially removable.
+- Prefix `DOER - <TICKET-ID>` is MANDATORY on every log. No exceptions.
+- Do NOT modify business logic, only add log statements.
+- Do NOT remove or rewrite existing logs in the codebase.
+- After adding logs, run the build to make sure nothing broke syntactically.
+
+Write a summary to .doer/tickets/<TICKET-ID>/runtime-logs-added.md listing
+each file touched and a one-line reason.
+```
+
+### Step 2: Temporary commit
+
+Once the logger agent returns, commit the logs so they survive pause/resume and so the dev sees a clean working tree:
+
+```bash
+git add -A
+git commit -m "doer(<TICKET-ID>): [TEMP] runtime debug logs — DO NOT MERGE"
+```
+
+Record the commit SHA in `metadata.json → stages.8.temp_log_commit_sha`. This SHA is what the cleanup step will revert.
+
+### Step 3: Hand off to the dev
+
+Narrate to the user:
+
+```
+Runtime logs injected across N files. Temporary commit: <sha>.
+
+Now build and run the app:
+  <repo-specific build/install command the orchestrator detected>
+
+Exercise each AC manually. Logs will appear in logcat / console with the
+prefix "DOER - <TICKET-ID>". Filter with:
+  <repo-specific log filter command, e.g. `adb logcat | grep "DOER - <TICKET-ID>"`>
+
+When you've exercised all ACs, paste the filtered log output here (or tell me
+where to read it from) and say "ready" to analyze.
+```
+
+If the orchestrator cannot detect the build command, ask the dev once and persist it in `metadata.json → runtime_build_command` for future tickets.
+
+### Step 4: Analyze the logs
+
+When the dev provides the log output, invoke an analyzer agent:
+
+```
+You are the runtime-log analyzer for ticket <TICKET-ID>.
+
+Read:
+- .doer/tickets/<TICKET-ID>/ac.md
+- .doer/tickets/<TICKET-ID>/plan.md
+- The log excerpt provided by the dev (in .doer/tickets/<TICKET-ID>/runtime-log-output.txt)
+
+For each AC, determine from the logs:
+- Was the code path for this AC actually hit? (yes / no)
+- Did the values at each decision point match the expected behavior?
+- Were there unexpected errors, exceptions, or retries?
+- Did any branch NOT get exercised that should have been?
+
+Output findings in .doer/tickets/<TICKET-ID>/runtime-analysis.md with sections:
+  ## AC-by-AC verdict
+    AC-1: PASS | FAIL | NOT_EXERCISED — <evidence from logs>
+  ## Anomalies
+    - <anomaly, which log line, why it matters>
+  ## Recommended next action
+    One of:
+      - APPROVE — all ACs pass, proceed to cleanup.
+      - RETURN_TO_STAGE_4 — defects in implementation, <list>.
+      - RETURN_TO_STAGE_3 — tests did not cover behavior that broke, <list>.
+      - RETURN_TO_STAGE_2 — plan missed a flow, <list>.
+      - NEED_MORE_DATA — logs insufficient, <what to exercise>.
+```
+
+Present the `runtime-analysis.md` to the dev and ask:
+
+```
+Analyzer recommends: <action>.
+<short summary>
+
+Apply this recommendation? [Y / explain / override]
+```
+
+Branches:
+- **APPROVE** → proceed to Step 5 (cleanup).
+- **RETURN_TO_STAGE_N** → cleanup logs first (Step 5), then jump back to stage N with the findings pre-loaded as BLOCKERs for the doer.
+- **NEED_MORE_DATA** → keep logs, loop back to Step 3 (dev exercises more, pastes more logs).
+- **Dev overrides** → honor the dev's choice, record the override reason.
+
+### Step 5: Cleanup (no logs reach the final branch)
+
+Strategy: `git revert` the temporary commit so the logs are removed AND the history records that they existed.
+
+```bash
+TEMP_SHA=<stages.8.temp_log_commit_sha>
+git revert --no-edit $TEMP_SHA
+git commit --amend -m "doer(<TICKET-ID>): remove runtime debug logs"
+```
+
+Verify cleanup:
+
+```bash
+if git grep -l "DOER - <TICKET-ID>" -- .; then
+  echo "ERROR: Residual DOER logs found. Manual cleanup required."
+  exit 1
+fi
+```
+
+If residuals are found (shouldn't happen, but defensive), invoke the logger agent once more with: *"Remove every line matching `DOER - <TICKET-ID>`. Do not touch anything else."*
+
+Narrate to user: *"Runtime logs removed. Final commit: <sha>. Proceeding to docs sync."*
+
+### Step 6: Record outcome
+
+Update `metadata.json → stages.8`:
+```json
+{
+  "name": "runtime-verify",
+  "status": "complete",
+  "temp_log_commit_sha": "<sha>",
+  "revert_commit_sha": "<sha>",
+  "ac_verdicts": {"AC-1": "PASS", "AC-2": "PASS"},
+  "returns_triggered": []  // or ["stage-4"] if the loop returned
+}
+```
+
+---
+
+## Stage 9 — Docs Sync
 
 **Goal:** update user-facing documentation if the change affects it.
 
@@ -732,7 +908,7 @@ git commit -m "doer(<TICKET-ID>): address code review"
 
 ---
 
-## Stage 9 — Wrapup (Lessons & Assumptions)
+## Stage 10 — Wrapup (Lessons & Assumptions)
 
 **Goal:** close the loop. Capture lessons. Validate assumptions.
 
