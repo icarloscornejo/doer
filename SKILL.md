@@ -257,21 +257,36 @@ Stages 2, 3, 4, and 6 use this pattern. Max iterations: **5**.
 
 ### Findings severity
 
-Reviewer returns findings in three buckets:
+Reviewer returns findings in four buckets. The distinction between AUTO_FIX and SUGGESTION is critical — it determines whether the orchestrator applies the change automatically or just logs it.
 
-- **BLOCKER** — must be fixed before advancing. Loop continues.
-- **SUGGESTION** — optional improvement. Shown to user, does not block.
+- **BLOCKER** — must be fixed before advancing. Loop continues until resolved.
+  Examples: failing tests, missing AC coverage, security issue, broken build, missing error handling for a known error path.
+
+- **AUTO_FIX** — obvious, mechanical, low-risk fix with no design trade-off. There is one reasonable way to do it; nothing to decide. Applied automatically without asking the user.
+  Examples: reference to a deleted/renamed function, unused import, test name that no longer matches the test body after a rename, typo in a string literal or comment, dead variable, stale file path in a comment, missing type hint that is trivially inferable.
+
+- **SUGGESTION** — genuinely optional improvement that involves a design choice, taste, or trade-off. Logged for user review, never applied automatically, never blocks.
+  Examples: "consider extracting this helper", "could use a map instead of a chain of ifs", "this name is less clear than X", "you might refactor this into a class", "consider adding caching here".
+
 - **INFO** — observational, no action needed.
+  Examples: "this file has grown to 500 LOC", "this pattern is used in 3 other places".
 
-Convergence = zero BLOCKERs remaining.
+**The test for AUTO_FIX vs SUGGESTION:** *"Is there anything to decide?"*
+- No → AUTO_FIX
+- Yes (trade-off, preference, design judgment) → SUGGESTION
+
+If in doubt, classify as SUGGESTION. The reviewer should be conservative with AUTO_FIX — when applied, the orchestrator does NOT ask for user approval.
+
+Convergence = zero BLOCKERs remaining. AUTO_FIXes do NOT block convergence; they are applied in the same iteration before declaring convergence.
 
 ### Iteration 1 (clean-slate)
 
 1. Invoke doer with the stage input.
 2. Doer writes its artifact AND a `changelog.md` describing what it produced and why.
-3. Invoke reviewer with the artifact. Reviewer produces findings categorized BLOCKER/SUGGESTION/INFO.
-4. If zero BLOCKERs → converged. Exit loop. Log any SUGGESTIONs to the review file for later reference, narrate one line ("Converged with N SUGGESTIONs logged"), and auto-proceed. Do NOT ask the user to apply SUGGESTIONs inline.
-5. If BLOCKERs > 0 → proceed to Iteration 2.
+3. Invoke reviewer with the artifact. Reviewer produces findings categorized BLOCKER / AUTO_FIX / SUGGESTION / INFO.
+4. **Apply AUTO_FIXes.** If the reviewer returned any AUTO_FIX items, the orchestrator invokes a short "fixer" pass (same agent as the doer, or a general-purpose agent) with the AUTO_FIX list and instructions: *"Apply each of these mechanically. No design changes. Append to changelog.md as `AutoFix #<id>: <what you changed>`."* This happens BEFORE checking for convergence.
+5. If zero BLOCKERs → converged. Exit loop. Log SUGGESTIONs and INFO to the review file, narrate one line ("Convergió. N AUTO_FIXes aplicados. M SUGGESTIONs registradas."), and auto-proceed.
+6. If BLOCKERs > 0 → proceed to Iteration 2.
 
 ### Iteration 2+ (delta-aware)
 
@@ -284,17 +299,20 @@ Convergence = zero BLOCKERs remaining.
    - Updated artifact
    - Prior findings list
    - The new `changelog.md`
-   - Instruction: "For each prior BLOCKER, mark it RESOLVED or STILL_OPEN. Scan areas the doer touched (per changelog) for new issues. Do NOT re-analyze untouched areas."
+   - Instruction: "For each prior BLOCKER, mark it RESOLVED or STILL_OPEN. Scan areas the doer touched (per changelog) for new issues. Do NOT re-analyze untouched areas. Classify findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO."
 4. Reviewer output:
    ```json
    {
      "prior_blockers_resolved": ["id-1", "id-3"],
      "prior_blockers_still_open": ["id-2"],
      "new_blockers": [...],
-     "suggestions": [...]
+     "auto_fixes": [...],
+     "suggestions": [...],
+     "info": [...]
    }
    ```
-5. Remaining BLOCKERs = still_open + new. If zero → converged. Otherwise → next iteration.
+5. Apply any AUTO_FIXes (same as iteration 1 step 4).
+6. Remaining BLOCKERs = still_open + new. If zero → converged. Otherwise → next iteration.
 
 ### Max iterations (5) reached without convergence
 
@@ -489,7 +507,15 @@ Judge the plan against:
 - Risk awareness: are real risks identified? Any hand-wavy "should work" steps?
 - New dependencies: any new libraries proposed without justification?
 
-Output findings as BLOCKER / SUGGESTION / INFO.
+Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO.
+
+Classification rules (apply strictly):
+- BLOCKER: broken functionality, failing test, missing AC coverage, security issue, missing error handling for a known failure path.
+- AUTO_FIX: obvious, mechanical, low-risk — one reasonable way to fix, nothing to decide. Examples: reference to deleted/renamed function, unused import, test name that no longer matches body after rename, typo, dead variable, stale path in comment.
+- SUGGESTION: involves a design choice, trade-off, or taste. Examples: "consider extracting", "could use X pattern instead", "name could be clearer".
+- INFO: observation, no action.
+
+Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no → AUTO_FIX. If yes → SUGGESTION. Be conservative — when in doubt, use SUGGESTION.
 ```
 
 Run the doer/reviewer loop until convergence. Commit:
@@ -529,7 +555,15 @@ Judge:
 - Are edge cases from the plan covered?
 - Any brittle assertions or over-mocking?
 
-Output findings as BLOCKER / SUGGESTION / INFO.
+Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO.
+
+Classification rules (apply strictly):
+- BLOCKER: broken functionality, failing test, missing AC coverage, security issue, missing error handling for a known failure path.
+- AUTO_FIX: obvious, mechanical, low-risk — one reasonable way to fix, nothing to decide. Examples: reference to deleted/renamed function, unused import, test name that no longer matches body after rename, typo, dead variable, stale path in comment.
+- SUGGESTION: involves a design choice, trade-off, or taste. Examples: "consider extracting", "could use X pattern instead", "name could be clearer".
+- INFO: observation, no action.
+
+Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no → AUTO_FIX. If yes → SUGGESTION. Be conservative — when in doubt, use SUGGESTION.
 ```
 
 Run loop until convergence. Commit:
@@ -577,7 +611,15 @@ Review scope (in priority order):
 
 Focus on the diff. Do NOT re-review files that were not touched.
 
-Output findings as BLOCKER / SUGGESTION / INFO.
+Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO.
+
+Classification rules (apply strictly):
+- BLOCKER: broken functionality, failing test, missing AC coverage, security issue, missing error handling for a known failure path.
+- AUTO_FIX: obvious, mechanical, low-risk — one reasonable way to fix, nothing to decide. Examples: reference to deleted/renamed function, unused import, test name that no longer matches body after rename, typo, dead variable, stale path in comment.
+- SUGGESTION: involves a design choice, trade-off, or taste. Examples: "consider extracting", "could use X pattern instead", "name could be clearer".
+- INFO: observation, no action.
+
+Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no → AUTO_FIX. If yes → SUGGESTION. Be conservative — when in doubt, use SUGGESTION.
 ```
 
 Run loop until convergence. Commit:
