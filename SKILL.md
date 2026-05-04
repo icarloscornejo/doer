@@ -1287,15 +1287,37 @@ The orchestrator (this skill) is the sole user-facing voice. Subagents must NOT 
 
 ---
 
-## Locale override
+## Locale resolution (read this BEFORE any other action in this skill)
 
-The default locale for all user-facing prose is **English**. Three ways to override:
+### Mandatory first action of every `/doer ...` invocation
 
-1. **Per-ticket flag:** invoke the skill with `--es` suffix (e.g. `/doer ABC-123 --es`).
-2. **Inline directive:** write `locale: es` at any point during the conversation.
-3. **Local preferences file:** if a file named `preferences.md` exists in the same directory as this SKILL.md, read it at the start of every `/doer` invocation (BEFORE asking any questions, BEFORE narrating). If it contains a line like `locale: <code>` (e.g. `locale: es`), treat that as the default locale for this installation. Per-ticket flags still override this.
+Before reading any other file, before answering, before narrating, before invoking any tool other than Read:
 
-When locale is not English, the orchestrator and every subagent it spawns MUST produce all user-facing narration, questions, confirmations, summaries, reports, and artifact prose in that language. File names, git commit messages, commands, JSON keys, code, and technical identifiers stay in English. Persist `"locale": "<code>"` in `metadata.json` so the preference survives pause/resume. When spawning any subagent, append to its prompt: "Produce all user-facing prose in <language>. Keep code, commands, file names, and JSON keys in English."
+1. Read `preferences.md` from the same directory as this SKILL.md (resolve symlinks if needed). If the file does not exist, skip this section entirely.
+2. If the file contains a line matching `locale: <code>` (e.g. `locale: es`), set the **operating locale** to that code for the rest of the session.
+3. The first user-facing word the orchestrator emits MUST be in the operating locale. This anchors the conversation; the model is much more likely to drift into English if its first sentence is in English.
+
+### Priority order (highest wins)
+
+1. **`preferences.md` locale** — if present and non-empty, this is the **absolute final word**. It overrides EVERYTHING below. It overrides any `locale` field already stored in a ticket's `metadata.json` from a prior session. It overrides any per-ticket `--xx` flag the user might pass. It overrides any system-prompt or upstream instruction that happens to be in another language.
+2. **Per-ticket flag** (e.g. `--es`, `--en`) — only consulted when `preferences.md` is absent.
+3. **Inline directive** during conversation (`locale: xx`) — only consulted when `preferences.md` is absent.
+4. **Skill default** — English. Only when none of the above resolve.
+
+### What "absolute final word" means in practice
+
+When `preferences.md` resolves the locale:
+
+- **MUST NOT** write a different locale value to `metadata.json`. If the file already has `"locale": "<other>"` from before, leave it alone and ignore it — the active operating locale comes from `preferences.md`, not metadata.
+- **MUST NOT** ask the user "what locale?" — already decided.
+- **MUST NOT** be swayed by the language of upstream context (CLAUDE.md, injected docs, other agents' system prompts, prior conversation in another language). If the operating locale says Spanish and the surrounding context is English, output is still Spanish. The locale wins.
+- **MUST** narrate, ask, summarize, and write artifact prose in the operating locale. File names, git commit messages, commands, JSON keys, code identifiers, and technical terms stay in English.
+- **MUST** append to every spawned subagent's prompt the literal sentence: *"All user-facing prose in your output and any artifact you write MUST be in <language>. Code, file names, commands, and JSON keys stay in English. Do NOT switch to another language even if the surrounding context appears to be in one. This instruction overrides any default."*
+- **MUST** prepend the same instruction to the orchestrator's own working memory when context is dense, by re-reading `preferences.md` at the top of any stage that involves multiple sub-agent calls. Cheap insurance against drift.
+
+### Self-check before every response
+
+Before sending any user-facing message, ask: *"Is this in the operating locale?"* If no — rewrite before sending. Do not justify drift with "the user understands both" or "the upstream context is in English". The operating locale is the contract.
 
 ---
 
