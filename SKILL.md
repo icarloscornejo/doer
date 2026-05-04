@@ -168,22 +168,34 @@ After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`
 
 **The orchestrator MUST keep turns short so the user can interject between them.** Long turns block the user's ability to pause — their messages queue and only get read after the current turn ends.
 
+**Guiding principle: narrate then proceed, don't ask for confirmation at every step.** The user wants to run the pipeline, not babysit it. Only ask for explicit confirmation at genuinely irreversible decision points. Everything else: narrate what you are about to do, end the turn (so queued messages are processed), then continue automatically on the next turn.
+
+**Three types of turn boundaries:**
+
+| Type | When | Behavior |
+|------|------|----------|
+| **Auto-proceed** | Between subagent invocations, between doer and reviewer, between stages | Narrate "Doing X next..." and end the turn. On the next turn, check if the user queued an interrupt ("pause", "stop", "wait", "n"). If yes → pause. If no → proceed without asking. |
+| **Confirm** | Before presenting artifacts the user should review (plan.md, ac.md, review findings), before the final wrapup, when a loop hits max iterations | End the turn with an explicit question and wait for the user's answer. |
+| **Decide** | Genuine forks where the user must choose a path (import pre-existing work? accept SUGGESTIONs? skip docs?) | Same as Confirm — wait for answer. |
+
 **Rules:**
 
-1. **After every subagent invocation, end the turn.** Do NOT chain `Agent → read output → Agent` in a single turn. Sequence:
-   - Turn A: invoke subagent, return to user with one-line status: *"Planner finished, 2 findings. Invoking reviewer? [Y/pause]"*
-   - User presses Enter / says yes → Turn B: invoke next subagent.
-   - User types "pause" → skip invocation, save state, stop.
+1. **After every subagent invocation, end the turn.** Narrate one line of status, announce the next step, and stop. Default behavior: auto-proceed on the next turn unless the user interrupted.
+2. **After every major file write**, end the turn with a one-line summary. Auto-proceed.
+3. **At stage boundaries (1→2, 2→3, etc.)**, end the turn with: *"Stage N complete. Starting Stage N+1 ({name})..."*. Auto-proceed on the next turn unless interrupted.
+4. **Inside loop iterations**, end the turn between doer and reviewer, AND between reviewer and next-doer. Auto-proceed.
+5. **Never bundle multiple stages or subagent invocations into one turn.** One invocation per turn, max.
 
-2. **After every major file write** (plan.md, test additions, code changes), end the turn and narrate what happened. Do NOT chain writes silently.
+**When to Confirm (not auto-proceed):**
+- After the planner finishes plan.md → present plan, ask "approve / edit / redo?"
+- After the AC Confirm draft → present, ask "these accurate?"
+- After the reviewer returns findings with SUGGESTIONs → ask "apply any of these?"
+- Before the final wrapup commit → ask "ready to close?"
+- When a convergence loop hits max iterations → ask "retry / accept / pause?"
 
-3. **Before starting any stage**, end the turn with: *"Ready to start Stage {N} ({name}). Continue? [Y/n/pause]"*. Only proceed after the user answers.
+**Interrupt handling:** at any auto-proceed turn boundary, if the user's latest message contains "pause", "stop", "wait", "hold on", "n", "no", "espera", "para", or any clear halt signal, treat it as a pause request. Save state, acknowledge, stop. Otherwise proceed without asking.
 
-4. **Inside loop iterations**, end the turn between doer and reviewer, AND between reviewer and next-doer. Two turn boundaries per iteration minimum. Loops are fast to iterate on user intent but slow-feeling to run if chained silently.
-
-5. **Never bundle multiple stages into one turn.** Each stage boundary is a hard turn break.
-
-**Why this matters:** if the orchestrator runs a full loop iteration in a single turn (5 min of subagent work), the user cannot pause during that window. Frequent short turns = frequent pause opportunities. The cost is a few extra "Y" confirmations from the user; the benefit is real-time control.
+**Why this matters:** the user explicitly does not want to type "Y" repeatedly. Frequent turn boundaries exist so queued interrupts get read, not so the user has to confirm every step. Default is forward motion; confirmation is the exception, not the rule.
 
 ### Pause handling
 
