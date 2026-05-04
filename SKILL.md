@@ -32,18 +32,16 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 4. **Bounded loops** — Max 5 iterations per doer/reviewer loop. If not converged, the user decides.
 5. **Lessons accumulate** — Every ticket captures what went well and what did not. Future tickets read those lessons before planning.
 6. **No hidden state** — Everything the orchestrator knows lives in `./.doer/` on disk. Context compression never loses progress.
-7. **All commits use `git commit --no-verify`, NEVER plain `git commit`.** This is a hard rule.
-   - Why: the orchestrator runs in **developer mode**. Pre-commit hooks (linters, formatters, fast tests) interrupt flow mid-stage without adding value at that point — the agents may produce intermediate states that fail a hook but are correct for the stage. The dev runs the real pre-commit checks **manually before opening the PR**, after reviewing and reorganizing the commit history.
-   - The orchestrator MUST execute every commit as `git commit --no-verify -m "..."`. Same for amends: `git commit --no-verify --amend ...`.
-   - The code blocks throughout this SKILL show `git commit --no-verify` explicitly so it is portable to any machine (no aliases required) and visible to anyone reading the skill.
-   - **The dev's responsibility before PR**: run pre-commit hooks (`pre-commit run --all-files`, `npm run lint`, `./gradlew detektAll`, etc.), squash/reorder commits as desired, then push. The orchestrator does not push.
+7. **All commits use `git commit --no-verify`.** Hard rule.
+   - The orchestrator runs in developer mode — pre-commit hooks (linters, formatters, fast tests) interrupt flow mid-stage without value (agents may produce intermediate states that fail a hook but are correct for the stage).
+   - Every commit and amend in the SKILL shows `--no-verify` explicitly (portable, no aliases needed).
+   - **Dev runs real checks manually before PR** (`pre-commit run`, lint, full tests, etc.), then squashes/reorders and pushes. Orchestrator does not push.
 
-8. **`.doer/` NEVER reaches the team's git history.** This is a hard, non-negotiable rule.
-   - The intake step ensures `.doer/` is added to `.git/info/exclude` (per-clone gitignore, never committed). The team has zero visibility into doer's existence in the repo.
-   - Commits made by the orchestrator MUST NOT include any path under `.doer/`. Use `git add <specific-code-paths>` or `git add -A` (which respects the exclude). Do NOT use `git add .doer/...` explicitly — that bypasses the ignore.
-   - If a stage's only output is `.doer/` artifacts (Stage 1 AC, Stage 2 Plan, Stage 5 Reflect, Stage 10 Wrapup), SKIP the commit step entirely. The artifacts live on disk for the orchestrator and subagents to read; they don't belong in the PR.
-   - Stages that DO produce real code (Stage 3 Tests, Stage 4 Code, Stage 6 Code Review fixes, Stage 8 Runtime Verify temp logs, Stage 9 Docs Sync) commit the code only.
-   - The runtime-verify temp commit + revert dance still works because it modifies real source files, not `.doer/`.
+8. **`.doer/` NEVER reaches the team's git history.** Non-negotiable.
+   - Intake adds `.doer/` to `.git/info/exclude` (per-clone, never committed) — team sees nothing.
+   - Commits MUST NOT include paths under `.doer/`. Use `git add <code-paths>` or `git add -A` (respects exclude). NEVER `git add .doer/...` (that bypasses the ignore).
+   - Stages whose only output is `.doer/` (1 AC, 2 Plan, 5 Reflect, 10 Wrapup) SKIP the commit entirely. Stages with real code (3 Tests, 4 Code, 6 Review, 8 Runtime, 9 Docs) commit code only.
+   - Stage 8 temp commit + revert still works because it touches real source files, not `.doer/`.
 
 ---
 
@@ -175,397 +173,288 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
 
 ## Workspace Guard
 
-A short, idempotent check that ensures `.doer/` will never be committed in this clone. The Guard MUST run at the very start of every orchestrator entry point — not just intake. Specifically:
+Idempotent check that prevents `.doer/` from ever being committed in this clone. MUST run at every entry point: intake (after creating branch), `/doer continue`, `/doer verify`, any first action after context reset.
 
-- At intake (right after creating the feature branch, see step 6 above)
-- At the start of `/doer continue <TICKET-ID>` (before resuming any stage)
-- At the start of `/doer verify <TICKET-ID>` (before running retroactive stages)
-- At the very first action of any single-stage execution after a context reset
+### Steps
 
-Skipping the Guard for tickets already in progress is what caused old tickets to commit `.doer/` files. The Guard fixes that retroactively the next time those tickets are touched.
+1. **Idempotency check.** If `metadata.workspace_guard == "ok"` AND `.git/info/exclude` contains `.doer/` → skip rest silently.
 
-### Guard steps
-
-1. **Cheap check — already done?** Read the active ticket's `metadata.json` (if any). If it has `"workspace_guard": "ok"` AND `.git/info/exclude` contains `.doer/`, the Guard is satisfied — skip the rest, proceed silently. This makes the Guard a near-zero-cost no-op on the common path.
-
-2. **Ensure `.git/info/exclude` contains `.doer/`:**
+2. **Ensure exclude contains `.doer/`:**
    ```bash
    mkdir -p .git/info
    [ -f .git/info/exclude ] || touch .git/info/exclude
-   if ! grep -qxF '.doer/' .git/info/exclude; then
-     echo '.doer/' >> .git/info/exclude
-   fi
+   grep -qxF '.doer/' .git/info/exclude || echo '.doer/' >> .git/info/exclude
    ```
-   `.git/info/exclude` is a per-clone, never-committed gitignore. The team has zero visibility into doer's existence in this repo.
+   `.git/info/exclude` is per-clone, never committed — team sees nothing.
 
-3. **Verify the rule actually takes effect:**
+3. **Verify it works:**
    ```bash
    mkdir -p .doer && touch .doer/.guard-test
    STATUS=$(git status --porcelain .doer/.guard-test 2>/dev/null)
    rm .doer/.guard-test
    ```
-   `STATUS` MUST be empty. If it shows the file as untracked, the exclude rule did not take effect — investigate (maybe the user's global gitignore overrides, or there's a `.gitignore` rule un-ignoring `.doer/`). Stop and report.
+   `STATUS` MUST be empty. If not, investigate (global gitignore override, repo `.gitignore` un-ignoring `.doer/`). Stop and report.
 
-4. **Detect if `.doer/` is already tracked** (from prior tickets that ran before this rule existed):
-   ```bash
-   TRACKED=$(git ls-files .doer/ 2>/dev/null | head -1)
+4. **Detect already-tracked `.doer/`:** `TRACKED=$(git ls-files .doer/ 2>/dev/null | head -1)`. If non-empty, ask the user **once per ticket**:
    ```
-   If `TRACKED` is non-empty, surface this to the user **once per ticket** (the Guard's idempotency flag prevents repeated prompts):
-
+   ⚠ .doer/ is currently tracked. Options to untrack:
+   1) Commit `git rm -r --cached .doer/` on this branch (one extra commit in PR)
+   2) Skip — keep tracking, clean manually later
+   3) Untrack silently (stage but don't commit)
    ```
-   ⚠ .doer/ is currently tracked in this repo. Some files may already be in
-   committed history. To prevent NEW commits from including .doer/ files
-   from now on, I can untrack them with `git rm -r --cached .doer/` (this
-   keeps the files on disk but removes them from the index).
+   Default to **3** if no response.
 
-   This change has to be committed somewhere — your options:
-   1) Commit it on this feature branch as part of the ticket (one extra
-      "remove .doer/ from index" commit appears in the PR).
-   2) Skip for now; keep tracking. .doer/ files will continue to land in
-      commits until you clean it manually later.
-   3) Untrack silently (stage the change but don't commit). You decide
-      when/whether to commit later.
+5. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket — next ticket-scoped invocation sets it.)
 
-   Which? [1/2/3]
-   ```
-
-   Default to **option 3** if the user does not respond — least invasive.
-
-5. **Mark Guard as satisfied** for this ticket:
-   - If a ticket is active (intake just ran, or `continue`/`verify` was invoked with a `<TICKET-ID>`), write `"workspace_guard": "ok"` to that ticket's `metadata.json`. This is one of the rare metadata writes that the orchestrator may make outside a stage's commit-flush cycle — keep it small, single-key.
-   - If no ticket is active (e.g. the Guard ran during `/doer list`), do nothing extra; the next ticket-scoped invocation will set the flag.
-
-### When the Guard runs and the user is mid-stage
-
-If the Guard surfaces the "tracked" warning while the user is in the middle of, say, Stage 6, it means a previous version of the orchestrator already committed `.doer/` files to the feature branch. Those commits are already there; the Guard cannot rewrite them. What it CAN do is prevent new commits from making it worse. The user is told once, picks an option, and the ticket continues from where it was paused.
-
-For deep cleanup of historical `.doer/` content from the feature branch, that is a separate manual task (interactive rebase, filter-repo) — out of scope for the Guard.
+For deep cleanup of historical `.doer/` content from earlier commits on the feature branch, use `/doer cleanup-history <TICKET-ID>` — out of scope for the Guard.
 
 ---
 
 ## Narration Protocol
 
-Before each stage, narrate: "Starting Stage {N} — {name}. {one-sentence goal}." and write `stages.<N>.started_at = <ISO8601>` in `metadata.json`.
+**Per-stage narration:**
+- Before: `"Starting Stage {N} — {name}. {one-sentence goal}."` + write `stages.<N>.started_at`.
+- After: write `stages.<N>.completed_at` + `"Stage {N} complete. Committed as {sha}. Continue to Stage {N+1}? [Y/n/pause]"`.
+- Inside loop: `"Iteration {i}/{max}: invoking {agent}... agent returned {status}, {findings} findings ({blockers} blockers)."`
 
-Inside a doer/reviewer loop, narrate: "Iteration {i} of {max}: invoking {agent}... [wait] agent returned {status}, {total_findings} findings ({blockers} blockers)."
+### Turn boundaries — ABSOLUTE rules
 
-After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`, then narrate: "Stage {N} complete. Committed as `{sha}`. Continue to Stage {N+1}? [Y/n/pause]"
+Default behavior is **auto-proceed** (narrate next step, end turn, continue on next turn unless user interrupted). Confirmation is the exception.
 
-### Pause windows (critical for user control)
+| Boundary | Behavior |
+|----------|----------|
+| Auto-proceed | After every subagent return, between doer↔reviewer, between stages, after major file writes |
+| Confirm (wait) | Plan/AC drafts presented, before final wrapup commit, loop hit max iterations |
+| Decide (wait) | Pre-existing-work import, skip docs, RETURN_TO_STAGE_N |
 
-**The orchestrator MUST keep turns short so the user can interject between them.** Long turns block the user's ability to pause — their messages queue and only get read after the current turn ends.
+**MUST rules (no efficiency exceptions):**
 
-**Guiding principle: narrate then proceed, don't ask for confirmation at every step.** The user wants to run the pipeline, not babysit it. Only ask for explicit confirmation at genuinely irreversible decision points. Everything else: narrate what you are about to do, end the turn (so queued messages are processed), then continue automatically on the next turn.
+1. End the turn after every Agent tool invocation. One-line status + next-step announce, then STOP.
+2. **Never invoke Agent twice in one turn.** If already called once this turn, STOP — the next call is a new turn.
+   - Wrong: `Agent(planner) → Agent(reviewer)` in same turn (FORBIDDEN)
+   - Right: `Agent(planner) → narrate → END TURN` → next turn: `Agent(reviewer) → narrate → END TURN`
+3. End the turn after every Write/Edit to a meaningful artifact.
+4. End the turn at every stage boundary.
+5. End the turn between doer/reviewer and reviewer/next-doer (2+ turn breaks per loop iteration).
+6. Never bundle multiple stages in one turn.
 
-**Three types of turn boundaries:**
+**Self-check before every response:** *"Did I call Agent more than once?"* If yes — STOP, narrate what was done, do not bundle more work.
 
-| Type | When | Behavior |
-|------|------|----------|
-| **Auto-proceed** | Between subagent invocations, between doer and reviewer, between stages | Narrate "Doing X next..." and end the turn. On the next turn, check if the user queued an interrupt ("pause", "stop", "wait", "n"). If yes → pause. If no → proceed without asking. |
-| **Confirm** | Before presenting artifacts the user should review (plan.md, ac.md, review findings), before the final wrapup, when a loop hits max iterations | End the turn with an explicit question and wait for the user's answer. |
-| **Decide** | Genuine forks where the user must choose a path (import pre-existing work? skip docs?) | Same as Confirm — wait for answer. |
+### SUGGESTIONs never pause
 
-**Rules — IMPERATIVE, NOT SUGGESTIONS. The orchestrator MUST obey every rule on every turn. There is no "efficiency exception".**
+Zero BLOCKERs = converged. SUGGESTIONs are logged to `review/{stage}-review-{iter}.md` and the orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds. Do NOT ask the user whether to apply them.
 
-1. **MUST end the turn after every Agent tool invocation.** As soon as a subagent returns, narrate one line of status + announce the next step, then STOP the turn. The next turn auto-proceeds unless the user interrupted.
+### Interrupt detection
 
-2. **MUST NOT invoke Agent twice in the same turn.** If you have already called the Agent tool once in this turn, STOP. Any further Agent call belongs to a new turn. This rule is absolute.
-   - Wrong: `Agent(planner) → [planner returns] → Agent(reviewer) → narrate` (one turn, two Agent calls — FORBIDDEN)
-   - Right: `Agent(planner) → [planner returns] → narrate "Planner done, invoking reviewer next" → END TURN` → next turn: `Agent(reviewer) → [reviewer returns] → narrate → END TURN`
+At any auto-proceed boundary, if the user's latest message contains `pause`, `stop`, `wait`, `hold on`, `n`, `no`, `espera`, `para`, or any clear halt signal → treat as pause request: persist `status: "paused"` + `paused_at` to metadata, acknowledge, stop. Otherwise proceed.
 
-3. **MUST end the turn after every Write/Edit to a meaningful artifact** (plan.md, ac.md, tests, code, review files, changelogs). One-line summary, then stop.
+### Pause persistence
 
-4. **MUST end the turn at every stage boundary.** Narrate "Stage N complete. Starting Stage N+1 ({name})..." and STOP. Auto-proceed on the next turn unless interrupted.
+On pause: write `metadata.status = "paused"`, `paused_at = <ISO8601>`. Reply with the resume command (`/doer continue <TICKET-ID>`). Stop.
 
-5. **MUST end the turn at every loop iteration boundary.** Between doer and reviewer: end the turn. Between reviewer and next-doer: end the turn. Two turn breaks minimum per loop iteration.
+For immediate interruption mid-subagent the user can press `Esc` (CLI-level). Frequent turn boundaries minimize the need.
 
-6. **MUST NOT bundle multiple stages into one turn under any circumstances.**
+### Performance counters (consumed by Stage 10 report)
 
-**Self-check before every response:** before finalizing a turn, ask yourself *"Did I call Agent more than once in this turn?"* If yes, that is a bug — the extra Agent calls belonged to future turns. Narrate what you actually did so the user sees the state, and STOP. Do not "fix it" by bundling more work.
-
-**Why these rules are absolute:** when the orchestrator chains subagent invocations silently within a single turn, the user loses two things — visibility (no narration between steps) and control (cannot interrupt between steps). Both are core guarantees of this skill. Chaining to "feel faster" breaks the skill's contract.
-
-**When to Confirm (not auto-proceed):**
-- After the planner finishes plan.md → present plan, ask "approve / edit / redo?"
-- After the AC Confirm draft → present, ask "these accurate?"
-- Before the final wrapup commit → ask "ready to close?"
-- When a convergence loop hits max iterations → ask "retry / accept / pause?"
-
-**SUGGESTIONs are NEVER a reason to pause.** When a reviewer returns findings with only SUGGESTIONs (zero BLOCKERs), the loop has converged. Do NOT ask the user whether to apply SUGGESTIONs. Instead:
-1. Record all SUGGESTIONs in the review file (`review/{stage}-review-{iter}.md`) for the user's later reference.
-2. Narrate one line at the turn boundary: *"Converged with N SUGGESTIONs logged in review/{stage}-review-{iter}.md. Continuing to next stage."*
-3. Auto-proceed without waiting for an answer.
-
-The user can read the review file anytime and manually apply suggestions outside the pipeline. The pipeline's job is forward motion; optional improvements are optional.
-
-**Interrupt handling:** at any auto-proceed turn boundary, if the user's latest message contains "pause", "stop", "wait", "hold on", "n", "no", "espera", "para", or any clear halt signal, treat it as a pause request. Save state, acknowledge, stop. Otherwise proceed without asking.
-
-**Why this matters:** the user explicitly does not want to type "Y" repeatedly. Frequent turn boundaries exist so queued interrupts get read, not so the user has to confirm every step. Default is forward motion; confirmation is the exception, not the rule.
-
-### Pause handling
-
-If the user writes "pause", "stop", or "n" at any turn boundary:
-1. Persist current state to `metadata.json` (set `status: "paused"`, write `paused_at`).
-2. Reply: "Paused at Stage {N} (iteration {i} if applicable). Resume with `/doer continue <TICKET-ID>`."
-3. Stop immediately.
-
-**Note for the user:** messages you type while the orchestrator is running a subagent queue up and are only read when that subagent returns. For immediate interruption, press `Esc`. The frequent turn boundaries above exist so you rarely need to.
-
-### Performance tracking (for the Stage 10 report)
-
-Every time the orchestrator calls the `Agent` tool, increment a counter in `metadata.json`:
-
-```json
-"agent_invocations": {
-  "implementation-planner": 2,
-  "plan-reviewer": 2,
-  "test-creator": 3,
-  "...": "..."
-}
-```
-
-Every time a convergence loop exits, record its outcome in `stages.<N>.convergence_loop`:
+Persist these in `metadata.json`:
 
 ```json
 {
-  "iterations": 3,
-  "converged_on_iteration": 3,
-  "blockers_resolved_total": 5,
-  "exit_reason": "converged" | "max_iterations" | "user_accepted"
-}
-```
-
-Every time a stage transitions from `in_progress` → `paused` → `in_progress`, accumulate active time only (exclude the paused interval):
-
-```json
-"stages": {
-  "4": {
-    "started_at": "...",
-    "completed_at": "...",
-    "pauses": [{"paused_at": "...", "resumed_at": "..."}],
-    "active_duration_seconds": 2847
+  "agent_invocations": {"agent-name": <count>, ...},
+  "stages": {
+    "<N>": {
+      "started_at": "<ISO8601>",
+      "completed_at": "<ISO8601>",
+      "pauses": [{"paused_at": "...", "resumed_at": "..."}],
+      "active_duration_seconds": <int>,
+      "convergence_loop": {
+        "iterations": <int>,
+        "converged_on_iteration": <int>,
+        "blockers_resolved_total": <int>,
+        "exit_reason": "converged | max_iterations | user_accepted"
+      }
+    }
   }
 }
 ```
+
+Increment `agent_invocations[<name>]` on every Agent call. Update `convergence_loop` on loop exit. Active duration excludes paused intervals.
 
 ---
 
 ## Doer/Reviewer Loop Pattern (Delta-Aware)
 
-Stages 2, 3, 4, and 6 use this pattern. Max iterations: **5**.
+Stages 2, 3, 4, 6 use this pattern. Max iterations: **5**.
 
-### Findings severity
+### Findings severity (4 buckets)
 
-Reviewer returns findings in four buckets. The distinction between AUTO_FIX and SUGGESTION is critical — it determines whether the orchestrator applies the change automatically or just logs it.
+| Bucket | Behavior | Examples |
+|--------|----------|----------|
+| **BLOCKER** | Loop continues until resolved | Failing test, missing AC coverage, security issue, broken build |
+| **AUTO_FIX** | Applied automatically same iteration before convergence check | Reference to deleted function, unused import, test name stale after rename, typo |
+| **SUGGESTION** | Logged to review file, never applied, never blocks | "Consider extracting", "could use map instead of ifs", design tweaks |
+| **INFO** | Observational only | "This file is 500 LOC", "pattern used in 3 places" |
 
-- **BLOCKER** — must be fixed before advancing. Loop continues until resolved.
-  Examples: failing tests, missing AC coverage, security issue, broken build, missing error handling for a known error path.
+**Test for AUTO_FIX vs SUGGESTION:** *"Is there anything to decide?"* No → AUTO_FIX. Yes (trade-off, preference, design judgment) → SUGGESTION. When in doubt → SUGGESTION (be conservative — AUTO_FIX runs without user approval).
 
-- **AUTO_FIX** — obvious, mechanical, low-risk fix with no design trade-off. There is one reasonable way to do it; nothing to decide. Applied automatically without asking the user.
-  Examples: reference to a deleted/renamed function, unused import, test name that no longer matches the test body after a rename, typo in a string literal or comment, dead variable, stale file path in a comment, missing type hint that is trivially inferable.
-
-- **SUGGESTION** — genuinely optional improvement that involves a design choice, taste, or trade-off. Logged for user review, never applied automatically, never blocks.
-  Examples: "consider extracting this helper", "could use a map instead of a chain of ifs", "this name is less clear than X", "you might refactor this into a class", "consider adding caching here".
-
-- **INFO** — observational, no action needed.
-  Examples: "this file has grown to 500 LOC", "this pattern is used in 3 other places".
-
-**The test for AUTO_FIX vs SUGGESTION:** *"Is there anything to decide?"*
-- No → AUTO_FIX
-- Yes (trade-off, preference, design judgment) → SUGGESTION
-
-If in doubt, classify as SUGGESTION. The reviewer should be conservative with AUTO_FIX — when applied, the orchestrator does NOT ask for user approval.
-
-Convergence = zero BLOCKERs remaining. AUTO_FIXes do NOT block convergence; they are applied in the same iteration before declaring convergence.
+**Convergence = zero BLOCKERs remaining.** AUTO_FIXes are applied within the same iteration, do not block convergence.
 
 ### Iteration 1 (clean-slate)
 
-1. Invoke doer with the stage input.
-2. Doer writes its artifact AND a `changelog.md` describing what it produced and why.
-3. Invoke reviewer with the artifact. Reviewer produces findings categorized BLOCKER / AUTO_FIX / SUGGESTION / INFO.
-4. **Apply AUTO_FIXes.** If the reviewer returned any AUTO_FIX items, the orchestrator invokes a short "fixer" pass (same agent as the doer, or a general-purpose agent) with the AUTO_FIX list and instructions: *"Apply each of these mechanically. No design changes. Append to changelog.md as `AutoFix #<id>: <what you changed>`."* This happens BEFORE checking for convergence.
-5. If zero BLOCKERs → converged. Exit loop. Log SUGGESTIONs and INFO to the review file, narrate one line ("Convergió. N AUTO_FIXes aplicados. M SUGGESTIONs registradas."), and auto-proceed.
-6. If BLOCKERs > 0 → proceed to Iteration 2.
+1. Invoke **doer** → produces artifact + `changelog.md` (what was done, why).
+2. Invoke **reviewer** → produces findings categorized BLOCKER / AUTO_FIX / SUGGESTION / INFO.
+3. **Apply AUTO_FIXes** (if any): invoke fixer pass with *"Apply each mechanically. No design changes. Append to changelog as `AutoFix #<id>: ...`"*.
+4. Zero BLOCKERs → converged. Log SUGGESTIONs/INFO to review file, narrate `"Converged. N AUTO_FIXes applied. M SUGGESTIONs logged."`, auto-proceed.
+5. BLOCKERs > 0 → Iteration 2.
 
 ### Iteration 2+ (delta-aware)
 
-1. Invoke doer with:
-   - Current artifact
-   - Prior BLOCKER findings with IDs
-   - Instruction: "Address each BLOCKER. Append to `changelog.md`: for each BLOCKER id, write `Fix #<id>: <what you changed and why>`."
-2. Doer updates the artifact and appends to `changelog.md`.
-3. Invoke reviewer with:
-   - Updated artifact
-   - Prior findings list
-   - The new `changelog.md`
-   - Instruction: "For each prior BLOCKER, mark it RESOLVED or STILL_OPEN. Scan areas the doer touched (per changelog) for new issues. Do NOT re-analyze untouched areas. Classify findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO."
-4. Reviewer output:
+1. Invoke **doer** with: current artifact, prior BLOCKERs (with IDs), instruction *"Address each BLOCKER. Append to changelog: `Fix #<id>: <what + why>`."*
+2. Invoke **reviewer** with: updated artifact, prior findings, new changelog, instruction *"Mark each prior BLOCKER RESOLVED or STILL_OPEN. Scan areas the doer touched (per changelog) for new issues. Do NOT re-analyze untouched areas."*
+3. Reviewer output:
    ```json
    {
-     "prior_blockers_resolved": ["id-1", "id-3"],
-     "prior_blockers_still_open": ["id-2"],
+     "prior_blockers_resolved": ["id-1", ...],
+     "prior_blockers_still_open": ["id-2", ...],
      "new_blockers": [...],
      "auto_fixes": [...],
      "suggestions": [...],
      "info": [...]
    }
    ```
-5. Apply any AUTO_FIXes (same as iteration 1 step 4).
-6. Remaining BLOCKERs = still_open + new. If zero → converged. Otherwise → next iteration.
+4. Apply AUTO_FIXes.
+5. Remaining BLOCKERs = still_open + new. Zero → converged. Otherwise → next iteration.
 
-### Max iterations (5) reached without convergence
+### Max iterations reached (5) without convergence
 
-Narrate: "Stage {N} did not converge after 5 iterations. {count} BLOCKERs remain: {list}. Options: 1) Run one more iteration, 2) Accept remaining findings and continue, 3) Pause for manual intervention. Which?"
-
-Record the choice in `metadata.json` under `stages.<N>.loop_outcome`.
+Narrate: *"Stage {N} did not converge after 5 iterations. {N} BLOCKERs remain: {list}. Options: 1) one more iteration, 2) accept and continue, 3) pause."* Record choice in `metadata.stages.<N>.loop_outcome`.
 
 ---
 
 ## Stage 1 — AC Confirm
 
-**Goal:** produce unambiguous, testable acceptance criteria written to `ac.md`. Also detect and incorporate any pre-existing work the user has already done on this ticket.
+**Goal:** produce testable ACs in `ac.md` + detect/import any pre-existing work.
 
-**No subagent — orchestrator does this directly.**
+**No subagent — orchestrator runs this directly.** No commit at end (only `.doer/` writes, which is gitignored).
+
+### Step 1: Load context
 
 1. Read `ticket.md`.
-2. Read all files in `./.doer/knowledge/lessons/` (if any) and note any lesson whose `when_it_applies` matches this ticket type or area.
+2. Read `./.doer/knowledge/lessons/*.md`, note any whose `when_it_applies` matches this ticket.
 
-3. **Pre-existing work detection.**
+### Step 2: Pre-existing work — ASK FIRST
 
-   **MUST-DO rule:** Before running ANY git command, before reading any existing file under `.doer/`, before inspecting branches or commits or diffs, the orchestrator MUST ask the user this exact question via `AskUserQuestion` and wait for the answer:
+**MUST ask the user before running ANY git command, reading existing `.doer/` files, or inspecting diffs:**
 
-   > "Have you already done any work on this ticket before invoking `/doer`? [y/N]"
+> "Have you already done any work on this ticket before invoking `/doer`? [y/N]"
 
-   **MUST-NOT rules:**
-   - Do NOT auto-detect pre-existing work by running `git status`, `git log`, or `git diff` before the user answers.
-   - Do NOT assume the answer based on uncommitted changes, commits ahead of base, or branch name.
-   - Do NOT skip the question "because it seems obvious". Ask it verbatim, every time.
+**MUST NOT:** auto-detect via git, infer from uncommitted changes, skip the question because "it seems obvious". Ask verbatim, every time.
 
-   **Flow after the user answers:**
+- **NO** → skip Steps 3-6. Go to Step 7 with entry stage = 1 (no imports).
+- **YES** → continue to Step 3.
 
-   - **If the user answers NO (or defaults to N)** → skip this entire section. Go directly to step 4 (Decide the entry point with "Nothing" row). Do NOT run git inspection, do NOT run the test suite, do NOT classify files. The user has told you there is no prior work; respect that.
+### Step 3: Probe the user (only on YES)
 
-   - **If the user answers YES** → continue below. Ask each follow-up one at a time via `AskUserQuestion`:
+Ask each one-at-a-time via `AskUserQuestion`:
 
-     | Question | If "yes", follow up with |
-     |----------|--------------------------|
-     | "Do you already have a written plan (mental or on paper/file)?" | "Paste or summarize it." |
-     | "Did you already write tests?" | "Where are they? Do they currently pass or fail?" |
-     | "Did you already write implementation code?" | "Where are the changes? Committed, staged, or uncommitted?" |
-     | "Did you already update any documentation?" | "Which files?" |
+| Question | Follow-up if yes |
+|----------|------------------|
+| "Plan written somewhere?" | "Paste or summarize." |
+| "Tests written?" | "Where? Pass or fail?" |
+| "Implementation code?" | "Where? Committed, staged, uncommitted?" |
+| "Docs updated?" | "Which files?" |
 
-     Only after the user has confirmed YES and answered these questions, detect the repo state automatically:
-     - Run `git branch --show-current` → confirm which branch the user is on
-     - Run `git status --porcelain` → detect uncommitted changes
-     - Run `git log --oneline <base-branch>..HEAD` → list commits ahead of base
-     - Determine the base branch: prefer `main`, fall back to `master`, or ask the user if unclear
+### Step 4: Inspect the repo (only on YES)
 
-3b. **Inspect the existing work (only if step 3 answer was YES).** Do NOT just count commits — read them to understand what's already done:
+Detect base branch (prefer `main`, fall back to `master`, ask if unclear). Then:
 
-   For each commit ahead of base, run:
-   - `git show --stat <sha>` → see which files were touched and how much
-   - `git show <sha>` (full diff) if the commit is small enough, OR read the commit message + stat and open key files directly
+```bash
+git branch --show-current
+git status --porcelain
+git log --oneline <base>..HEAD
+git diff <base>...HEAD     # full committed diff
+git diff                    # unstaged
+git diff --cached           # staged
+```
 
-   For uncommitted changes, run:
-   - `git diff <base-branch>...HEAD` → full diff of committed work
-   - `git diff` → unstaged changes
-   - `git diff --cached` → staged changes
+For each commit ahead of base: `git show --stat <sha>` then read key files. Classify touched files:
+- Tests (`*_test.*`, `*.test.*`, `tests/`, `spec/`) → user has tests
+- Other code → user has implementation
+- `.md`, `docs/` → user has documentation
+- `PLAN.md` or `.doer/` → user has plan
 
-   Based on the inspection, classify each file touched:
-   - **Test files** (match repo test conventions: `*_test.*`, `*.test.*`, `tests/`, `spec/`) → user has tests
-   - **Source files** (everything else that's code) → user has implementation
-   - **Docs** (`.md`, `docs/`) → user has documentation
-   - **Planning artifacts** (`.doer/` or PLAN.md at repo root) → user has a plan written down
+If tests detected, run them via repo's test command — note pass/fail to identify TDD red/green/broken state.
 
-   Then run tests if any were found:
-   - `<detected-test-command>` → note which pass and which fail. This tells you whether you're in TDD red, TDD green, or a broken state.
+Present the analysis:
+```
+Based on your commits:
+- Plan: <yes/no + where>
+- Tests: <N> files (<X pass, Y fail>)
+- Implementation: <N> files (~<LOC>)
+- Docs: <N> files
 
-   Present the analysis to the user:
+Summary: <one-paragraph inferred state>
+Is this accurate? [Y/n/correct-me]
+```
 
-   ```
-   Based on your commits, I see:
-   - Plan: <yes/no + where>
-   - Tests: <count> test files touched (<X passing, Y failing>)
-   - Implementation: <count> source files touched (~<LOC> changed)
-   - Docs: <count> doc files touched
+### Step 5: Decide entry point
 
-   Summary: <one-paragraph inferred description of where you are>
+| User has... | Entry stage | Mark imported |
+|-------------|-------------|---------------|
+| Nothing | 1 | — |
+| Plan only | 3 (tests) | 2 |
+| Plan + failing tests | 4 (code) | 2, 3 |
+| Plan + tests + partial code | 4 (code) | 2, 3 |
+| Plan + tests + complete code | 5 (reflect) | 2, 3, 4 |
+| Everything, ready for review | 6 (code-review) | 2, 3, 4, 5 |
 
-   Is this accurate? [Y/n/correct-me]
-   ```
+Confirm with user: *"Suggesting entry at Stage {N}, importing {list}. Proceed? [Y / start at 1 / pick stage]"*
 
-4. **Decide the entry point.** Based on what the inspection + user answers revealed:
+### Step 6: Baseline + import
 
-   | User has... | Suggested entry stage | Mark as `imported` |
-   |-------------|----------------------|--------------------|
-   | Nothing | Stage 1 (this one) | — |
-   | Plan only | Stage 3 (tests) | Stage 2 |
-   | Plan + failing tests | Stage 4 (code) | Stages 2, 3 |
-   | Plan + tests + partial code | Stage 4 (code) — continue coding | Stages 2, 3 |
-   | Plan + tests + complete code | Stage 5 (reflect) | Stages 2, 3, 4 |
-   | Everything, ready for review | Stage 6 (code-review) | Stages 2, 3, 4, 5 |
+If there are uncommitted changes:
+```bash
+git add -A
+git commit --no-verify -m "doer(<TICKET-ID>): import pre-existing work as baseline"
+```
+If there are already commits ahead of base, no extra commit needed.
 
-   Present the suggestion to the user: "Based on what you have, I suggest starting at Stage {N} ({name}) and importing stages {list} as pre-existing work. Proceed? [Y / start from Stage 1 anyway / pick a different stage]"
+Mark imported stages in `metadata.json`:
+```json
+"stages": {
+  "2": {"name": "plan",  "status": "imported", "imported_at": "<ISO8601>", "note": "<what user had>"},
+  "3": {"name": "tests", "status": "imported", "imported_at": "<ISO8601>", "note": "..."}
+}
+```
 
-5. **Preserve the pre-existing work as a baseline commit**. Before imported stages are marked, create a checkpoint commit so future agents can see the baseline:
+If a plan was imported but isn't written down, prompt the user to paste/summarize it into `plan.md` (or orchestrator drafts from summary + diff and user confirms). Same pattern for imported tests/code (note their file paths in metadata).
 
-   ```bash
-   # If there are uncommitted changes:
-   git add -A
-   git commit --no-verify -m "doer(<TICKET-ID>): import pre-existing work as baseline"
-   ```
+### Step 7: AC confirmation
 
-   If there are already commits ahead of the base branch, no extra commit is needed — the existing commits serve as the baseline.
+- **Raw ACs provided in intake:** restate in Given/When/Then, present, iterate until approved.
+- **ACs to derive:** propose 3–7 Given/When/Then based on description + context (+ any imported code/tests). Present, iterate until approved.
 
-6. **Mark imported stages in `metadata.json`**:
+Surface **Out of Scope** items and **Open Questions** and confirm each.
 
-   ```json
-   "stages": {
-     "2": {"name": "plan", "status": "imported", "imported_at": "<ISO8601>", "note": "<what the user had>"},
-     "3": {"name": "tests", "status": "imported", "imported_at": "<ISO8601>", "note": "..."}
-   }
-   ```
+### Step 8: Write artifacts
 
-   If the user imported a plan but it's not written down anywhere, ask them to write it quickly into `./.doer/tickets/<TICKET-ID>/plan.md` (or the orchestrator drafts it based on their summary + the diff, then the user confirms).
+Write `ac.md`:
+```markdown
+# <TICKET-ID> — Acceptance Criteria
+## In Scope
+- AC-1: GIVEN ... WHEN ... THEN ...
+## Out of Scope
+## Open Questions (resolved)
+## Applicable Lessons
+```
 
-   Similarly, if tests/code are imported, note their file paths in the metadata so downstream agents know where to look.
+Initialize `./.doer/knowledge/assumptions/<TICKET-ID>.md` with assumptions surfaced.
 
-7. Now proceed with **AC confirmation** proper (same logic as before, whether or not pre-existing work was imported):
+### Step 9: Finalize
 
-   a. If raw ACs were provided in intake:
-      - Present them back to the user, restated in **Given/When/Then** form.
-      - Ask: "These are the restated ACs. Are they complete and accurate? [Y / edit / add]"
-      - Apply changes until the user approves.
+Update `metadata.json`: stage 1 complete, advance `current_stage` to the entry point decided in Step 5.
 
-   b. If ACs are to be derived:
-      - Based on description + context (+ any pre-existing code/tests if imported), propose 3–7 Given/When/Then ACs.
-      - Present to user, iterate until approved.
-
-8. Also surface: **Out of scope** items and **Open questions**. Ask the user to confirm each.
-
-9. Write the final result to `ac.md`:
-
-   ```markdown
-   # <TICKET-ID> — Acceptance Criteria
-
-   ## In Scope
-   - AC-1: GIVEN ... WHEN ... THEN ...
-   - AC-2: ...
-
-   ## Out of Scope
-   - ...
-
-   ## Open Questions (resolved)
-   - Q: ... → A: ...
-
-   ## Applicable Lessons
-   - [lesson-slug]: <one-line takeaway>
-   ```
-
-10. Initialize `./.doer/knowledge/assumptions/<TICKET-ID>.md` with any assumptions surfaced during AC confirmation.
-11. **No commit at the end of Stage 1.** AC confirm only writes to `.doer/`, which is gitignored. There is no code change to commit. The artifacts live on disk; the orchestrator and subagents read them directly. Skip the commit step entirely.
-12. Update `metadata.json`: stage 1 complete. Advance `current_stage` to the entry point decided in step 4 (not necessarily 2).
-13. Narrate the full picture to the user: "Stage 1 complete. Imported stages: {list}. Starting next at Stage {N}. Continue? [Y/n]"
+Narrate: *"Stage 1 complete. Imported stages: {list}. Next at Stage {N}. Continue? [Y/n]"*
 
 ---
 
@@ -611,19 +500,10 @@ Judge the plan against:
 - Risk awareness: are real risks identified? Any hand-wavy "should work" steps?
 - New dependencies: any new libraries proposed without justification?
 
-Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO.
-
-Classification rules (apply strictly):
-- BLOCKER: broken functionality, failing test, missing AC coverage, security issue, missing error handling for a known failure path.
-- AUTO_FIX: obvious, mechanical, low-risk — one reasonable way to fix, nothing to decide. Examples: reference to deleted/renamed function, unused import, test name that no longer matches body after rename, typo, dead variable, stale path in comment.
-- SUGGESTION: involves a design choice, trade-off, or taste. Examples: "consider extracting", "could use X pattern instead", "name could be clearer".
-- INFO: observation, no action.
-
-Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no → AUTO_FIX. If yes → SUGGESTION. Be conservative — when in doubt, use SUGGESTION.
+Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. (See Doer/Reviewer Loop Pattern section for the classification rules and the AUTO_FIX-vs-SUGGESTION decision test.)
 ```
 
-Run the doer/reviewer loop until convergence. Commit:
-**No commit at the end of Stage 2.** The plan lives in `.doer/tickets/<TICKET-ID>/plan.md`, which is gitignored. The plan stays on disk for the next stages to read; nothing goes to git history.
+Run the doer/reviewer loop until convergence. **No commit** — `plan.md` lives in `.doer/` (gitignored).
 
 ---
 
@@ -656,15 +536,7 @@ Judge:
 - Are edge cases from the plan covered?
 - Any brittle assertions or over-mocking?
 
-Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO.
-
-Classification rules (apply strictly):
-- BLOCKER: broken functionality, failing test, missing AC coverage, security issue, missing error handling for a known failure path.
-- AUTO_FIX: obvious, mechanical, low-risk — one reasonable way to fix, nothing to decide. Examples: reference to deleted/renamed function, unused import, test name that no longer matches body after rename, typo, dead variable, stale path in comment.
-- SUGGESTION: involves a design choice, trade-off, or taste. Examples: "consider extracting", "could use X pattern instead", "name could be clearer".
-- INFO: observation, no action.
-
-Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no → AUTO_FIX. If yes → SUGGESTION. Be conservative — when in doubt, use SUGGESTION.
+Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. (See Doer/Reviewer Loop Pattern section for the classification rules and the AUTO_FIX-vs-SUGGESTION decision test.)
 ```
 
 Run loop until convergence. Commit:
@@ -712,15 +584,7 @@ Review scope (in priority order):
 
 Focus on the diff. Do NOT re-review files that were not touched.
 
-Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO.
-
-Classification rules (apply strictly):
-- BLOCKER: broken functionality, failing test, missing AC coverage, security issue, missing error handling for a known failure path.
-- AUTO_FIX: obvious, mechanical, low-risk — one reasonable way to fix, nothing to decide. Examples: reference to deleted/renamed function, unused import, test name that no longer matches body after rename, typo, dead variable, stale path in comment.
-- SUGGESTION: involves a design choice, trade-off, or taste. Examples: "consider extracting", "could use X pattern instead", "name could be clearer".
-- INFO: observation, no action.
-
-Decision test for AUTO_FIX vs SUGGESTION: "Is there anything to decide?" If no → AUTO_FIX. If yes → SUGGESTION. Be conservative — when in doubt, use SUGGESTION.
+Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. (See Doer/Reviewer Loop Pattern section for the classification rules and the AUTO_FIX-vs-SUGGESTION decision test.)
 ```
 
 Run loop until convergence. Commit:
@@ -813,208 +677,124 @@ git commit --no-verify -m "doer(<TICKET-ID>): address code review"
 
 ## Stage 8 — Runtime Verify (Live Debug Logs, Temporary)
 
-**Goal:** verify on-device/runtime behavior against the ACs by injecting dense temporary debug logs, having the dev exercise the feature, and analyzing the output together. Logs are NEVER kept in the final branch.
+**Goal:** verify on-device behavior against ACs via dense temporary debug logs. Logs NEVER reach the final branch.
 
-**Skip conditions:** if the dev says "no runtime context" for this ticket (pure helper, config-only, docs-only, etc.), the orchestrator records `stages.8.status = "skipped"` with a reason and proceeds to Stage 9. Ask once at the start: *"Does this ticket produce runtime behavior worth exercising on device? [Y/n]"*. If `n`, skip.
+**Skip:** ask once: *"Does this ticket produce runtime behavior worth exercising on device? [Y/n]"*. If `n`, mark `stages.8.status = "skipped"` and proceed to Stage 9.
 
-### Log format
-
-All temporary logs use the same shape for easy filtering:
-
-```
-println("DOER - <TICKET-ID> - <function/context> - <message or key=value>")
-```
-
-The prefix `DOER - <TICKET-ID>` is the unique tag. Nothing in the target codebase matches it, so cleanup at the end is a grep + remove with zero risk of collateral damage.
+**Log format (exact):** `println("DOER - <TICKET-ID> - <ClassName.fnName> - <message or key=value>")`. The prefix `DOER - <TICKET-ID>` is the unique grep tag — nothing else in the codebase matches.
 
 ### Step 1: Inject logs
 
-Invoke a general-purpose agent with:
+Invoke a general-purpose agent with this prompt:
 
 ```
 You are the runtime-logger agent for ticket <TICKET-ID>.
 
-Read:
-- .doer/tickets/<TICKET-ID>/ac.md
-- .doer/tickets/<TICKET-ID>/plan.md
-- git diff <base-branch>..HEAD → the full diff for this ticket
+Read: .doer/tickets/<TICKET-ID>/ac.md, plan.md, and `git diff <base>..HEAD`.
 
-Scope of logging (file selection):
-1. Every file in the diff for this ticket.
-2. Every file that sits in the call path exercised by the ACs (dependencies,
-   shared helpers, repositories, view models, etc.). Follow imports and
-   call chains outward from the diff until you cover the full runtime flow
-   the dev will exercise. Stop at framework/SDK boundaries.
+Scope: every file in the diff PLUS every file in the call path the ACs
+exercise (deps, helpers, repositories, view models). Follow imports
+outward from the diff until full runtime flow is covered. Stop at
+framework/SDK boundaries.
 
-What to log (in scope files):
-- Entry of every function/method involved in the AC flow (log arguments).
-- Every conditional branch: which branch was taken and why (key values).
-- Every meaningful state change: "set X to Y".
-- Every external boundary: API calls, DB reads/writes, IO, threads, coroutines.
-- Every exception catch (even if re-thrown or logged elsewhere).
-- Exit of every function (log return value or "void complete").
+What to log: function entry (with args), every conditional branch (which
++ why), state changes ("set X to Y"), external boundaries (API/DB/IO/
+threads/coroutines), exception catches, function exit (return or void).
 
-Format — ALWAYS this exact shape:
-  println("DOER - <TICKET-ID> - <ClassName.fnName> - <message or key=value>")
+Format MANDATORY: println("DOER - <TICKET-ID> - <ClassName.fnName> - <message>")
 
-Rules:
-- Use println, NOT the app's logger. This is throwaway instrumentation,
-  we want it to stand out and be trivially removable.
-- Prefix `DOER - <TICKET-ID>` is MANDATORY on every log. No exceptions.
-- Do NOT modify business logic, only add log statements.
-- Do NOT remove or rewrite existing logs in the codebase.
-- After adding logs, run the build to make sure nothing broke syntactically.
+Rules: use println (not app logger), never modify business logic, never
+touch existing logs, run the build after to verify syntax.
 
-Write a summary to .doer/tickets/<TICKET-ID>/runtime-logs-added.md listing
-each file touched and a one-line reason.
+Write summary to .doer/tickets/<TICKET-ID>/runtime-logs-added.md
+(file touched + one-line reason each).
 ```
 
 ### Step 2: Temporary commit
-
-Once the logger agent returns, commit the logs so they survive pause/resume and so the dev sees a clean working tree:
 
 ```bash
 git add -A
 git commit --no-verify -m "doer(<TICKET-ID>): [TEMP] runtime debug logs — DO NOT MERGE"
 ```
 
-The commit is identified later by its message, not by a stored SHA. The prefix `doer(<TICKET-ID>): [TEMP] runtime debug logs` is unique enough to grep unambiguously. Do NOT store the SHA in metadata — it would be one more field to keep in sync, and metadata writes in this stage have historically drifted out of commits.
+The commit is identified later by its unique message prefix, not by a stored SHA.
 
-### Step 3: Hand off to the dev
+### Step 3: Hand off to dev
 
-Narrate to the user:
-
+Narrate:
 ```
-Runtime logs injected across N files. Temporary commit: <sha>.
+Runtime logs injected across N files. Build and run the app:
+  <build/install command — detect from repo or ask once and persist as
+   metadata.runtime_build_command>
 
-Now build and run the app:
-  <repo-specific build/install command the orchestrator detected>
+Exercise each AC manually. Filter logs:
+  <log filter, e.g. `adb logcat | grep "DOER - <TICKET-ID>"`>
 
-Exercise each AC manually. Logs will appear in logcat / console with the
-prefix "DOER - <TICKET-ID>". Filter with:
-  <repo-specific log filter command, e.g. `adb logcat | grep "DOER - <TICKET-ID>"`>
-
-When you've exercised all ACs, paste the filtered log output here (or tell me
-where to read it from) and say "ready" to analyze.
+Paste filtered output (or tell me the file path) and say "ready" to analyze.
 ```
 
-If the orchestrator cannot detect the build command, ask the dev once and persist it in `metadata.json → runtime_build_command` for future tickets.
+### Step 4: Analyze logs
 
-### Step 4: Analyze the logs
-
-When the dev provides the log output, invoke an analyzer agent:
+When the dev provides log output, invoke an analyzer agent:
 
 ```
 You are the runtime-log analyzer for ticket <TICKET-ID>.
 
-Read:
-- .doer/tickets/<TICKET-ID>/ac.md
-- .doer/tickets/<TICKET-ID>/plan.md
-- The log excerpt provided by the dev (in .doer/tickets/<TICKET-ID>/runtime-log-output.txt)
+Read: ac.md, plan.md, and the log excerpt at
+.doer/tickets/<TICKET-ID>/runtime-log-output.txt
 
-For each AC, determine from the logs:
-- Was the code path for this AC actually hit? (yes / no)
-- Did the values at each decision point match the expected behavior?
-- Were there unexpected errors, exceptions, or retries?
-- Did any branch NOT get exercised that should have been?
+For each AC: was the code path hit? Did values match expected? Any
+unexpected errors? Any branch that should have been exercised but wasn't?
 
-Output findings in .doer/tickets/<TICKET-ID>/runtime-analysis.md with sections:
+Write .doer/tickets/<TICKET-ID>/runtime-analysis.md with sections:
   ## AC-by-AC verdict
-    AC-1: PASS | FAIL | NOT_EXERCISED — <evidence from logs>
+    AC-1: PASS | FAIL | NOT_EXERCISED — <evidence>
   ## Anomalies
-    - <anomaly, which log line, why it matters>
   ## Recommended next action
-    One of:
-      - APPROVE — all ACs pass, proceed to cleanup.
-      - RETURN_TO_STAGE_4 — defects in implementation, <list>.
-      - RETURN_TO_STAGE_3 — tests did not cover behavior that broke, <list>.
-      - RETURN_TO_STAGE_2 — plan missed a flow, <list>.
-      - NEED_MORE_DATA — logs insufficient, <what to exercise>.
+    One of: APPROVE | RETURN_TO_STAGE_2 | RETURN_TO_STAGE_3 |
+            RETURN_TO_STAGE_4 | NEED_MORE_DATA  (with rationale)
 ```
 
-Present the `runtime-analysis.md` to the dev and ask:
-
-```
-Analyzer recommends: <action>.
-<short summary>
-
-Apply this recommendation? [Y / explain / override]
-```
+Present `runtime-analysis.md` to dev and ask: *"Analyzer recommends: <action>. <summary>. Apply? [Y / explain / override]"*
 
 Branches:
-- **APPROVE** → proceed to Step 5 (cleanup).
-- **RETURN_TO_STAGE_N** → cleanup logs first (Step 5), then jump back to stage N with the findings pre-loaded as BLOCKERs for the doer.
-- **NEED_MORE_DATA** → keep logs, loop back to Step 3 (dev exercises more, pastes more logs).
-- **Dev overrides** → honor the dev's choice, record the override reason.
+- **APPROVE** → Step 5 (cleanup)
+- **RETURN_TO_STAGE_N** → cleanup first, then jump back to stage N with findings pre-loaded as BLOCKERs
+- **NEED_MORE_DATA** → keep logs, loop back to Step 3
+- **Override** → honor dev's choice, record reason
 
-### Step 5: Cleanup (no logs reach the final branch)
-
-Strategy: find the temporary commit by its message (unique grep pattern), revert it so the logs are removed AND history records that they existed.
+### Step 5: Cleanup
 
 ```bash
 TEMP_SHA=$(git log --grep="^doer(<TICKET-ID>): \[TEMP\] runtime debug logs" --format="%H" | head -n1)
-
-if [ -z "$TEMP_SHA" ]; then
-  echo "ERROR: Could not find the temporary log commit for <TICKET-ID>."
-  echo "Expected commit message prefix: 'doer(<TICKET-ID>): [TEMP] runtime debug logs'"
-  exit 1
-fi
+if [ -z "$TEMP_SHA" ]; then echo "ERROR: temp commit not found"; exit 1; fi
 
 git revert --no-edit "$TEMP_SHA"
 git commit --no-verify --amend -m "doer(<TICKET-ID>): remove runtime debug logs"
-```
 
-Verify cleanup:
-
-```bash
+# Verify zero residuals
 if git grep -l "DOER - <TICKET-ID>" -- .; then
-  echo "ERROR: Residual DOER logs found. Manual cleanup required."
-  exit 1
+  echo "ERROR: Residual DOER logs found"; exit 1
 fi
 ```
 
-If residuals are found (shouldn't happen, but defensive), invoke the logger agent once more with: *"Remove every line matching `DOER - <TICKET-ID>`. Do not touch anything else."*
+If residuals (shouldn't happen): re-invoke the logger agent: *"Remove every line matching `DOER - <TICKET-ID>`. Touch nothing else."*
 
-Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
+Narrate: *"Runtime logs removed. Proceeding to docs sync."*
 
-### Step 6: Record outcome (flush, then commit)
+### Step 6: Record outcome
 
-**Ordering matters.** Write all metadata fields first, then commit in a single atomic operation. Do not split into multiple writes.
-
-1. Update `metadata.json → stages.8` with the complete final state:
-   ```json
-   {
-     "name": "runtime-verify",
-     "status": "complete",
-     "ac_verdicts": {"AC-1": "PASS", "AC-2": "PASS"},
-     "returns_triggered": [],
-     "completed_at": "<ISO8601>"
-   }
-   ```
-   Note: no `temp_log_commit_sha`, no `revert_commit_sha` — the commit history IS the source of truth for those events.
-
-2. Amend or commit:
-   ```bash
-   if git diff --quiet -- .doer/ && git diff --cached --quiet -- .doer/; then
-     : # nothing to persist
-   else
-     git add .doer/
-     LAST_MSG=$(git log -1 --pretty=%s)
-     if [[ "$LAST_MSG" == "doer(<TICKET-ID>): remove runtime debug logs" ]]; then
-       git commit --no-verify --amend --no-edit
-     else
-       git commit --no-verify -m "doer(<TICKET-ID>): runtime-verify metadata"
-     fi
-   fi
-   ```
-
-3. Defensive verification — zero pending writes:
-   ```bash
-   if ! git diff --quiet -- .doer/ || ! git diff --cached --quiet -- .doer/; then
-     echo "WARNING: .doer/ has uncommitted changes after Stage 8 finalization."
-     git status --short -- .doer/
-   fi
-   ```
+Update `metadata.json → stages.8`:
+```json
+{
+  "name": "runtime-verify",
+  "status": "complete",
+  "ac_verdicts": {"AC-1": "PASS", ...},
+  "returns_triggered": [],
+  "completed_at": "<ISO8601>"
+}
+```
+No SHAs persisted — git history is the source of truth. No commit needed (`.doer/` is gitignored).
 
 ---
 
@@ -1038,155 +818,73 @@ Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
 
 ## Stage 10 — Wrapup (Lessons & Assumptions)
 
-**Goal:** close the loop. Capture lessons. Validate assumptions.
+**Goal:** capture lessons, validate assumptions, generate performance report, clean `.doer/` from branch history.
 
-1. Read `./.doer/knowledge/assumptions/<TICKET-ID>.md`. For each assumption, mark it VALIDATED, INVALIDATED (with reason), or UNVERIFIED.
-2. Ask the user: "Any lesson to capture from this ticket? A lesson is something non-obvious you'd want future tickets to know. Reply with one or more, or `none`."
-3. If the user provides lessons, for each one, the orchestrator writes a new file at `./.doer/knowledge/lessons/{slug}.md`:
+1. **Validate assumptions.** Read `./.doer/knowledge/assumptions/<TICKET-ID>.md`. Mark each VALIDATED, INVALIDATED (with reason), or UNVERIFIED.
 
+2. **Capture lessons.** Ask: *"Any lesson worth saving for future tickets? Reply with one or more, or `none`."* For each lesson, write `./.doer/knowledge/lessons/{slug}.md`:
    ```markdown
    ---
-   slug: <short-kebab-case>
+   slug: <kebab-case>
    captured_from: <TICKET-ID>
    captured_at: <ISO8601>
-   when_it_applies: <short description of contexts where this lesson is relevant>
+   when_it_applies: <short context description>
    ---
-
    ## What happened
-   <short narrative>
-
    ## Why it matters
-   <impact / consequence>
-
    ## Takeaway
-   <actionable rule or heuristic>
    ```
 
-4. Write `./.doer/tickets/<TICKET-ID>/wrapup.md`:
+3. **Write `wrapup.md`** with sections: Assumptions (status per item), Lessons captured (slug + takeaway), Commits (SHA list from metadata).
 
-   ```markdown
-   # <TICKET-ID> — Wrapup
-
-   ## Assumptions
-   - <assumption> → VALIDATED
-   - <assumption> → INVALIDATED: <reason>
-
-   ## Lessons captured
-   - [lesson-slug] — <takeaway>
-
-   ## Commits
-   <list of SHAs from metadata.json>
-   ```
-
-5. **Generate performance report** at `./.doer/tickets/<TICKET-ID>/performance.md`.
-
-   Data sources:
-   - Timestamps from `metadata.json → stages.<N>.started_at` and `completed_at` (recorded by the orchestrator as each stage runs)
-   - Iteration count and blockers resolved from `metadata.json → stages.<N>.convergence_loop`
-   - Commits via `git log <base>..HEAD --oneline` and `git diff <base>..HEAD --shortstat`
-   - Agent invocations from `metadata.json → agent_invocations` (incremented on every Agent tool call)
-   - Test delta: count new/modified test files and current pass/fail via the repo's test command
-
-   Report format:
-
+4. **Generate `performance.md`.** Sources: `metadata.json` (stage timestamps, agent_invocations, convergence_loop), `git log/diff` for commits/LOC, repo test command for pass/fail. Format:
    ```markdown
    # <TICKET-ID> — Performance Report
 
    ## Timing
-   - Started:   <created_at>
-   - Completed: <completed_at>
-   - Wall clock: <end - start>
-   - Active:    <sum of per-stage durations, excludes paused time>
+   Started / Completed / Wall clock / Active (excludes paused)
 
    ## Stage breakdown
    | Stage | Status | Duration | Iterations | Blockers resolved |
-   |-------|--------|----------|------------|-------------------|
-   | 1 AC Confirm   | ✓ / imported | ... | — | — |
-   | 2 Plan         | ... | ... | 2 | 3 |
-   | ... |
 
    ## Code metrics
-   - Commits:        <N>
-   - Files changed:  <N> (<src> source, <tests> tests, <docs> docs)
-   - Lines:          +<added> / -<removed>
-   - Tests added:    <N>
-   - Tests modified: <N>
-   - Test status:    <passing>/<total> passing
+   Commits / Files changed (src/tests/docs) / Lines +/- / Tests added/modified / Pass-fail status
 
    ## Agent invocations
-   - <agent-name>:   <count>
-   - ...
+   <agent-name>: <count>
 
    ## Convergence stats
-   - Loops converged iteration 1: <N>
-   - Loops converged iteration 2+: <N>
-   - Loops hit max iterations:    <N>
-   - Average iterations per loop: <avg>
+   Converged iter 1 / iter 2+ / max-iterations / avg
    ```
 
-6. Update `metadata.json`: `status: "complete"`, `completed_at: <ISO8601>`.
+5. **Update `metadata.json`:** `status: "complete"`, `completed_at: <ISO8601>`.
 
-7. **PR-ready history cleanup** — strip any `.doer/` content from prior commits on this feature branch.
+6. **PR-ready history cleanup** — remove `.doer/` from prior commits on the feature branch.
 
-   Even with the Workspace Guard, tickets that started before the exclusion rule existed (or that imported pre-existing work) may have committed `.doer/` files into the feature branch. Those commits would expose `.doer/` in the PR. The orchestrator MUST clean them automatically as part of wrapup.
+   ```bash
+   DIRTY=$(git log --format=%H --diff-filter=ACMR -- '.doer/*' "<base>..HEAD" 2>/dev/null)
+   ```
+   If empty → skip to step 7.
 
-   a. **Detect.** Find commits on this feature branch (between `<base-branch>` and `HEAD`) that touched `.doer/`:
-      ```bash
-      DIRTY_COMMITS=$(git log --format="%H" --diff-filter=ACMR -- '.doer/*' "<base-branch>..HEAD" 2>/dev/null)
-      ```
-      If `DIRTY_COMMITS` is empty → nothing to clean. Skip to step 8.
+   Otherwise: confirm with user (destructive, changes SHAs). On approval:
+   ```bash
+   git update-ref "refs/doer-backup/<TICKET-ID>-pre-cleanup-$(date +%s)" HEAD
+   git filter-branch -f --index-filter 'git rm -r --cached --ignore-unmatch .doer/' --prune-empty "<base>..HEAD"
+   git update-ref -d refs/original/refs/heads/<branch-name> 2>/dev/null || true
+   ```
+   Verify `git log --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"` is empty. Tell user the backup ref name (rollback: `git reset --hard <ref>`).
 
-   b. **Confirm with the user** before rewriting history (this is destructive and changes commit SHAs):
-      ```
-      I found {N} commit(s) on this feature branch that contain .doer/ files:
-        {short list with sha + subject}
+   On user decline: narrate `"Skipping history cleanup. .doer/ will appear in PR. Run /doer cleanup-history <TICKET-ID> later."`
 
-      I'll rewrite the branch history to remove .doer/ from those commits.
-      Files in .doer/ stay on disk untouched — only the git history changes.
-      Commit SHAs WILL change.
-
-      Proceed? [Y/n]
-      ```
-      If the user declines, narrate: *"Skipping history cleanup. .doer/ will appear in the PR. Run `/doer cleanup-history <TICKET-ID>` later if you change your mind."* and continue to step 8.
-
-   c. **Backup the current branch tip** before rewriting (safety net):
-      ```bash
-      git update-ref "refs/doer-backup/<TICKET-ID>-pre-cleanup-$(date +%s)" HEAD
-      ```
-      Tell the user the backup ref name. They can `git reset --hard <ref>` to roll back if anything goes wrong.
-
-   d. **Rewrite history** using `git filter-branch --index-filter` (built-in, no extra tools needed). This removes `.doer/` from every commit between base and HEAD, and prunes any commits that become empty:
-      ```bash
-      git filter-branch -f \
-        --index-filter 'git rm -r --cached --ignore-unmatch .doer/' \
-        --prune-empty \
-        "<base-branch>..HEAD"
-      ```
-      (`-f` forces in case a previous filter-branch backup exists.)
-
-   e. **Verify the cleanup worked**:
-      ```bash
-      LEFTOVER=$(git log --format="%H" --diff-filter=ACMR -- '.doer/*' "<base-branch>..HEAD" 2>/dev/null)
-      ```
-      `LEFTOVER` MUST be empty. If not, narrate the failure and tell the user to roll back via the backup ref.
-
-   f. **Reset filter-branch's housekeeping refs** (otherwise next filter-branch will warn):
-      ```bash
-      git update-ref -d refs/original/refs/heads/<branch-name> 2>/dev/null || true
-      ```
-
-   g. Narrate: *"History cleaned. {N} commits rewritten, .doer/ removed from branch history. Backup ref: refs/doer-backup/<TICKET-ID>-pre-cleanup-...Files on disk untouched."*
-
-8. Final wrapup commit (only if there are real code or doc changes uncommitted at this point — usually there are none, since wrapup itself only writes to `.doer/` which is ignored):
+7. **Final wrapup commit** (only if there are uncommitted real changes — wrapup itself usually has none since it only writes to `.doer/`):
    ```bash
    if ! git diff --quiet || ! git diff --cached --quiet; then
      git add -A
      git commit --no-verify -m "doer(<TICKET-ID>): wrapup"
    fi
    ```
-   Skip silently if nothing to commit.
 
-9. Narrate: "Ticket <TICKET-ID> complete. {final-count} commits on branch `<branch-name>` (after cleanup). Performance report at `.doer/tickets/<TICKET-ID>/performance.md`. When you are ready, run your project's pre-commit checks (lint, format, full tests), then push and open a PR manually. `/doer` does not push or deploy."
+8. Narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Performance report: .doer/tickets/<TICKET-ID>/performance.md. Run your pre-commit checks (lint, format, full tests), then push and open the PR manually."*
 
 ---
 
@@ -1280,161 +978,68 @@ ABC-110   [paused]       Stage 2 (plan)         refactor-auth
 
 ## `/doer verify <TICKET-ID>`
 
-**Goal:** run stages that exist in the current skill but did NOT exist when the ticket was closed. Useful when the pipeline has been extended (new stages added) and you want to retroactively apply them to previously completed tickets.
+**Goal:** run stages added to the skill AFTER this ticket closed. Additive only — never re-runs stages whose internal logic changed.
 
-**Scope:** only runs stages **missing by name** from the ticket's `metadata.json → stages`. Does NOT re-run stages that existed before but whose internal logic changed (those are out of scope — rerunning them would create an infinite catch-up treadmill).
+### Step 1: Load + Guard
 
-### Step 1: Load ticket
+1. Read `metadata.json`. Error if not found.
+2. Error if `status != "complete"` (use `/doer continue` instead).
+3. **Workspace Guard — RUN INLINE** (same bash block as `/doer continue` step 4). Self-check: `.git/info/exclude` contains `.doer/` AND `metadata.workspace_guard == "ok"`. STOP if either fails.
 
-1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`.
-2. If the ticket does not exist → error: "Ticket <TICKET-ID> not found."
-3. If `status != "complete"` → error: "Ticket <TICKET-ID> is currently {status}. Use `/doer continue` instead of verify."
-4. **Workspace Guard — RUN INLINE.** Execute the same bash block as `/doer continue` step 4 (the cheap idempotency check + ensure exclude + verify + detect-tracked + mark satisfied). Do NOT skip. Do NOT replace with a comment. The Guard is a precondition.
-5. **Self-check before proceeding.** Verify `.git/info/exclude` contains `.doer/` AND the ticket's metadata has `"workspace_guard": "ok"`. If either fails, STOP and ask the user.
+### Step 2: Compute missing stages
 
-### Step 2: Compute missing stages (by name)
+`missing = current_skill_stage_names \ ticket_executed_stage_names` (preserve current-skill order). If empty → narrate *"Nothing to verify."* and stop.
 
-1. Extract `executed_stage_names`: all values of `stages.*.name` from the ticket metadata.
-2. Extract `current_stage_names`: the stage name list from the skill's default metadata template (the `stages` block under the intake section of this SKILL.md — the authoritative list).
-3. `missing = current_stage_names \ executed_stage_names` (set difference, preserving the order they appear in the current skill).
-4. If `missing` is empty → narrate "Nothing to verify. Ticket <TICKET-ID> already ran all stages that the current skill defines." → stop.
+### Step 3: Per-stage approval
 
-### Step 3: Present missing stages, ask per stage
+Present the missing list with one-line descriptions. Ask per stage via `AskUserQuestion`: *"Run `<stage-name>` retroactively? [Y/n/skip-all]"*. `skip-all` aborts remaining questions; only previously approved stages run.
 
-Present the list with a one-line description of each missing stage and ask for each:
-
-```
-Ticket <TICKET-ID> was closed with {executed_count} stages. Current skill has {current_count}.
-
-Missing stages (not executed at close time):
-  - 8 runtime-verify: On-device AC validation via temporary debug logs.
-  - 11 security-audit: (example)
-
-Which of these should I run retroactively?
-```
-
-Ask per missing stage, one at a time via `AskUserQuestion`: *"Run `<stage-name>` retroactively? [Y/n/skip-all]"*. Record the decision. `skip-all` aborts the remaining questions and proceeds only with what was already approved.
-
-### Step 4: Checkout the ticket branch
-
-Before running any retroactive stage:
+### Step 4: Checkout branch
 
 ```bash
 git fetch --all
-BRANCH="<metadata.branch>"
-# If the branch still exists locally or remotely, check it out.
-# If the branch was deleted after merge, check out the final commit SHA stored
-# in metadata.commits[last] and warn the user we are operating in detached HEAD.
+# Check out metadata.branch if it still exists.
+# If branch was deleted post-merge, check out metadata.commits[-1] (detached HEAD)
+# and warn the user.
 ```
 
-Narrate which state the dev is working against (live branch vs detached HEAD on merged commit).
+### Step 5: Run each approved stage
 
-### Step 5: Run each approved missing stage
-
-For each approved stage, in the order it appears in the current skill:
+For each approved stage, in current-skill order:
 
 1. Narrate: *"Running retroactive stage: <name>."*
-2. Mark it in metadata BEFORE running so resume works:
+2. Mark in metadata BEFORE running (resume safety):
    ```json
-   "stages": {
-     "<N>": {
-       "name": "<stage-name>",
-       "status": "retroactive_in_progress",
-       "added_retroactively": true,
-       "started_at": "<ISO8601>"
-     }
-   }
+   "stages": {"<N>": {"name": "...", "status": "retroactive_in_progress", "added_retroactively": true, "started_at": "..."}}
    ```
-3. Execute the stage using the **current** skill's logic (the same sections dev would run in a normal flow). All artifacts, subagent calls, loops, and commits work exactly as in a normal ticket run.
-4. On completion, update:
-   ```json
-   {
-     "status": "complete",
-     "added_retroactively": true,
-     "retroactive_verdict": "<stage-specific outcome, e.g. APPROVED, RETURN_TO_STAGE_4>",
-     "completed_at": "<ISO8601>"
-   }
-   ```
-5. **End-of-substage flush (MANDATORY).** Before moving to the next retroactive stage, sync `.doer/` to git. Even with stages that commit correctly, a retroactive run can still leave pending writes (blocking conditions, timestamps, verdicts recorded after a stage's own commit). Run:
-   ```bash
-   if ! git diff --quiet -- .doer/ || ! git diff --cached --quiet -- .doer/; then
-     git add .doer/
-     # Amend onto the stage's last commit if one exists in this substage,
-     # else create a fresh flush commit.
-     LAST_MSG=$(git log -1 --pretty=%s)
-     if [[ "$LAST_MSG" == doer\(*\):* ]]; then
-       git commit --no-verify --amend --no-edit
-     else
-       git commit --no-verify -m "doer(<TICKET-ID>): flush <stage-name> metadata"
-     fi
-   fi
-   ```
-   This guarantees every metadata field produced by a substage lives inside its own commit — never floating uncommitted into the next substage or into Step 6.
-6. **If the stage's verdict is a RETURN_TO_STAGE_N or equivalent "reopen" signal:**
-   - Set top-level `status: "in_progress"`.
-   - Set `current_stage: N`.
-   - Add a blocking condition explaining the retroactive reopen: `{"type": "retroactive-return", "from_stage": "<retroactive-stage-name>", "reason": "<analyzer-recommendation>"}`.
-   - Run the same flush block from step 5 so the reopen state is committed.
-   - Narrate: *"Retroactive stage `<name>` returned `<verdict>`. Ticket reopened at Stage N. Run `/doer continue <TICKET-ID>` to proceed."*
-   - Stop. Do NOT run the remaining retroactive stages — the dev needs to fix the earlier issue first.
+3. Execute using the current skill's logic for that stage (same subagent calls, loops, commits as a normal run).
+4. On completion, update metadata: `status: "complete"`, `added_retroactively: true`, `retroactive_verdict: <APPROVED | RETURN_TO_STAGE_N | ...>`, `completed_at`.
+5. **If verdict is RETURN_TO_STAGE_N (reopen signal):**
+   - Set top-level `status: "in_progress"`, `current_stage: N`.
+   - Add blocking condition: `{"type": "retroactive-return", "from_stage": "<name>", "reason": "..."}`.
+   - Narrate: *"Retroactive `<name>` returned <verdict>. Ticket reopened at Stage N. Run `/doer continue <TICKET-ID>` to proceed."*
+   - STOP. Do not run remaining retroactive stages.
 
-### Step 6: Finalize (commit-last pattern)
+### Step 6: Finalize
 
-**CRITICAL ordering rule:** the final commit MUST be the last filesystem write of the `/doer verify` run. Do NOT write to `metadata.json` (or anywhere else) after the final commit. If anything needs to be persisted, it happens BEFORE the commit. After the commit: narration only.
+Append to `metadata.verify_runs[]` (preserve prior entries):
+```json
+{
+  "verified_at": "<ISO8601>",
+  "stages_added_retroactively": ["runtime-verify", "..."],
+  "all_verdicts_approved": true
+}
+```
 
-If all approved retroactive stages completed without reopening, execute these steps in strict order:
+No commit needed — `metadata.json` is in `.doer/` (gitignored). Per-stage commits during Step 5 already captured any real code changes.
 
-1. **Flush all pending metadata writes.** Consolidate every deferred update that accumulated during Step 5 into a single write:
-   - Final `stages.<N>.completed_at` for each retroactive stage (if any stage deferred it)
-   - Final `stages.<N>.status = "complete"` and `retroactive_verdict` per stage
-   - Accumulated `agent_invocations` counters from Step 5
-   - The new `verify_runs` entry:
-     ```json
-     "verify_runs": [
-       {
-         "verified_at": "<ISO8601 — compute ONCE, use this same value below>",
-         "stages_added_retroactively": ["runtime-verify", "..."],
-         "all_verdicts_approved": true
-       }
-     ]
-     ```
-     Keep `verify_runs` as an array so multiple runs accumulate (append, do not overwrite).
-
-2. **Verify the working tree has changes** (defensive check):
-   ```bash
-   if git diff --quiet && git diff --cached --quiet; then
-     echo "No changes to commit — retroactive stages produced no persisted state."
-   fi
-   ```
-
-3. **Single atomic commit** containing everything from Step 1:
-   ```bash
-   git add -A
-   git commit --no-verify -m "doer(<TICKET-ID>): retroactive verify — <comma-separated stage names>"
-   ```
-
-4. **Verify nothing was left uncommitted** (defensive check for the bug this pattern prevents):
-   ```bash
-   if ! git diff --quiet || ! git diff --cached --quiet; then
-     echo "WARNING: Uncommitted changes remain after verify finalization. This should never happen."
-     git status --short
-   fi
-   ```
-   If the warning fires, something wrote to disk after Step 3. Investigate.
-
-5. **Narrate only — no more writes.** *"Verify complete. <N> stages added retroactively, all approved. Ticket <TICKET-ID> is up to date with the current skill."*
-
-**What the orchestrator MUST NOT do after Step 3:**
-- Do NOT update `current_stage` (the ticket is complete, stays complete)
-- Do NOT update performance tracking (`agent_invocations`, timing — those belong to the verify run itself, flush them in Step 1)
-- Do NOT write a final timestamp like `metadata.last_modified` (if you want such a field, write it in Step 1)
-- Do NOT emit lessons or anything else that writes to disk. Verify is not a ticket-creation path, it should not touch knowledge/ files.
+Narrate: *"Verify complete. <N> stages added retroactively. Ticket <TICKET-ID> is up to date."*
 
 ### Edge cases
 
-- **Stage exists in metadata but with different name than current skill:** treat as not-missing (names match is the contract). If the dev genuinely renamed a stage and wants it re-run, they do that manually.
-- **Ticket has stages the current skill does not:** that's fine, they stay. Verify is additive only.
-- **Dev aborts mid-verify:** whatever was persisted stays. Next `/doer verify` recomputes missing stages and picks up where it left off.
+- Different name in metadata vs current skill → treated as not-missing (name match is the contract). Manual override only.
+- Ticket has stages the current skill doesn't → fine, kept. Verify is additive.
+- Aborted mid-verify → state persisted via Step 5.2 mark; next verify recomputes from where it left off.
 
 ---
 
@@ -1486,37 +1091,28 @@ The orchestrator (this skill) is the sole user-facing voice. Subagents must NOT 
 
 ---
 
-## Locale resolution (read this BEFORE any other action in this skill)
+## Locale resolution (READ THIS FIRST)
 
-### Mandatory first action of every `/doer ...` invocation
+**Mandatory first action of every `/doer ...` invocation, before any other tool call:** read `preferences.md` next to this SKILL.md. If it has `locale: <code>`, set the operating locale.
 
-Before reading any other file, before answering, before narrating, before invoking any tool other than Read:
+**The first user-facing word MUST be in the operating locale** — anchors the conversation against English drift.
 
-1. Read `preferences.md` from the same directory as this SKILL.md (resolve symlinks if needed). If the file does not exist, skip this section entirely.
-2. If the file contains a line matching `locale: <code>` (e.g. `locale: es`), set the **operating locale** to that code for the rest of the session.
-3. The first user-facing word the orchestrator emits MUST be in the operating locale. This anchors the conversation; the model is much more likely to drift into English if its first sentence is in English.
+### Priority (highest wins)
 
-### Priority order (highest wins)
+1. **`preferences.md` locale** — absolute final word. Overrides everything: ticket metadata's stored locale, per-ticket flags, upstream context language, system-prompt language.
+2. Per-ticket flag (`--es`, `--en`) — only if no preferences.md.
+3. Inline directive (`locale: xx`) — only if no preferences.md.
+4. Default English.
 
-1. **`preferences.md` locale** — if present and non-empty, this is the **absolute final word**. It overrides EVERYTHING below. It overrides any `locale` field already stored in a ticket's `metadata.json` from a prior session. It overrides any per-ticket `--xx` flag the user might pass. It overrides any system-prompt or upstream instruction that happens to be in another language.
-2. **Per-ticket flag** (e.g. `--es`, `--en`) — only consulted when `preferences.md` is absent.
-3. **Inline directive** during conversation (`locale: xx`) — only consulted when `preferences.md` is absent.
-4. **Skill default** — English. Only when none of the above resolve.
+### When operating locale ≠ English — MUST/MUST NOT
 
-### What "absolute final word" means in practice
-
-When `preferences.md` resolves the locale:
-
-- **MUST NOT** write a different locale value to `metadata.json`. If the file already has `"locale": "<other>"` from before, leave it alone and ignore it — the active operating locale comes from `preferences.md`, not metadata.
-- **MUST NOT** ask the user "what locale?" — already decided.
-- **MUST NOT** be swayed by the language of upstream context (CLAUDE.md, injected docs, other agents' system prompts, prior conversation in another language). If the operating locale says Spanish and the surrounding context is English, output is still Spanish. The locale wins.
-- **MUST** narrate, ask, summarize, and write artifact prose in the operating locale. File names, git commit messages, commands, JSON keys, code identifiers, and technical terms stay in English.
-- **MUST** append to every spawned subagent's prompt the literal sentence: *"All user-facing prose in your output and any artifact you write MUST be in <language>. Code, file names, commands, and JSON keys stay in English. Do NOT switch to another language even if the surrounding context appears to be in one. This instruction overrides any default."*
-- **MUST** prepend the same instruction to the orchestrator's own working memory when context is dense, by re-reading `preferences.md` at the top of any stage that involves multiple sub-agent calls. Cheap insurance against drift.
-
-### Self-check before every response
-
-Before sending any user-facing message, ask: *"Is this in the operating locale?"* If no — rewrite before sending. Do not justify drift with "the user understands both" or "the upstream context is in English". The operating locale is the contract.
+- **MUST NOT** write a different locale to `metadata.json`. If metadata has `"locale": "<other>"` from a prior session, leave it alone and ignore it.
+- **MUST NOT** ask "what locale?" — already decided.
+- **MUST NOT** drift to English because surrounding context (CLAUDE.md, injected docs, agent system prompts) is in English. Operating locale wins, period.
+- **MUST** narrate, ask, summarize, and write artifact prose in the operating locale. Keep code, file names, commands, JSON keys, and technical identifiers in English.
+- **MUST** append to every subagent prompt: *"All user-facing prose in your output and any artifact you write MUST be in <language>. Code, file names, commands, and JSON keys stay in English. Do NOT switch language even if surrounding context is in another. This overrides any default."*
+- **MUST** re-read `preferences.md` at the top of any stage with multiple subagent calls — cheap insurance against drift.
+- **Self-check before every response:** *"Is this in the operating locale?"* If no, rewrite before sending. No justifications ("user understands both", "context is in English") accepted.
 
 ---
 
