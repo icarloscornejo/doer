@@ -158,16 +158,53 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
 
 ## Narration Protocol
 
-Before each stage, narrate: "Starting Stage {N} — {name}. {one-sentence goal}."
+Before each stage, narrate: "Starting Stage {N} — {name}. {one-sentence goal}." and write `stages.<N>.started_at = <ISO8601>` in `metadata.json`.
 
 Inside a doer/reviewer loop, narrate: "Iteration {i} of {max}: invoking {agent}... [wait] agent returned {status}, {total_findings} findings ({blockers} blockers)."
 
-After each stage, narrate: "Stage {N} complete. Committed as `{sha}`. Continue to Stage {N+1}? [Y/n]"
+After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`, then narrate: "Stage {N} complete. Committed as `{sha}`. Continue to Stage {N+1}? [Y/n]"
 
 If the user writes "pause", "stop", "para", "espera" at any point:
-1. Persist current state to `metadata.json` (set `status: "paused"`).
+1. Persist current state to `metadata.json` (set `status: "paused"`, write `paused_at`).
 2. Reply: "Paused at Stage {N} (iteration {i} if applicable). Resume with `/doer continue <TICKET-ID>`."
 3. Stop.
+
+### Performance tracking (for the Stage 9 report)
+
+Every time the orchestrator calls the `Agent` tool, increment a counter in `metadata.json`:
+
+```json
+"agent_invocations": {
+  "implementation-planner": 2,
+  "plan-reviewer": 2,
+  "test-creator": 3,
+  "...": "..."
+}
+```
+
+Every time a convergence loop exits, record its outcome in `stages.<N>.convergence_loop`:
+
+```json
+{
+  "iterations": 3,
+  "converged_on_iteration": 3,
+  "blockers_resolved_total": 5,
+  "exit_reason": "converged" | "max_iterations" | "user_accepted"
+}
+```
+
+Every time a stage transitions from `in_progress` → `paused` → `in_progress`, accumulate active time only (exclude the paused interval):
+
+```json
+"stages": {
+  "4": {
+    "started_at": "...",
+    "completed_at": "...",
+    "pauses": [{"paused_at": "...", "resumed_at": "..."}],
+    "active_duration_seconds": 2847
+  }
+}
+```
 
 ---
 
@@ -652,13 +689,59 @@ git commit -m "doer(<TICKET-ID>): address code review"
    <list of SHAs from metadata.json>
    ```
 
-5. Update `metadata.json`: `status: "complete"`, `completed_at: <ISO8601>`.
-6. Final commit:
+5. **Generate performance report** at `./.doer/tickets/<TICKET-ID>/performance.md`.
+
+   Data sources:
+   - Timestamps from `metadata.json → stages.<N>.started_at` and `completed_at` (recorded by the orchestrator as each stage runs)
+   - Iteration count and blockers resolved from `metadata.json → stages.<N>.convergence_loop`
+   - Commits via `git log <base>..HEAD --oneline` and `git diff <base>..HEAD --shortstat`
+   - Agent invocations from `metadata.json → agent_invocations` (incremented on every Agent tool call)
+   - Test delta: count new/modified test files and current pass/fail via the repo's test command
+
+   Report format:
+
+   ```markdown
+   # <TICKET-ID> — Performance Report
+
+   ## Timing
+   - Started:   <created_at>
+   - Completed: <completed_at>
+   - Wall clock: <end - start>
+   - Active:    <sum of per-stage durations, excludes paused time>
+
+   ## Stage breakdown
+   | Stage | Status | Duration | Iterations | Blockers resolved |
+   |-------|--------|----------|------------|-------------------|
+   | 1 AC Confirm   | ✓ / imported | ... | — | — |
+   | 2 Plan         | ... | ... | 2 | 3 |
+   | ... |
+
+   ## Code metrics
+   - Commits:        <N>
+   - Files changed:  <N> (<src> source, <tests> tests, <docs> docs)
+   - Lines:          +<added> / -<removed>
+   - Tests added:    <N>
+   - Tests modified: <N>
+   - Test status:    <passing>/<total> passing
+
+   ## Agent invocations
+   - <agent-name>:   <count>
+   - ...
+
+   ## Convergence stats
+   - Loops converged iteration 1: <N>
+   - Loops converged iteration 2+: <N>
+   - Loops hit max iterations:    <N>
+   - Average iterations per loop: <avg>
+   ```
+
+6. Update `metadata.json`: `status: "complete"`, `completed_at: <ISO8601>`.
+7. Final commit:
    ```bash
    git add -A
    git commit -m "doer(<TICKET-ID>): wrapup"
    ```
-7. Narrate: "Ticket <TICKET-ID> complete. {count} commits on branch `<branch-name>`. When you are ready, push and open a PR manually. `/doer` does not push or deploy."
+8. Narrate: "Ticket <TICKET-ID> complete. {count} commits on branch `<branch-name>`. Performance report at `.doer/tickets/<TICKET-ID>/performance.md`. When you are ready, push and open a PR manually. `/doer` does not push or deploy."
 
 ---
 
