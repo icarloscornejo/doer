@@ -136,7 +136,7 @@ One pull refreshes every symlinked Claude at once.
 | `/doer list` | List all tickets under `./.doer/tickets/`. |
 | `/doer pause` | Persist current state and stop. |
 
-Once a ticket is active, natural language works too: "sigue", "pausa aquí", "the plan looks good, keep going". The orchestrator picks up the active ticket from `./.doer/tickets/*/metadata.json`.
+Once a ticket is active, natural language works too: "keep going", "pause here", "the plan looks good, continue". The orchestrator picks up the active ticket from `./.doer/tickets/*/metadata.json`.
 
 **Note:** every stage must run — there is no manual stage-skip command. The only way to skip stages is via the Stage 1 pre-existing-work detection.
 

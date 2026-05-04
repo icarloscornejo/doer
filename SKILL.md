@@ -47,7 +47,7 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 **Stages cannot be skipped manually.** Every stage must run. The only way to skip stages is through Stage 1's pre-existing-work detection (see Stage 1 below). This is by design: the orchestrator decides which stages to skip, not the user.
 
-**Implicit activation:** If the user writes natural language (e.g. "sigue", "continúa", "pausa aquí", "el plan se ve bien") and an active ticket exists in `./.doer/tickets/*/metadata.json` with `status == "in_progress"`, treat the message as a directive to the active orchestrator rather than a new query.
+**Implicit activation:** If the user writes natural language (e.g. "keep going", "pause here", "the plan looks good") and an active ticket exists in `./.doer/tickets/*/metadata.json` with `status == "in_progress"`, treat the message as a directive to the active orchestrator rather than a new query.
 
 ---
 
@@ -187,7 +187,7 @@ After each stage, write `stages.<N>.completed_at = <ISO8601>` in `metadata.json`
 
 ### Pause handling
 
-If the user writes "pause", "stop", "para", "espera", or "n" at any turn boundary:
+If the user writes "pause", "stop", or "n" at any turn boundary:
 1. Persist current state to `metadata.json` (set `status: "paused"`, write `paused_at`).
 2. Reply: "Paused at Stage {N} (iteration {i} if applicable). Resume with `/doer continue <TICKET-ID>`."
 3. Stop immediately.
@@ -836,6 +836,14 @@ All subagents (doer or reviewer) must:
 - Return a short JSON summary: `{"status": "success" | "failed", "artifacts": [...], "summary": "<one line>"}`.
 
 The orchestrator (this skill) is the sole user-facing voice. Subagents must NOT invoke `AskUserQuestion`.
+
+---
+
+## Locale override
+
+If the user invokes the skill with the suffix `--es` (e.g. `/doer ABC-123 --es`) or writes `locale: es` at any point during the conversation, the orchestrator and every subagent it spawns MUST produce all user-facing narration, questions, confirmations, summaries, reports, and artifact prose in Spanish. File names, git commit messages, commands, JSON keys, code, and technical identifiers stay in English. Persist `"locale": "es"` in `metadata.json` so the preference survives pause/resume. When spawning any subagent, append to its prompt: "Produce all user-facing prose in Spanish. Keep code, commands, file names, and JSON keys in English."
+
+Default locale when no override is given: English.
 
 ---
 
