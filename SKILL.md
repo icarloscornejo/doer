@@ -27,12 +27,17 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 ## Core Principles
 
 1. **Narration first** — The orchestrator announces what it is about to do, what it is doing, and what just happened. The user should be able to pause at any moment.
-2. **One branch, one ticket** — All work happens on a single feature branch. Stages that produce real code commit it; stages that only produce `.doer/` artifacts do NOT commit (see principle 7).
+2. **One branch, one ticket** — All work happens on a single feature branch. Stages that produce real code commit it; stages that only produce `.doer/` artifacts do NOT commit (see principle 8).
 3. **Delta-aware reviewers** — After iteration 1, reviewers receive prior findings + a changelog from the doer. They verify fixes and scan for new issues, rather than re-analyzing from scratch.
 4. **Bounded loops** — Max 5 iterations per doer/reviewer loop. If not converged, the user decides.
 5. **Lessons accumulate** — Every ticket captures what went well and what did not. Future tickets read those lessons before planning.
 6. **No hidden state** — Everything the orchestrator knows lives in `./.doer/` on disk. Context compression never loses progress.
-7. **`.doer/` NEVER reaches the team's git history.** This is a hard, non-negotiable rule.
+7. **All commits use `git cmnv`, NOT `git commit`.** This is a hard rule.
+   - `git cmnv` is the user's local alias for `git commit --no-verify` (skips pre-commit hooks). The orchestrator runs in **developer mode**: pre-commit hooks (linters, formatters, fast tests) are noise that interrupts flow without adding value mid-stage. The dev runs the real checks manually before opening the PR (Stage 10 wrapup or just before push).
+   - Throughout this skill, every code block that says `git commit -m "..."` MUST be executed as `git cmnv -m "..."` instead. Same for `git commit --amend ...` → `git cmnv --amend ...`. The literal text in code blocks below uses `git commit` for readability of the message, but the orchestrator MUST substitute `git cmnv` at execution time.
+   - If `git cmnv` is not defined as an alias on the current machine, fall back to `git commit --no-verify` (functionally equivalent). Do NOT silently fall back to `git commit` — the hook bypass is intentional.
+
+8. **`.doer/` NEVER reaches the team's git history.** This is a hard, non-negotiable rule.
    - The intake step ensures `.doer/` is added to `.git/info/exclude` (per-clone gitignore, never committed). The team has zero visibility into doer's existence in the repo.
    - Commits made by the orchestrator MUST NOT include any path under `.doer/`. Use `git add <specific-code-paths>` or `git add -A` (which respects the exclude). Do NOT use `git add .doer/...` explicitly — that bypasses the ignore.
    - If a stage's only output is `.doer/` artifacts (Stage 1 AC, Stage 2 Plan, Stage 5 Reflect, Stage 10 Wrapup), SKIP the commit step entirely. The artifacts live on disk for the orchestrator and subagents to read; they don't belong in the PR.
@@ -50,6 +55,7 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 | `/doer status <TICKET-ID>` | Show current stage, loop state, and blockers. |
 | `/doer list` | List all tickets in `./.doer/tickets/`. |
 | `/doer verify <TICKET-ID>` | Run stages that exist in the current skill but were missing when the ticket was closed. |
+| `/doer cleanup-history <TICKET-ID>` | Strip any `.doer/` content from commits on the ticket's feature branch. Auto-runs at wrapup; this command lets you re-run it manually. |
 | `/doer pause` | Persist current state and stop. |
 
 **Stages cannot be skipped manually.** Every stage must run. The only way to skip stages is through Stage 1's pre-existing-work detection (see Stage 1 below). This is by design: the orchestrator decides which stages to skip, not the user.
@@ -1118,12 +1124,68 @@ Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
    ```
 
 6. Update `metadata.json`: `status: "complete"`, `completed_at: <ISO8601>`.
-7. Final commit:
+
+7. **PR-ready history cleanup** — strip any `.doer/` content from prior commits on this feature branch.
+
+   Even with the Workspace Guard, tickets that started before the exclusion rule existed (or that imported pre-existing work) may have committed `.doer/` files into the feature branch. Those commits would expose `.doer/` in the PR. The orchestrator MUST clean them automatically as part of wrapup.
+
+   a. **Detect.** Find commits on this feature branch (between `<base-branch>` and `HEAD`) that touched `.doer/`:
+      ```bash
+      DIRTY_COMMITS=$(git log --format="%H" --diff-filter=ACMR -- '.doer/*' "<base-branch>..HEAD" 2>/dev/null)
+      ```
+      If `DIRTY_COMMITS` is empty → nothing to clean. Skip to step 8.
+
+   b. **Confirm with the user** before rewriting history (this is destructive and changes commit SHAs):
+      ```
+      I found {N} commit(s) on this feature branch that contain .doer/ files:
+        {short list with sha + subject}
+
+      I'll rewrite the branch history to remove .doer/ from those commits.
+      Files in .doer/ stay on disk untouched — only the git history changes.
+      Commit SHAs WILL change.
+
+      Proceed? [Y/n]
+      ```
+      If the user declines, narrate: *"Skipping history cleanup. .doer/ will appear in the PR. Run `/doer cleanup-history <TICKET-ID>` later if you change your mind."* and continue to step 8.
+
+   c. **Backup the current branch tip** before rewriting (safety net):
+      ```bash
+      git update-ref "refs/doer-backup/<TICKET-ID>-pre-cleanup-$(date +%s)" HEAD
+      ```
+      Tell the user the backup ref name. They can `git reset --hard <ref>` to roll back if anything goes wrong.
+
+   d. **Rewrite history** using `git filter-branch --index-filter` (built-in, no extra tools needed). This removes `.doer/` from every commit between base and HEAD, and prunes any commits that become empty:
+      ```bash
+      git filter-branch -f \
+        --index-filter 'git rm -r --cached --ignore-unmatch .doer/' \
+        --prune-empty \
+        "<base-branch>..HEAD"
+      ```
+      (`-f` forces in case a previous filter-branch backup exists.)
+
+   e. **Verify the cleanup worked**:
+      ```bash
+      LEFTOVER=$(git log --format="%H" --diff-filter=ACMR -- '.doer/*' "<base-branch>..HEAD" 2>/dev/null)
+      ```
+      `LEFTOVER` MUST be empty. If not, narrate the failure and tell the user to roll back via the backup ref.
+
+   f. **Reset filter-branch's housekeeping refs** (otherwise next filter-branch will warn):
+      ```bash
+      git update-ref -d refs/original/refs/heads/<branch-name> 2>/dev/null || true
+      ```
+
+   g. Narrate: *"History cleaned. {N} commits rewritten, .doer/ removed from branch history. Backup ref: refs/doer-backup/<TICKET-ID>-pre-cleanup-...Files on disk untouched."*
+
+8. Final wrapup commit (only if there are real code or doc changes uncommitted at this point — usually there are none, since wrapup itself only writes to `.doer/` which is ignored):
    ```bash
-   git add -A
-   git commit -m "doer(<TICKET-ID>): wrapup"
+   if ! git diff --quiet || ! git diff --cached --quiet; then
+     git add -A
+     git commit -m "doer(<TICKET-ID>): wrapup"
+   fi
    ```
-8. Narrate: "Ticket <TICKET-ID> complete. {count} commits on branch `<branch-name>`. Performance report at `.doer/tickets/<TICKET-ID>/performance.md`. When you are ready, push and open a PR manually. `/doer` does not push or deploy."
+   Skip silently if nothing to commit.
+
+9. Narrate: "Ticket <TICKET-ID> complete. {final-count} commits on branch `<branch-name>` (after cleanup). Performance report at `.doer/tickets/<TICKET-ID>/performance.md`. When you are ready, run your project's pre-commit checks (lint, format, full tests), then push and open a PR manually. `/doer` does not push or deploy."
 
 ---
 
@@ -1332,6 +1394,33 @@ If all approved retroactive stages completed without reopening, execute these st
 - **Stage exists in metadata but with different name than current skill:** treat as not-missing (names match is the contract). If the dev genuinely renamed a stage and wants it re-run, they do that manually.
 - **Ticket has stages the current skill does not:** that's fine, they stay. Verify is additive only.
 - **Dev aborts mid-verify:** whatever was persisted stays. Next `/doer verify` recomputes missing stages and picks up where it left off.
+
+---
+
+## `/doer cleanup-history <TICKET-ID>`
+
+Standalone version of the wrapup's history cleanup step. Use it when:
+
+- A ticket already wrapped up but the cleanup was skipped (or declined at the prompt), and you now want to do it before opening the PR.
+- A ticket is mid-flight and you want to preview / verify the cleanup will work before reaching wrapup.
+- You imported pre-existing work that included `.doer/` files in earlier commits.
+
+### Steps
+
+1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`. Resolve `branch-name` and `base-branch` (default `main`, fall back to `master`).
+2. Verify the user is currently on `branch-name`. If not, ask before checking it out.
+3. Run the **Workspace Guard** (idempotent — ensures `.doer/` is excluded going forward).
+4. Run steps **a through g** of the wrapup's "PR-ready history cleanup" (detect dirty commits → confirm with user → backup ref → `git filter-branch` → verify → reset housekeeping refs → narrate). Same logic, no duplication.
+5. Narrate the result. Do NOT commit anything new — this command is purely a history rewrite.
+
+### Safety
+
+- Always creates a backup ref under `refs/doer-backup/<TICKET-ID>-pre-cleanup-<timestamp>` before rewriting. Tell the user the ref name; they can `git reset --hard <ref>` to roll back.
+- Refuses to run if the branch has been pushed AND has commits other people may have based work on. Detect via `git rev-list --count HEAD@{u}..HEAD` and `git rev-list --count HEAD..HEAD@{u}` if upstream is set; warn if the upstream tracking suggests rewrite would be disruptive.
+
+### Skip when not needed
+
+If the cleanup detection finds zero dirty commits, narrate *"Nothing to clean — branch already free of .doer/ content."* and exit without prompting.
 
 ---
 
