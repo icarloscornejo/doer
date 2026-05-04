@@ -158,59 +158,81 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
    If the branch already exists (local or remote), ask:
    "Branch `<branch-name>` already exists. Options: 1) Check out existing, 2) Pick a different name. Which?"
 
-6. **Workspace setup — ensure `.doer/` is gitignored locally (never reaches the team).** This step is MANDATORY and runs on every new ticket, even if the orchestrator already ran it in this repo before:
-
-   a. Ensure `.git/info/exclude` exists:
-      ```bash
-      mkdir -p .git/info
-      [ -f .git/info/exclude ] || touch .git/info/exclude
-      ```
-
-   b. Add `.doer/` to it if not already present:
-      ```bash
-      if ! grep -qxF '.doer/' .git/info/exclude; then
-        echo '.doer/' >> .git/info/exclude
-      fi
-      ```
-
-      Note: `.git/info/exclude` is a per-clone, never-committed gitignore. The user's team has zero visibility into `.doer/`. This is a hard requirement of the skill.
-
-   c. Detect if `.doer/` is currently tracked in the repo (e.g. from a prior ticket run before this rule existed). Run:
-      ```bash
-      git ls-files .doer/ 2>/dev/null | head -1
-      ```
-      If output is non-empty, `.doer/` is tracked. Tell the user:
-
-      ```
-      ⚠ .doer/ is currently tracked in this repo. Some files may already be in
-      committed history. To prevent NEW commits from including .doer/ files
-      from now on, I can untrack them with `git rm -r --cached .doer/` (this
-      keeps the files on disk but removes them from the index).
-
-      This change has to be committed somewhere — your options:
-      1) Commit it on this feature branch as part of the ticket (one extra
-         "remove .doer/ from index" commit appears in the PR).
-      2) Skip for now; keep tracking. .doer/ files will continue to land in
-         commits until you clean it manually later.
-      3) Untrack silently (stage the change but don't commit). You decide
-         when/whether to commit later.
-
-      Which? [1/2/3]
-      ```
-
-      Default to option 3 (silent stage) if the user does not respond — least invasive.
-
-   d. **Verify the setup worked** before proceeding:
-      ```bash
-      mkdir -p .doer && touch .doer/.setup-test
-      git status --porcelain .doer/.setup-test
-      rm .doer/.setup-test
-      ```
-      `git status` MUST output nothing for `.doer/.setup-test` (because it's now ignored). If it shows the file as untracked, the exclude rule did not take effect — investigate before proceeding.
+6. **Workspace setup** — run the **Workspace Guard** (see section below). This is MANDATORY before Stage 1.
 
 7. Narrate to the user: "Ticket <TICKET-ID> initialized on branch `<branch-name>`. `.doer/` is gitignored locally — your team will never see these files. Starting Stage 1: AC Confirm."
 
 8. Proceed to Stage 1.
+
+---
+
+## Workspace Guard
+
+A short, idempotent check that ensures `.doer/` will never be committed in this clone. The Guard MUST run at the very start of every orchestrator entry point — not just intake. Specifically:
+
+- At intake (right after creating the feature branch, see step 6 above)
+- At the start of `/doer continue <TICKET-ID>` (before resuming any stage)
+- At the start of `/doer verify <TICKET-ID>` (before running retroactive stages)
+- At the very first action of any single-stage execution after a context reset
+
+Skipping the Guard for tickets already in progress is what caused old tickets to commit `.doer/` files. The Guard fixes that retroactively the next time those tickets are touched.
+
+### Guard steps
+
+1. **Cheap check — already done?** Read the active ticket's `metadata.json` (if any). If it has `"workspace_guard": "ok"` AND `.git/info/exclude` contains `.doer/`, the Guard is satisfied — skip the rest, proceed silently. This makes the Guard a near-zero-cost no-op on the common path.
+
+2. **Ensure `.git/info/exclude` contains `.doer/`:**
+   ```bash
+   mkdir -p .git/info
+   [ -f .git/info/exclude ] || touch .git/info/exclude
+   if ! grep -qxF '.doer/' .git/info/exclude; then
+     echo '.doer/' >> .git/info/exclude
+   fi
+   ```
+   `.git/info/exclude` is a per-clone, never-committed gitignore. The team has zero visibility into doer's existence in this repo.
+
+3. **Verify the rule actually takes effect:**
+   ```bash
+   mkdir -p .doer && touch .doer/.guard-test
+   STATUS=$(git status --porcelain .doer/.guard-test 2>/dev/null)
+   rm .doer/.guard-test
+   ```
+   `STATUS` MUST be empty. If it shows the file as untracked, the exclude rule did not take effect — investigate (maybe the user's global gitignore overrides, or there's a `.gitignore` rule un-ignoring `.doer/`). Stop and report.
+
+4. **Detect if `.doer/` is already tracked** (from prior tickets that ran before this rule existed):
+   ```bash
+   TRACKED=$(git ls-files .doer/ 2>/dev/null | head -1)
+   ```
+   If `TRACKED` is non-empty, surface this to the user **once per ticket** (the Guard's idempotency flag prevents repeated prompts):
+
+   ```
+   ⚠ .doer/ is currently tracked in this repo. Some files may already be in
+   committed history. To prevent NEW commits from including .doer/ files
+   from now on, I can untrack them with `git rm -r --cached .doer/` (this
+   keeps the files on disk but removes them from the index).
+
+   This change has to be committed somewhere — your options:
+   1) Commit it on this feature branch as part of the ticket (one extra
+      "remove .doer/ from index" commit appears in the PR).
+   2) Skip for now; keep tracking. .doer/ files will continue to land in
+      commits until you clean it manually later.
+   3) Untrack silently (stage the change but don't commit). You decide
+      when/whether to commit later.
+
+   Which? [1/2/3]
+   ```
+
+   Default to **option 3** if the user does not respond — least invasive.
+
+5. **Mark Guard as satisfied** for this ticket:
+   - If a ticket is active (intake just ran, or `continue`/`verify` was invoked with a `<TICKET-ID>`), write `"workspace_guard": "ok"` to that ticket's `metadata.json`. This is one of the rare metadata writes that the orchestrator may make outside a stage's commit-flush cycle — keep it small, single-key.
+   - If no ticket is active (e.g. the Guard ran during `/doer list`), do nothing extra; the next ticket-scoped invocation will set the flag.
+
+### When the Guard runs and the user is mid-stage
+
+If the Guard surfaces the "tracked" warning while the user is in the middle of, say, Stage 6, it means a previous version of the orchestrator already committed `.doer/` files to the feature branch. Those commits are already there; the Guard cannot rewrite them. What it CAN do is prevent new commits from making it worse. The user is told once, picks an option, and the ticket continues from where it was paused.
+
+For deep cleanup of historical `.doer/` content from the feature branch, that is a separate manual task (interactive rebase, filter-repo) — out of scope for the Guard.
 
 ---
 
@@ -1113,9 +1135,10 @@ Narrate to user: *"Runtime logs removed. Proceeding to docs sync."*
    ```bash
    git checkout <branch-name>
    ```
-4. Read the last stage's loop state (if any). If mid-loop, resume at the same iteration.
-5. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}. Continue? [Y/n]"
-6. Proceed.
+4. **Run the Workspace Guard** (see Workspace Guard section). This catches tickets started before the `.doer/` exclusion rule existed. Idempotent — near-zero cost when already satisfied.
+5. Read the last stage's loop state (if any). If mid-loop, resume at the same iteration.
+6. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}. Continue? [Y/n]"
+7. Proceed.
 
 ---
 
@@ -1164,6 +1187,7 @@ ABC-110   [paused]       Stage 2 (plan)         refactor-auth
 1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`.
 2. If the ticket does not exist → error: "Ticket <TICKET-ID> not found."
 3. If `status != "complete"` → error: "Ticket <TICKET-ID> is currently {status}. Use `/doer continue` instead of verify."
+4. **Run the Workspace Guard** (see Workspace Guard section). Required before any retroactive stage runs.
 
 ### Step 2: Compute missing stages (by name)
 
