@@ -67,28 +67,36 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 All state lives under `./.doer/` in the current working directory (scoped to the target repo).
 
+**Lessons are GLOBAL** — they live next to `SKILL.md` (so all repos share the same accumulated knowledge). **Assumptions are per-ticket** (specific to one piece of work).
+
 ```
-./.doer/
+<doer-skill-dir>/                  # ~/src/doer/ in this install (resolve symlinks)
+├── SKILL.md
+├── preferences.md                 # local config (gitignored)
+└── lessons/                       # GLOBAL — cross-project, gitignored
+    └── {slug}.md
+
+./.doer/                           # per-repo (in CWD), gitignored via .git/info/exclude
 ├── knowledge/
-│   ├── lessons/          # Accumulated across tickets. Read before planning.
-│   │   └── {slug}.md
-│   └── assumptions/      # Per-ticket, validated at wrapup.
-│       └── {TICKET-ID}.md
+│   └── assumptions/
+│       └── {TICKET-ID}.md         # per-ticket, validated at wrapup
 └── tickets/
     └── {TICKET-ID}/
-        ├── metadata.json           # Workflow state — single source of truth
-        ├── ticket.md               # Title, description, type, context from intake
-        ├── ac.md                   # Confirmed acceptance criteria (Stage 1 output)
-        ├── plan.md                 # Implementation plan (Stage 2 output)
-        ├── reflect.md              # Self-review notes (Stage 5 output)
-        ├── wrapup.md               # Captured lessons (Stage 10 output)
+        ├── metadata.json           # workflow state — single source of truth
+        ├── ticket.md               # intake (title, description, type, context)
+        ├── ac.md                   # confirmed ACs (Stage 1)
+        ├── plan.md                 # implementation plan (Stage 2)
+        ├── reflect.md              # self-review notes (Stage 5)
+        ├── wrapup.md               # captured lessons + summary (Stage 10)
         └── review/
             ├── plan-review-{iter}.md
             ├── tests-review-{iter}.md
             └── code-review-{iter}.md
 ```
 
-On first invocation in a repo, create `./.doer/` and `./.doer/knowledge/{lessons,assumptions}/` if they do not exist.
+**Path resolution for `lessons/`:** the orchestrator MUST resolve the directory of the running `SKILL.md` (following symlinks — most installs put it under `~/.claude*/skills/doer/SKILL.md` symlinked to `~/src/doer/SKILL.md`) and treat `<resolved-dir>/lessons/` as the canonical lessons directory. Use `readlink` or `realpath` if needed.
+
+On first invocation in a repo, create `./.doer/knowledge/assumptions/` if it does not exist. The global `lessons/` directory must already exist next to the skill.
 
 ---
 
@@ -340,7 +348,7 @@ Narrate: *"Stage {N} did not converge after 5 iterations. {N} BLOCKERs remain: {
 ### Step 1: Load context
 
 1. Read `ticket.md`.
-2. Read `./.doer/knowledge/lessons/*.md`, note any whose `when_it_applies` matches this ticket.
+2. Read `<doer-skill-dir>/lessons/*.md` (global, cross-project — see Knowledge & State Layout for path resolution). Note any whose `when_it_applies` matches this ticket.
 
 ### Step 2: Pre-existing work — ASK FIRST
 
@@ -471,7 +479,7 @@ Narrate: *"Stage 1 complete. Imported stages: {list}. Next at Stage {N}. Continu
 Read:
 - ./.doer/tickets/<TICKET-ID>/ticket.md
 - ./.doer/tickets/<TICKET-ID>/ac.md
-- ./.doer/knowledge/lessons/*.md (apply those whose scope matches)
+- <doer-skill-dir>/lessons/*.md (global lessons — apply those whose scope matches)
 - ./.doer/knowledge/assumptions/<TICKET-ID>.md
 
 Explore the codebase to understand current structure relevant to this ticket.
@@ -613,7 +621,7 @@ Ask yourself:
 - Any files I changed that weren't in the plan?
 - Any test I weakened to avoid debugging?
 
-Read ./.doer/knowledge/lessons/*.md and check if any past lesson applies to
+Read <doer-skill-dir>/lessons/*.md (global lessons) and check if any past lesson applies to
 what you just wrote.
 
 Write `./.doer/tickets/<TICKET-ID>/reflect.md` with:
@@ -822,7 +830,7 @@ No SHAs persisted — git history is the source of truth. No commit needed (`.do
 
 1. **Validate assumptions.** Read `./.doer/knowledge/assumptions/<TICKET-ID>.md`. Mark each VALIDATED, INVALIDATED (with reason), or UNVERIFIED.
 
-2. **Capture lessons.** Ask: *"Any lesson worth saving for future tickets? Reply with one or more, or `none`."* For each lesson, write `./.doer/knowledge/lessons/{slug}.md`:
+2. **Capture lessons.** Ask: *"Any lesson worth saving for future tickets? Reply with one or more, or `none`."* For each lesson, write to the GLOBAL lessons dir at `<doer-skill-dir>/lessons/{slug}.md` (resolve symlinks to find the real path — the same dir where SKILL.md lives). Lessons are cross-project; do NOT write them under `.doer/`. Format:
    ```markdown
    ---
    slug: <kebab-case>
