@@ -212,7 +212,35 @@ Idempotent check that prevents `.doer/` from ever being committed in this clone.
    ```
    Default to **3** if no response.
 
-5. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket — next ticket-scoped invocation sets it.)
+5. **Migrate stale per-repo lessons → global pool.** Idempotent. The per-repo lessons location was deprecated in favor of `<doer-skill-dir>/lessons/` (global, cross-project). Old tickets still have files at `./.doer/knowledge/lessons/` from before the change. Migrate them so the user keeps a single global pool.
+
+   ```bash
+   GLOBAL_LESSONS=$(dirname "$(realpath <SKILL.md path>)")/lessons
+   LOCAL_LESSONS=.doer/knowledge/lessons
+   if [ -d "$LOCAL_LESSONS" ]; then
+     mkdir -p "$GLOBAL_LESSONS"
+     for f in "$LOCAL_LESSONS"/*.md; do
+       [ -f "$f" ] || continue
+       NAME=$(basename "$f")
+       if [ -f "$GLOBAL_LESSONS/$NAME" ]; then
+         if cmp -s "$f" "$GLOBAL_LESSONS/$NAME"; then
+           rm "$f"   # identical → just delete local
+         else
+           # Conflict — ask user once per file: overwrite | keep both (rename) | skip
+           # Default to "keep both" (rename local with -from-<repo-name> suffix) if no answer.
+         fi
+       else
+         mv "$f" "$GLOBAL_LESSONS/$NAME"
+       fi
+     done
+     rmdir "$LOCAL_LESSONS" 2>/dev/null || true
+     # Also remove .doer/knowledge if now empty
+     rmdir .doer/knowledge 2>/dev/null || true
+   fi
+   ```
+   Narrate the migration outcome only if any file was moved or a conflict was raised. Silent no-op when there's nothing to migrate.
+
+6. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket — next ticket-scoped invocation sets it.)
 
 For deep cleanup of historical `.doer/` content from earlier commits on the feature branch, use `/doer cleanup-history <TICKET-ID>` — out of scope for the Guard.
 
@@ -932,8 +960,11 @@ No SHAs persisted — git history is the source of truth. No commit needed (`.do
      # If TRACKED non-empty, surface the 3-option prompt to the user (see Workspace Guard section
      # for the exact prompt text and default to option 3).
 
-     # 4e. Mark satisfied
-     # Update metadata.json: set workspace_guard = "ok"
+     # 4e. Migrate stale per-repo lessons → global pool (see Workspace Guard step 5
+     # for the full bash + conflict-handling rules). Idempotent: silent no-op
+     # when .doer/knowledge/lessons/ doesn't exist or is empty.
+
+     # 4f. Mark satisfied: write workspace_guard = "ok" to metadata.json
      echo "Workspace Guard: applied."
    fi
    ```
