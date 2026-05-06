@@ -7,7 +7,7 @@ description: >-
   "/doer continue <TICKET-ID>", "/doer status <TICKET-ID>", "/doer list".
   Also activates implicitly when the user references an active /doer ticket
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
-  Skips PRD, architecture design, Jira creation, PR assembly, and deployment.
+  Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
 version: 2.2.0
 user-invocable: true
@@ -20,7 +20,7 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 **Scope:** one ticket, one branch, end-to-end implementation up to (but not including) PR and deploy.
 
-**Out of scope:** PRD creation, architecture design, Jira creation, pull request assembly, deployment.
+**Out of scope:** PRD creation, architecture design, ticket creation, pull request assembly, CI, deployment. By design.
 
 ---
 
