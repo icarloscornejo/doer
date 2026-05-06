@@ -40,8 +40,8 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 8. **`.doer/` NEVER reaches the team's git history.** Non-negotiable.
    - Intake adds `.doer/` to `.git/info/exclude` (per-clone, never committed) — team sees nothing.
    - Commits MUST NOT include paths under `.doer/`. Use `git add <code-paths>` or `git add -A` (respects exclude). NEVER `git add .doer/...` (that bypasses the ignore).
-   - Stages whose only output is `.doer/` (1 AC, 2 Plan, 5 Reflect, 10 Wrapup) SKIP the commit entirely. Stages with real code (3 Tests, 4 Code, 6 Review, 8 Runtime, 9 Docs) commit code only.
-   - Stage 8 temp commit + revert still works because it touches real source files, not `.doer/`.
+   - Stages whose only output is `.doer/` (1 AC, 2 Plan, 9 Wrapup) SKIP the commit entirely. Stages with real code (3 Tests, 4 Code, 5 Review, 7 Runtime, 8 Docs) commit code only.
+   - Stage 7 (Runtime Verify) temp commit + revert still works because it touches real source files, not `.doer/`.
 
 ---
 
@@ -82,17 +82,18 @@ All state lives under `./.doer/` in the current working directory (scoped to the
 │       └── {TICKET-ID}.md         # per-ticket, validated at wrapup
 └── tickets/
     └── {TICKET-ID}/
-        ├── metadata.json           # workflow state — single source of truth
-        ├── ticket.md               # intake (title, description, type, context)
+        ├── metadata.json           # workflow state + raw intake (title, description, type, raw_acs, raw_context)
         ├── ac.md                   # confirmed ACs (Stage 1)
         ├── plan.md                 # implementation plan (Stage 2)
-        ├── reflect.md              # self-review notes (Stage 5)
-        ├── wrapup.md               # captured lessons + summary (Stage 10)
+        ├── changelog.md            # doer's "what + why" log, accumulated across stages
+        ├── wrapup.md               # lessons summary + performance report (Stage 9, final stage)
         └── review/
-            ├── plan-review-{iter}.md
-            ├── tests-review-{iter}.md
-            └── code-review-{iter}.md
+            ├── plan-review.md      # ONE file per stage, sections per iteration
+            ├── tests-review.md
+            └── code-review.md
 ```
+
+**Per ticket: 6 fixed files + 3 review files (only when those stages have loops).** Reflect, runtime-logs-added, runtime-log-output, performance, ticket are all gone (rolled into other artifacts or dropped as low-value).
 
 **Path resolution for `lessons/`:** the orchestrator MUST resolve the directory of the running `SKILL.md` (following symlinks — most installs put it under `~/.claude*/skills/doer/SKILL.md` symlinked to `~/src/doer/SKILL.md`) and treat `<resolved-dir>/lessons/` as the canonical lessons directory. Use `readlink` or `realpath` if needed.
 
@@ -117,24 +118,9 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
    | 5 | "Any extra context? (related issues, prior decisions, links, constraints). Type `skip` if none." |
    | 6 | "What name should the feature branch use? (e.g. `feature/fix-login-timeout`)" |
 
-3. Write `./.doer/tickets/<TICKET-ID>/ticket.md` with the raw intake:
+3. **No `ticket.md` file** — the raw intake lives directly inside `metadata.json` as a `raw` block (see step 4). One less file, no duplication.
 
-   ```markdown
-   # <TICKET-ID>: <title>
-   **Type:** <type>
-   **Branch:** <branch-name>
-
-   ## Description
-   <description>
-
-   ## Raw Acceptance Criteria
-   <ACs or "to derive">
-
-   ## Context
-   <context or "none">
-   ```
-
-4. Initialize `metadata.json`:
+4. Initialize `metadata.json` (raw intake is embedded — no separate `ticket.md`):
 
    ```json
    {
@@ -145,22 +131,28 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
      "status": "in_progress",
      "current_stage": 1,
      "created_at": "<ISO8601>",
+     "raw": {
+       "description": "<full description from intake>",
+       "raw_acs": "<pasted ACs or 'derive'>",
+       "context": "<extra context or 'none'>"
+     },
      "stages": {
-       "1":  {"name": "ac-confirm",      "status": "pending"},
-       "2":  {"name": "plan",            "status": "pending", "loop": true},
-       "3":  {"name": "tests",           "status": "pending", "loop": true},
-       "4":  {"name": "code",            "status": "pending", "loop": true},
-       "5":  {"name": "reflect",         "status": "pending"},
-       "6":  {"name": "code-review",     "status": "pending", "loop": true},
-       "7":  {"name": "quality-gate",    "status": "pending"},
-       "8":  {"name": "runtime-verify",  "status": "pending"},
-       "9":  {"name": "docs-sync",       "status": "pending"},
-       "10": {"name": "wrapup",          "status": "pending"}
+       "1": {"name": "ac-confirm",     "status": "pending"},
+       "2": {"name": "plan",           "status": "pending", "loop": true},
+       "3": {"name": "tests",          "status": "pending", "loop": true},
+       "4": {"name": "code",           "status": "pending", "loop": true},
+       "5": {"name": "code-review",    "status": "pending", "loop": true},
+       "6": {"name": "quality-gate",   "status": "pending"},
+       "7": {"name": "runtime-verify", "status": "pending"},
+       "8": {"name": "docs-sync",      "status": "pending"},
+       "9": {"name": "wrapup",         "status": "pending"}
      },
      "blocking_conditions": [],
      "commits": []
    }
    ```
+
+   **Pipeline is now 9 stages** (Stage 5 Reflect was removed — its self-review value was marginal vs the formal Stage 5 Code Review). All stages renumbered accordingly.
 
 5. Create the feature branch in the current repo:
 
@@ -278,7 +270,7 @@ Default behavior is **auto-proceed** (narrate next step, end turn, continue on n
 
 ### SUGGESTIONs never pause
 
-Zero BLOCKERs = converged. SUGGESTIONs are logged to `review/{stage}-review-{iter}.md` and the orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds. Do NOT ask the user whether to apply them.
+Zero BLOCKERs = converged. SUGGESTIONs are appended to the stage's single review file (e.g. `review/plan-review.md`) under the iteration's section. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds. Do NOT ask the user whether to apply them.
 
 ### Interrupt detection — and the auto-resume rule
 
@@ -314,7 +306,7 @@ On pause: write `metadata.status = "paused"`, `paused_at = <ISO8601>`. Reply wit
 
 For immediate interruption mid-subagent the user can press `Esc` (CLI-level). Frequent turn boundaries minimize the need.
 
-### Performance counters (consumed by Stage 10 report)
+### Performance counters (consumed by Stage 9 wrapup)
 
 Persist these in `metadata.json`:
 
@@ -359,6 +351,30 @@ Stages 2, 3, 4, 6 use this pattern. Max iterations: **5**.
 
 **Convergence = zero BLOCKERs remaining.** AUTO_FIXes are applied within the same iteration, do not block convergence.
 
+### Review file (ONE per stage, sections per iteration)
+
+Each stage with a loop has **a single review file** at `review/{stage}-review.md` (e.g. `review/plan-review.md`, `review/tests-review.md`, `review/code-review.md`). NEVER create per-iteration files like `plan-review-1.md`. The single file accumulates iteration sections:
+
+```markdown
+# {Stage} Review — <TICKET-ID>
+
+## Iteration 1
+- BLOCKERs: <list with IDs>
+- AUTO_FIXes applied: <list>
+- SUGGESTIONs: <list>
+- Verdict: needs_revision
+
+## Iteration 2
+- Prior BLOCKERs resolved: <ids>
+- Prior BLOCKERs still open: <ids>
+- New BLOCKERs: <list>
+- AUTO_FIXes applied: <list>
+- SUGGESTIONs: <list>
+- Verdict: converged
+```
+
+Append on each iteration. The reviewer reads only the most recent iteration's section + the prior BLOCKERs (passed in the prompt). Old SUGGESTIONs stay logged for the user but are NOT re-analyzed.
+
 ### Iteration 1 (clean-slate)
 
 1. Invoke **doer** → produces artifact + `changelog.md` (what was done, why).
@@ -399,7 +415,7 @@ Narrate: *"Stage {N} did not converge after 5 iterations. {N} BLOCKERs remain: {
 
 ### Step 1: Load context
 
-1. Read `ticket.md`.
+1. Read `metadata.json` — `title`, `type`, `raw.description`, `raw.raw_acs`, `raw.context` come from the intake.
 2. Read `<doer-skill-dir>/lessons/*.md` (global, cross-project — see Knowledge & State Layout for path resolution). Note any whose `when_it_applies` matches this ticket.
 
 ### Step 2: Pre-existing work — ASK FIRST
@@ -465,8 +481,7 @@ Is this accurate? [Y/n/correct-me]
 | Plan only | 3 (tests) | 2 |
 | Plan + failing tests | 4 (code) | 2, 3 |
 | Plan + tests + partial code | 4 (code) | 2, 3 |
-| Plan + tests + complete code | 5 (reflect) | 2, 3, 4 |
-| Everything, ready for review | 6 (code-review) | 2, 3, 4, 5 |
+| Plan + tests + complete code | 5 (code-review) | 2, 3, 4 |
 
 Confirm with user: *"Suggesting entry at Stage {N}, importing {list}. Proceed? [Y / start at 1 / pick stage]"*
 
@@ -529,7 +544,7 @@ Narrate: *"Stage 1 complete. Imported stages: {list}. Next at Stage {N}. Continu
 
 ```
 Read:
-- ./.doer/tickets/<TICKET-ID>/ticket.md
+- ./.doer/tickets/<TICKET-ID>/metadata.json (read `raw.*` for original intake)
 - ./.doer/tickets/<TICKET-ID>/ac.md
 - <doer-skill-dir>/lessons/*.md (global lessons — apply those whose scope matches)
 - ./.doer/knowledge/assumptions/<TICKET-ID>.md
@@ -551,7 +566,7 @@ Do NOT write code. Do NOT run tests. Plan only.
 ### Plan reviewer prompt (skeleton)
 
 ```
-Read plan.md, ticket.md, ac.md, changelog.md.
+Read plan.md, ac.md, changelog.md, and metadata.json (raw.* for original intake).
 
 Judge the plan against:
 - AC coverage: does every AC have a clear path in the plan?
@@ -574,7 +589,7 @@ Run the doer/reviewer loop until convergence. **No commit** — `plan.md` lives 
 ### Test writer prompt (skeleton)
 
 ```
-Read ticket.md, ac.md, plan.md.
+Read ac.md, plan.md (and metadata.json `raw.*` for context).
 
 Write the tests described in plan.md's test strategy. Tests MUST currently fail
 (no implementation exists yet). Follow the repo's existing test conventions
@@ -614,7 +629,7 @@ git commit --no-verify -m "doer(<TICKET-ID>): failing tests (TDD red)"
 ### Code writer prompt (skeleton)
 
 ```
-Read ticket.md, ac.md, plan.md, and the tests added in Stage 3.
+Read ac.md, plan.md, and the tests added in Stage 3 (metadata.json `raw.*` if needed).
 
 Implement the plan. Follow existing codebase conventions. Do not add new
 dependencies unless the plan specifies them (and even then, flag it in
@@ -655,44 +670,7 @@ git commit --no-verify -m "doer(<TICKET-ID>): implementation (TDD green)"
 
 ---
 
-## Stage 5 — Reflect (Self-Review)
-
-**Goal:** cheap self-review by the code-writer before the heavier code reviewer in Stage 6.
-
-**No separate reviewer.** Just invoke the code-writer agent again with:
-
-```
-You just finished implementing <TICKET-ID>. Before the formal code review,
-re-read your own diff with fresh eyes.
-
-Read: ac.md, plan.md, changelog.md, git diff against branch base.
-
-Ask yourself:
-- Did I actually cover every AC, or did I skip something?
-- Any TODOs, hacks, or shortcuts I told myself I'd fix later?
-- Any files I changed that weren't in the plan?
-- Any test I weakened to avoid debugging?
-
-Read <doer-skill-dir>/lessons/*.md (global lessons) and check if any past lesson applies to
-what you just wrote.
-
-Write `./.doer/tickets/<TICKET-ID>/reflect.md` with:
-- Self-identified issues (if any) — BLOCKER / SUGGESTION
-- Lessons that applied
-- Confidence level (low / medium / high) + reason
-
-If you find BLOCKERs, fix them now in the same commit.
-```
-
-Commit:
-```bash
-git add -A
-git commit --no-verify -m "doer(<TICKET-ID>): self-reflect"
-```
-
----
-
-## Stage 6 — Code Review (Doer/Reviewer Loop, External Review)
+## Stage 5 — Code Review (Doer/Reviewer Loop, External Review)
 
 **Goal:** independent review against a concrete checklist.
 
@@ -722,7 +700,7 @@ git commit --no-verify -m "doer(<TICKET-ID>): address code review"
 
 ---
 
-## Stage 7 — Quality Gate (Validation, Not Loop)
+## Stage 6 — Quality Gate (Validation, Not Loop)
 
 **Goal:** fast sanity check. No agents. Just run tests.
 
@@ -735,17 +713,17 @@ git commit --no-verify -m "doer(<TICKET-ID>): address code review"
 
 ---
 
-## Stage 8 — Runtime Verify (Live Debug Logs, Temporary)
+## Stage 7 — Runtime Verify (Live Debug Logs, Temporary)
 
 **Goal:** verify on-device behavior against ACs via dense temporary debug logs. Logs NEVER reach the final branch.
 
-**Skip:** ask once: *"Does this ticket produce runtime behavior worth exercising on device? [Y/n]"*. If `n`, mark `stages.8.status = "skipped"` and proceed to Stage 9.
+**Skip:** ask once: *"Does this ticket produce runtime behavior worth exercising on device? [Y/n]"*. If `n`, mark `stages.7.status = "skipped"` and proceed to Stage 8.
 
-**Log format (exact):** `println("DOER - <TICKET-ID> - <ClassName.fnName> - <message or key=value>")`. The prefix `DOER - <TICKET-ID>` is the unique grep tag — nothing else in the codebase matches.
+**Log format (exact):** `println("DOER - <TICKET-ID> - <ClassName.fnName> - <msg or key=value>")`. The prefix is unique to this ticket — nothing else in the codebase matches.
 
 ### Step 1: Inject logs
 
-Invoke a general-purpose agent with this prompt:
+Invoke a general-purpose agent:
 
 ```
 You are the runtime-logger agent for ticket <TICKET-ID>.
@@ -754,20 +732,19 @@ Read: .doer/tickets/<TICKET-ID>/ac.md, plan.md, and `git diff <base>..HEAD`.
 
 Scope: every file in the diff PLUS every file in the call path the ACs
 exercise (deps, helpers, repositories, view models). Follow imports
-outward from the diff until full runtime flow is covered. Stop at
-framework/SDK boundaries.
+outward from the diff. Stop at framework/SDK boundaries.
 
-What to log: function entry (with args), every conditional branch (which
-+ why), state changes ("set X to Y"), external boundaries (API/DB/IO/
-threads/coroutines), exception catches, function exit (return or void).
+Log: function entry (args), conditional branches (which + why), state
+changes, external boundaries (API/DB/IO/threads/coroutines), exception
+catches, function exit (return or void).
 
-Format MANDATORY: println("DOER - <TICKET-ID> - <ClassName.fnName> - <message>")
+Format MANDATORY: println("DOER - <TICKET-ID> - <ClassName.fnName> - <msg>")
 
 Rules: use println (not app logger), never modify business logic, never
 touch existing logs, run the build after to verify syntax.
 
-Write summary to .doer/tickets/<TICKET-ID>/runtime-logs-added.md
-(file touched + one-line reason each).
+Return a JSON list of files touched + one-line reason each. Do NOT
+write a summary file — the orchestrator narrates it inline.
 ```
 
 ### Step 2: Temporary commit
@@ -777,49 +754,50 @@ git add -A
 git commit --no-verify -m "doer(<TICKET-ID>): [TEMP] runtime debug logs — DO NOT MERGE"
 ```
 
-The commit is identified later by its unique message prefix, not by a stored SHA.
+Commit is identified later by its unique message prefix.
 
 ### Step 3: Hand off to dev
 
-Narrate:
+Narrate the file list inline + build/filter commands:
 ```
-Runtime logs injected across N files. Build and run the app:
-  <build/install command — detect from repo or ask once and persist as
-   metadata.runtime_build_command>
-
-Exercise each AC manually. Filter logs:
-  <log filter, e.g. `adb logcat | grep "DOER - <TICKET-ID>"`>
-
-Paste filtered output (or tell me the file path) and say "ready" to analyze.
+Runtime logs injected across N files: <list>.
+Build & run: <build command — detect or ask once, persist as metadata.runtime_build_command>
+Exercise each AC, filter with: <e.g. adb logcat | grep "DOER - <TICKET-ID>">
+Paste filtered output here when ready.
 ```
 
 ### Step 4: Analyze logs
 
-When the dev provides log output, invoke an analyzer agent:
+When the dev pastes the log output, pass it **directly in the prompt** to the analyzer (no intermediate `runtime-log-output.txt` — the logs may be huge, no point persisting them):
 
 ```
 You are the runtime-log analyzer for ticket <TICKET-ID>.
 
-Read: ac.md, plan.md, and the log excerpt at
-.doer/tickets/<TICKET-ID>/runtime-log-output.txt
+Read: ac.md, plan.md.
+
+Log excerpt from the dev's session:
+<<<
+{paste the user's log output here verbatim}
+>>>
 
 For each AC: was the code path hit? Did values match expected? Any
 unexpected errors? Any branch that should have been exercised but wasn't?
 
-Write .doer/tickets/<TICKET-ID>/runtime-analysis.md with sections:
-  ## AC-by-AC verdict
-    AC-1: PASS | FAIL | NOT_EXERCISED — <evidence>
-  ## Anomalies
-  ## Recommended next action
-    One of: APPROVE | RETURN_TO_STAGE_2 | RETURN_TO_STAGE_3 |
-            RETURN_TO_STAGE_4 | NEED_MORE_DATA  (with rationale)
+Return JSON:
+{
+  "ac_verdicts": {"AC-1": "PASS|FAIL|NOT_EXERCISED", ...},
+  "evidence": {"AC-1": "<which log lines support the verdict>", ...},
+  "anomalies": [...],
+  "recommendation": "APPROVE | RETURN_TO_STAGE_2 | RETURN_TO_STAGE_3 | RETURN_TO_STAGE_4 | NEED_MORE_DATA",
+  "rationale": "<one paragraph>"
+}
 ```
 
-Present `runtime-analysis.md` to dev and ask: *"Analyzer recommends: <action>. <summary>. Apply? [Y / explain / override]"*
+Present the recommendation to dev: *"Analyzer recommends: <action>. <rationale>. Apply? [Y / explain / override]"*
 
 Branches:
-- **APPROVE** → Step 5 (cleanup)
-- **RETURN_TO_STAGE_N** → cleanup first, then jump back to stage N with findings pre-loaded as BLOCKERs
+- **APPROVE** → Step 5
+- **RETURN_TO_STAGE_N** → cleanup first, then jump back to N with findings as BLOCKERs
 - **NEED_MORE_DATA** → keep logs, loop back to Step 3
 - **Override** → honor dev's choice, record reason
 
@@ -827,24 +805,21 @@ Branches:
 
 ```bash
 TEMP_SHA=$(git log --grep="^doer(<TICKET-ID>): \[TEMP\] runtime debug logs" --format="%H" | head -n1)
-if [ -z "$TEMP_SHA" ]; then echo "ERROR: temp commit not found"; exit 1; fi
+[ -z "$TEMP_SHA" ] && { echo "ERROR: temp commit not found"; exit 1; }
 
 git revert --no-edit "$TEMP_SHA"
 git commit --no-verify --amend -m "doer(<TICKET-ID>): remove runtime debug logs"
 
-# Verify zero residuals
 if git grep -l "DOER - <TICKET-ID>" -- .; then
   echo "ERROR: Residual DOER logs found"; exit 1
 fi
 ```
 
-If residuals (shouldn't happen): re-invoke the logger agent: *"Remove every line matching `DOER - <TICKET-ID>`. Touch nothing else."*
-
-Narrate: *"Runtime logs removed. Proceeding to docs sync."*
+If residuals: re-invoke logger with *"Remove every line matching `DOER - <TICKET-ID>`. Touch nothing else."*
 
 ### Step 6: Record outcome
 
-Update `metadata.json → stages.8`:
+Persist to `metadata.json → stages.7`:
 ```json
 {
   "name": "runtime-verify",
@@ -854,11 +829,11 @@ Update `metadata.json → stages.8`:
   "completed_at": "<ISO8601>"
 }
 ```
-No SHAs persisted — git history is the source of truth. No commit needed (`.doer/` is gitignored).
+No SHAs persisted (git history IS the source of truth). No commit needed (`.doer/` gitignored).
 
 ---
 
-## Stage 9 — Docs Sync
+## Stage 8 — Docs Sync
 
 **Goal:** update user-facing documentation if the change affects it.
 
@@ -876,67 +851,61 @@ No SHAs persisted — git history is the source of truth. No commit needed (`.do
 
 ---
 
-## Stage 10 — Wrapup (Lessons & Assumptions)
+## Stage 9 — Wrapup (Lessons + Assumptions + Performance)
 
-**Goal:** capture lessons, validate assumptions, generate performance report, clean `.doer/` from branch history.
+**Goal:** capture lessons, validate assumptions, write a single `wrapup.md` (lessons + assumptions + performance, no separate file), clean `.doer/` from branch history.
 
-1. **Validate assumptions.** Read `./.doer/knowledge/assumptions/<TICKET-ID>.md`. Mark each VALIDATED, INVALIDATED (with reason), or UNVERIFIED.
+1. **Validate assumptions.** Read `.doer/knowledge/assumptions/<TICKET-ID>.md`. Mark each VALIDATED, INVALIDATED (reason), or UNVERIFIED.
 
-2. **Capture lessons.** Ask: *"Any lesson worth saving for future tickets? Reply with one or more, or `none`."* For each lesson, write to the GLOBAL lessons dir at `<doer-skill-dir>/lessons/{slug}.md` (resolve symlinks to find the real path — the same dir where SKILL.md lives). Lessons are cross-project; do NOT write them under `.doer/`. Format:
+2. **Capture lessons.** Ask: *"Any lesson worth saving for future tickets? Reply with one or more, or `none`."* For each, write to the GLOBAL pool at `<doer-skill-dir>/lessons/{slug}.md` (NOT under `.doer/`). Format:
    ```markdown
    ---
    slug: <kebab-case>
    captured_from: <TICKET-ID>
    captured_at: <ISO8601>
-   when_it_applies: <short context description>
+   when_it_applies: <short context>
    ---
    ## What happened
    ## Why it matters
    ## Takeaway
    ```
 
-3. **Write `wrapup.md`** with sections: Assumptions (status per item), Lessons captured (slug + takeaway), Commits (SHA list from metadata).
-
-4. **Generate `performance.md`.** Sources: `metadata.json` (stage timestamps, agent_invocations, convergence_loop), `git log/diff` for commits/LOC, repo test command for pass/fail. Format:
+3. **Write `wrapup.md`** — single consolidated file with everything. Pull data from `metadata.json` (stage timestamps, agent_invocations, convergence_loop), `git log/diff` (commits/LOC), and the repo test command (pass/fail):
    ```markdown
-   # <TICKET-ID> — Performance Report
+   # <TICKET-ID> — Wrapup
 
-   ## Timing
-   Started / Completed / Wall clock / Active (excludes paused)
+   ## Assumptions
+   - <item> → VALIDATED | INVALIDATED: <reason> | UNVERIFIED
 
-   ## Stage breakdown
-   | Stage | Status | Duration | Iterations | Blockers resolved |
+   ## Lessons captured
+   - [<slug>] — <one-line takeaway>
 
-   ## Code metrics
-   Commits / Files changed (src/tests/docs) / Lines +/- / Tests added/modified / Pass-fail status
+   ## Commits
+   <SHA list>
 
-   ## Agent invocations
-   <agent-name>: <count>
-
-   ## Convergence stats
-   Converged iter 1 / iter 2+ / max-iterations / avg
+   ## Performance
+   - Timing: started <X>, completed <Y>, wall clock <Z>, active <W> (excludes paused)
+   - Stages: | N | name | status | duration | iterations | BLOCKERs resolved |
+   - Code: <commits> commits, <files> files (<src> src / <tests> tests / <docs> docs), +<add>/-<rem> LOC, <X/Y> tests passing
+   - Agents: <agent>: <count>, ...
+   - Convergence: iter1 <a>, iter2+ <b>, max-iter <c>, avg <d>
    ```
 
-5. **Update `metadata.json`:** `status: "complete"`, `completed_at: <ISO8601>`.
+4. **Update `metadata.json`:** `status: "complete"`, `completed_at: <ISO8601>`.
 
-6. **PR-ready history cleanup** — remove `.doer/` from prior commits on the feature branch.
-
+5. **PR-ready history cleanup** — remove `.doer/` from prior commits on the feature branch:
    ```bash
    DIRTY=$(git log --format=%H --diff-filter=ACMR -- '.doer/*' "<base>..HEAD" 2>/dev/null)
    ```
-   If empty → skip to step 7.
-
-   Otherwise: confirm with user (destructive, changes SHAs). On approval:
+   If empty → skip to step 6. Otherwise confirm with user (destructive, changes SHAs). On approval:
    ```bash
    git update-ref "refs/doer-backup/<TICKET-ID>-pre-cleanup-$(date +%s)" HEAD
    git filter-branch -f --index-filter 'git rm -r --cached --ignore-unmatch .doer/' --prune-empty "<base>..HEAD"
    git update-ref -d refs/original/refs/heads/<branch-name> 2>/dev/null || true
    ```
-   Verify `git log --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"` is empty. Tell user the backup ref name (rollback: `git reset --hard <ref>`).
+   Verify `git log --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"` is empty. Tell user the backup ref (rollback: `git reset --hard <ref>`). On decline: narrate *"Skipping history cleanup. Run /doer cleanup-history later."*
 
-   On user decline: narrate `"Skipping history cleanup. .doer/ will appear in PR. Run /doer cleanup-history <TICKET-ID> later."`
-
-7. **Final wrapup commit** (only if there are uncommitted real changes — wrapup itself usually has none since it only writes to `.doer/`):
+6. **Final commit** (only if uncommitted real changes — wrapup itself has none since it only writes to `.doer/`):
    ```bash
    if ! git diff --quiet || ! git diff --cached --quiet; then
      git add -A
@@ -944,7 +913,7 @@ No SHAs persisted — git history is the source of truth. No commit needed (`.do
    fi
    ```
 
-8. Narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Performance report: .doer/tickets/<TICKET-ID>/performance.md. Run your pre-commit checks (lint, format, full tests), then push and open the PR manually."*
+7. Narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Wrapup: .doer/tickets/<TICKET-ID>/wrapup.md. Run your pre-commit checks, then push and open the PR manually."*
 
 ---
 
