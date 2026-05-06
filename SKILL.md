@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, Jira creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 1.0.0
+version: 2.0.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -42,6 +42,75 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
    - Commits MUST NOT include paths under `.doer/`. Use `git add <code-paths>` or `git add -A` (respects exclude). NEVER `git add .doer/...` (that bypasses the ignore).
    - Stages whose only output is `.doer/` (1 AC, 2 Plan, 9 Wrapup) SKIP the commit entirely. Stages with real code (3 Tests, 4 Code, 5 Review, 7 Runtime, 8 Docs) commit code only.
    - Stage 7 (Runtime Verify) temp commit + revert still works because it touches real source files, not `.doer/`.
+
+---
+
+## Versioning & Migrations
+
+The SKILL frontmatter declares the current version (SemVer: MAJOR.MINOR.PATCH).
+
+| Bump | When | Migration needed? |
+|------|------|-------------------|
+| **MAJOR** | Renames/removes stages, changes metadata.json structure, removes/renames artifact files | Yes — old tickets must be migrated |
+| **MINOR** | Adds capability without breaking (new findings bucket, new global pool, new optional file) | No — old tickets work as-is |
+| **PATCH** | Bug fixes, doc edits, no functional change | No |
+
+Each ticket persists `skill_version` in `metadata.json` at intake. On every entry point (`continue`, `verify`, any stage execution), the orchestrator runs the **Migration Check** below.
+
+### Migration Check (auto, silent)
+
+Runs as part of the Workspace Guard sequence (right after the exclude check, before any stage logic). Behavior:
+
+1. Read `metadata.skill_version` (default `"1.0.0"` if missing — pre-versioning era).
+2. Read current SKILL frontmatter `version`.
+3. If equal → no-op.
+4. If ticket version < current version → apply each migration block below in order whose `from` matches. Bump `metadata.skill_version` to the migration's `to`. Continue until ticket version equals current version.
+5. **Always auto-apply silently.** Do NOT ask the user. Narrate ONE summary line at the end: *"Migrated ticket from 1.x to 2.0.0: <count> changes applied."* If nothing was migrated, narrate nothing.
+
+### Migration: From 1.x → 2.0.0
+
+Major bump: stage 5 (Reflect) removed, stages renumbered, several artifact files consolidated.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Move ticket.md → metadata.raw (if ticket.md exists)
+if [ -f "$TICKET_DIR/ticket.md" ]; then
+  # Parse the markdown into description, raw_acs, context (regex on the section headings).
+  # Write into metadata.json under "raw": {description, raw_acs, context}.
+  # Then: rm "$TICKET_DIR/ticket.md"
+fi
+
+# 2. Renumber stages in metadata.stages
+#    OLD → NEW: 6→5 (code-review), 7→6 (quality-gate), 8→7 (runtime-verify),
+#               9→8 (docs-sync), 10→9 (wrapup)
+#    Stage 5 (reflect) is dropped from the active map. If it had status="complete",
+#    move it to metadata.deprecated_stages.reflect (preserve history). If pending,
+#    just remove it.
+
+# 3. Renumber metadata.current_stage
+#    1,2,3,4 → unchanged
+#    5 (reflect, pending) → 5 (code-review)   # skip the deprecated stage
+#    6 → 5, 7 → 6, 8 → 7, 9 → 8, 10 → 9
+
+# 4. Consolidate per-iteration review files into one per stage:
+#    review/plan-review-1.md + plan-review-2.md + ... → review/plan-review.md
+#    Same for tests-review-N.md and code-review-N.md.
+#    Each old file becomes a "## Iteration N" section in the consolidated file.
+#    Then: rm the old per-iteration files.
+
+# 5. Orphaned files — leave on disk as historical (do NOT delete):
+#    reflect.md, runtime-logs-added.md, runtime-log-output.txt, performance.md
+#    The new pipeline doesn't reference them; they're inert.
+
+# 6. Set metadata.skill_version = "2.0.0"
+```
+
+**Repository-level cleanup** (orchestrator does this once per repo if needed):
+- Lessons in `.doer/knowledge/lessons/` already migrated by Workspace Guard step 5 (existing rule).
 
 ---
 
@@ -130,6 +199,7 @@ When the user invokes `/doer <TICKET-ID>` with no other flags:
      "branch": "<branch-name>",
      "status": "in_progress",
      "current_stage": 1,
+     "skill_version": "<read from frontmatter at intake time, e.g. 2.0.0>",
      "created_at": "<ISO8601>",
      "raw": {
        "description": "<full description from intake>",
@@ -232,7 +302,9 @@ Idempotent check that prevents `.doer/` from ever being committed in this clone.
    ```
    Narrate the migration outcome only if any file was moved or a conflict was raised. Silent no-op when there's nothing to migrate.
 
-6. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket — next ticket-scoped invocation sets it.)
+6. **Migration Check.** If a ticket is active, run the **Migration Check** (see Versioning & Migrations). Auto-applies any pending migration silently. Idempotent — once at current version, no-op.
+
+7. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket — next ticket-scoped invocation sets it.)
 
 For deep cleanup of historical `.doer/` content from earlier commits on the feature branch, use `/doer cleanup-history <TICKET-ID>` — out of scope for the Guard.
 
@@ -957,7 +1029,11 @@ No SHAs persisted (git history IS the source of truth). No commit needed (`.doer
      # for the full bash + conflict-handling rules). Idempotent: silent no-op
      # when .doer/knowledge/lessons/ doesn't exist or is empty.
 
-     # 4f. Mark satisfied: write workspace_guard = "ok" to metadata.json
+     # 4f. Migration Check (see Versioning & Migrations). If
+     # metadata.skill_version < current SKILL frontmatter version, apply each
+     # registered migration in order. Auto-silent. Narrate one summary line at end.
+
+     # 4g. Mark satisfied: write workspace_guard = "ok" to metadata.json
      echo "Workspace Guard: applied."
    fi
    ```
