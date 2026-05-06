@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, Jira creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 2.0.0
+version: 2.1.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -65,7 +65,8 @@ Runs as part of the Workspace Guard sequence (right after the exclude check, bef
 2. Read current SKILL frontmatter `version`.
 3. If equal → no-op.
 4. If ticket version < current version → apply each migration block below in order whose `from` matches. Bump `metadata.skill_version` to the migration's `to`. Continue until ticket version equals current version.
-5. **Always auto-apply silently.** Do NOT ask the user. Narrate ONE summary line at the end: *"Migrated ticket from 1.x to 2.0.0: <count> changes applied."* If nothing was migrated, narrate nothing.
+5. **MINOR/PATCH bumps without a migration block:** silently bump `metadata.skill_version` to the current version. No file changes. Useful for releases that only change agent prompt formats — old tickets continue with their existing files; new writes use the new format from this iteration onward.
+6. **Always auto-apply silently.** Do NOT ask the user. Narrate ONE summary line at the end ONLY if a MAJOR migration ran with file changes: *"Migrated ticket from X.Y.Z to A.B.C: N changes applied."* For MINOR/PATCH version bumps, no narration.
 
 ### Migration: From 1.x → 2.0.0
 
@@ -447,6 +448,20 @@ Each stage with a loop has **a single review file** at `review/{stage}-review.md
 
 Append on each iteration. The reviewer reads only the most recent iteration's section + the prior BLOCKERs (passed in the prompt). Old SUGGESTIONs stay logged for the user but are NOT re-analyzed.
 
+### Changelog file (compact, append-only)
+
+Each ticket has a single `changelog.md`. Every doer + AUTO_FIX pass APPENDs a section. NEVER rewrite or compress prior sections. Format MANDATORY:
+
+```markdown
+## Iteration N — <stage> (<initial | fixes>)
+- Decision/Output: <one line, terse>
+- Decision/Output: <one line>
+- Fix #<blocker-id>: <what changed + why> (only on iter 2+)
+- AutoFix #<id>: <mechanical change> (when AUTO_FIXes applied)
+```
+
+Bullets only. No prose paragraphs. The reviewer reads this to understand what the doer just did — terse means cheap to read AND cheap to write.
+
 ### Iteration 1 (clean-slate)
 
 1. Invoke **doer** → produces artifact + `changelog.md` (what was done, why).
@@ -616,21 +631,47 @@ Narrate: *"Stage 1 complete. Imported stages: {list}. Next at Stage {N}. Continu
 
 ```
 Read:
-- ./.doer/tickets/<TICKET-ID>/metadata.json (read `raw.*` for original intake)
+- ./.doer/tickets/<TICKET-ID>/metadata.json (raw.* for intake context)
 - ./.doer/tickets/<TICKET-ID>/ac.md
-- <doer-skill-dir>/lessons/*.md (global lessons — apply those whose scope matches)
+- <doer-skill-dir>/lessons/*.md (global — apply those whose scope matches)
 - ./.doer/knowledge/assumptions/<TICKET-ID>.md
 
-Explore the codebase to understand current structure relevant to this ticket.
+Explore the codebase to understand structure relevant to this ticket.
 
-Produce `./.doer/tickets/<TICKET-ID>/plan.md` with:
-1. Affected files (list with one-line reason each)
-2. Ordered steps (each step small enough to implement in one edit)
-3. Test strategy (what tests to add, what existing tests to update)
-4. Risks & mitigations
-5. Assumptions made (append new ones to assumptions/<TICKET-ID>.md)
+Produce ./.doer/tickets/<TICKET-ID>/plan.md using the COMPACT format below.
+Use bullets and tables. No prose paragraphs. Be terse — the plan will be
+read multiple times by other agents (token cost matters).
 
-Also produce `changelog.md` in the same directory describing your key decisions.
+```markdown
+# <TICKET-ID> Plan
+
+## Files
+| Path | Change | Reason |
+|------|--------|--------|
+| ... | new/edit/delete | one-line why |
+
+## Steps
+1. <verb> <thing> — `<file>:<line-range>`
+2. ...
+
+## Tests
+- <test name> covers <AC-N>
+- ...
+
+## Risks
+- <risk> → <mitigation>
+
+## Assumptions
+- <new assumption> (also append to assumptions/<TICKET-ID>.md)
+```
+
+Also append to changelog.md (compact format — one section per iteration):
+
+```markdown
+## Iteration 1 — Plan (initial)
+- Decision: <X> because <Y>
+- Decision: ...
+```
 
 Do NOT write code. Do NOT run tests. Plan only.
 ```
