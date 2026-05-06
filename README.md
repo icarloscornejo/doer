@@ -43,14 +43,21 @@ One pull refreshes every symlinked Claude. The Migration Check auto-applies any 
 
 ## Usage
 
+### Day-to-day commands
+
 | Command | Description |
 |---------|-------------|
 | `/doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, type, ACs, context, branch name. |
 | `/doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). |
 | `/doer status <TICKET-ID>` | Show current stage, loop state, blockers. |
 | `/doer list` | List all tickets under `./.doer/tickets/`. |
-| `/doer verify <TICKET-ID>` | Run stages that exist in the current skill but were missing when the ticket was closed. |
-| `/doer cleanup-history <TICKET-ID>` | Strip any `.doer/` content from commits on the feature branch (auto-runs at wrapup). |
+
+### Escape-hatch commands (rarely needed — flows below run automatically)
+
+| Command | When to use it manually |
+|---------|--------------------------|
+| `/doer verify <TICKET-ID>` | Only for tickets already at `status: complete`. The Migration Check auto-upgrades any in-flight ticket — but a closed ticket has no entry point, so this command is the only way to retroactively run new stages added to the skill after the ticket closed. |
+| `/doer cleanup-history <TICKET-ID>` | Auto-runs at wrapup (Stage 9). Use manually only if you declined the prompt at wrapup, want to preview/re-run the cleanup, or are working on a closed ticket. |
 
 **No `/doer pause`.** State is persisted after every Agent return. To stop, just close the session or write `stop` / `wait` / `para`. To resume, `/doer continue <TICKET-ID>` from any future session.
 
