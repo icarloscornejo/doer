@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, Jira creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 2.1.0
+version: 2.2.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -153,6 +153,21 @@ fi
 - If reformatting fails (parse error, agent unsure), leave the file untouched and bump `skill_version` anyway. The verbose format is still readable; cost optimization just doesn't apply to that ticket.
 - Tickets with no `plan.md` or `changelog.md` (early stages, e.g. just past intake) are no-ops for those steps.
 
+### Migration: From 2.1.0 → 2.2.0
+
+MINOR bump that changes orchestrator BEHAVIOR only — no file changes:
+- An entire loop iteration (doer + reviewer + AUTO_FIX) now runs in a single turn. Previously each Agent call was its own turn. Fixes broken auto-resume in VS Code/IDE plugins.
+- `/doer pause` removed. State persists after every Agent return; abandoning the session = pausing.
+
+**Per-ticket changes:** none. Just bump `metadata.skill_version` to "2.2.0". The orchestrator's NEW behavior takes effect on the next iteration.
+
+```bash
+# 1. Set metadata.skill_version = "2.2.0"
+# That's it. No file rewrites, no structural changes.
+```
+
+The `metadata.status` field continues to use `"in_progress"` and `"complete"`. The `"paused"` value, if present from old tickets, is treated as equivalent to `"in_progress"` (resume-able). New tickets never write `"paused"`.
+
 ---
 
 ## Commands
@@ -165,7 +180,8 @@ fi
 | `/doer list` | List all tickets in `./.doer/tickets/`. |
 | `/doer verify <TICKET-ID>` | Run stages that exist in the current skill but were missing when the ticket was closed. |
 | `/doer cleanup-history <TICKET-ID>` | Strip any `.doer/` content from commits on the ticket's feature branch. Auto-runs at wrapup; this command lets you re-run it manually. |
-| `/doer pause` | Persist current state and stop. |
+
+**There is no `/doer pause`.** State persists automatically after every Agent return. To stop, just close the session or write `stop` / `wait` / `para`. To resume, `/doer continue <TICKET-ID>` from any future session.
 
 **Stages cannot be skipped manually.** Every stage must run. The only way to skip stages is through Stage 1's pre-existing-work detection (see Stage 1 below). This is by design: the orchestrator decides which stages to skip, not the user.
 
@@ -355,69 +371,59 @@ For deep cleanup of historical `.doer/` content from earlier commits on the feat
 
 **Per-stage narration:**
 - Before: `"Starting Stage {N} — {name}. {one-sentence goal}."` + write `stages.<N>.started_at`.
-- After: write `stages.<N>.completed_at` + `"Stage {N} complete. Committed as {sha}. Continue to Stage {N+1}? [Y/n/pause]"`.
+- After: write `stages.<N>.completed_at` + `"Stage {N} complete. Committed as {sha}. Continuing to Stage {N+1}..."` then END TURN.
 - Inside loop: `"Iteration {i}/{max}: invoking {agent}... agent returned {status}, {findings} findings ({blockers} blockers)."`
 
-### Turn boundaries — ABSOLUTE rules
+### Turn boundaries — granularity is the WHOLE iteration
 
-Default behavior is **auto-proceed** (narrate next step, end turn, continue on next turn unless user interrupted). Confirmation is the exception.
+A single doer/reviewer **iteration** is the atomic unit of work. The orchestrator MAY chain multiple Agent calls within ONE turn as long as they belong to the same iteration of the same loop:
 
-| Boundary | Behavior |
-|----------|----------|
-| Auto-proceed | After every subagent return, between doer↔reviewer, between stages, after major file writes |
-| Confirm (wait) | Plan/AC drafts presented, before final wrapup commit, loop hit max iterations |
-| Decide (wait) | Pre-existing-work import, skip docs, RETURN_TO_STAGE_N |
+```
+Iteration N (single turn allowed):
+  Agent(doer) → narrate result
+  → Agent(reviewer) → narrate result
+  → (if AUTO_FIXes) Agent(fixer) → narrate result
+  → END TURN
+```
 
-**MUST rules (no efficiency exceptions):**
+Then **MUST END TURN before the next iteration or the next stage.** The next user message resumes automatically.
 
-1. End the turn after every Agent tool invocation. One-line status + next-step announce, then STOP.
-2. **Never invoke Agent twice in one turn.** If already called once this turn, STOP — the next call is a new turn.
-   - Wrong: `Agent(planner) → Agent(reviewer)` in same turn (FORBIDDEN)
-   - Right: `Agent(planner) → narrate → END TURN` → next turn: `Agent(reviewer) → narrate → END TURN`
-3. End the turn after every Write/Edit to a meaningful artifact.
-4. End the turn at every stage boundary.
-5. End the turn between doer/reviewer and reviewer/next-doer (2+ turn breaks per loop iteration).
-6. Never bundle multiple stages in one turn.
+| Boundary | Same turn OK? |
+|----------|---------------|
+| Within one loop iteration (doer → reviewer → fixer) | YES |
+| Between iteration N and N+1 | **NO — END TURN** |
+| Between stages | **NO — END TURN** |
+| Between subagent and a major file write that informs the next subagent | YES |
 
-**Self-check before every response:** *"Did I call Agent more than once?"* If yes — STOP, narrate what was done, do not bundle more work.
+**MUST rules:**
+
+1. End the turn at every stage boundary. Narrate "Stage N complete. Continuing to Stage N+1..." then STOP.
+2. End the turn between iterations of the same loop. Narrate iteration result, then STOP.
+3. **Never bundle multiple stages or multiple loop iterations in one turn.** One stage = one or more turns. One iteration = one turn. Never collapse iterations.
+4. **If an Agent call inside an iteration returns an error**, end the turn before invoking anything else. Surface the error to the user; do not silently retry the next subagent.
+
+**Self-check before every response:** *"Am I about to start a new iteration or a new stage?"* If yes — STOP, narrate where you ended, do not start the new unit.
 
 ### SUGGESTIONs never pause
 
-Zero BLOCKERs = converged. SUGGESTIONs are appended to the stage's single review file (e.g. `review/plan-review.md`) under the iteration's section. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds. Do NOT ask the user whether to apply them.
+Zero BLOCKERs = converged. SUGGESTIONs are appended to the stage's single review file (e.g. `review/plan-review.md`) under the iteration's section. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds (next stage, in a new turn).
 
 ### Interrupt detection — and the auto-resume rule
 
-At any auto-proceed boundary, the user's next message is interpreted as one of two things:
+At any turn boundary, the user's next message is interpreted as:
 
 | User message contains... | Interpretation |
 |--------------------------|----------------|
-| `pause`, `stop`, `wait`, `hold on`, `espera`, `para`, `n`, `no`, or a clear halt signal | **PAUSE** — persist `status: "paused"` + `paused_at`, acknowledge, stop |
-| **Anything else** (including empty, `ok`, `sí`, `dale`, `continue`, `y`, an unrelated comment, a question about the work) | **RESUME** — read `metadata.json` to find what's pending, do the next action with no further prompting |
+| `stop`, `wait`, `hold on`, `para`, or a clear halt signal | **HALT** — narrate "Stopping. Run `/doer continue <TICKET-ID>` to resume." Stop. State already persisted in metadata. |
+| **Anything else** (including empty, `ok`, `sí`, `dale`, `continue`, `y`, an unrelated comment, a question about the work) | **RESUME** — read `metadata.json`, do the next pending action without further prompting |
 
-**MUST NOT** ask the user "continuar?" / "Continue? [Y/n]" between iterations of an active loop. Loop continuation is implicit. The user already opted in by starting the loop. Asking again on every iteration is what makes the orchestrator feel like it's babysitting the user — they explicitly do NOT want this.
+**MUST NOT** ask the user "continuar?" / "Continue? [Y/n]" between iterations or stages. Continuation is implicit.
 
-**MUST NOT** require the user to type `/doer continue <TICKET-ID>` to advance an in-flight loop. `/doer continue` is for *resuming a paused ticket across sessions*, not for nudging the next iteration. If the user has an active loop and writes literally anything non-halt, the orchestrator looks at `metadata.json → stages.<N>.convergence_loop` and proceeds:
+**MUST NOT** require the user to type `/doer continue <TICKET-ID>` to advance work in flight. `/doer continue` is for resuming **across sessions**, not for nudging the next step. Within a session, any non-halt message advances.
 
-- BLOCKERs > 0 AND iteration < max → invoke doer for next iteration
-- BLOCKERs > 0 AND iteration >= max → ask user (max iterations exception)
-- BLOCKERs == 0 → converged, advance to next stage
+**State persistence:** all progress (current iteration, BLOCKERs found, files written, etc.) is persisted to `metadata.json` after every Agent return. Closing the session at any point preserves state — the next `/doer continue <TICKET-ID>` resumes intact. There is no separate "pause" command needed; abandoning the session = pausing.
 
-Same applies between stages: any non-halt message advances to the next stage automatically.
-
-**Loop-resume narration template** (use this exact form when re-entering after a turn boundary inside a loop):
-
-```
-Continuing Stage <N> loop, iteration <i+1>/{max}. <one-line context>...
-[invoke doer]
-```
-
-No question to the user. Just narrate what's happening and proceed.
-
-### Pause persistence
-
-On pause: write `metadata.status = "paused"`, `paused_at = <ISO8601>`. Reply with the resume command (`/doer continue <TICKET-ID>`). Stop.
-
-For immediate interruption mid-subagent the user can press `Esc` (CLI-level). Frequent turn boundaries minimize the need.
+**To stop mid-Agent (the Agent is already running):** terminal users can use `Ctrl+C` in the parent shell or `Esc` if their client supports it. The orchestrator cannot be interrupted mid-Agent from inside.
 
 ### Performance counters (consumed by Stage 9 wrapup)
 
@@ -1073,7 +1079,7 @@ No SHAs persisted (git history IS the source of truth). No commit needed (`.doer
 ## `/doer continue <TICKET-ID>`
 
 1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`.
-2. If `status != "paused"` and `status != "in_progress"`, warn the user.
+2. If `status == "complete"`, warn the user (use `/doer verify` for closed tickets, not `continue`).
 3. Check out the feature branch if not already on it:
    ```bash
    git checkout <branch-name>
@@ -1160,7 +1166,7 @@ List every directory under `./.doer/tickets/`, one line each:
 ```
 ABC-123   [in_progress]  Stage 4 (code)         fix-login-timeout
 ABC-119   [complete]     —                      add-redis-cache
-ABC-110   [paused]       Stage 2 (plan)         refactor-auth
+ABC-110   [in_progress]  Stage 2 (plan)         refactor-auth  (last touched 3d ago)
 ```
 
 ---
@@ -1264,7 +1270,7 @@ If the cleanup detection finds zero dirty commits, narrate *"Nothing to clean �
 - **Agent returns error:** narrate the error, ask user to retry (max 3), or pause.
 - **Git operation fails:** narrate, present options (resolve manually, pause, abort stage).
 - **Tests cannot be detected:** ask the user for the test command. Save it to `metadata.json → test_command` for future stages.
-- **User requests pause mid-loop:** save loop state (iteration, last doer/reviewer outputs), set `status: "paused"`, stop.
+- **User says `stop` / `wait` / `para`:** state is already persisted after each Agent return. Narrate the current position and stop. Resume via `/doer continue <TICKET-ID>` later.
 
 ---
 
