@@ -49,11 +49,13 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 The SKILL frontmatter declares the current version (SemVer: MAJOR.MINOR.PATCH).
 
-| Bump | When | Migration needed? |
-|------|------|-------------------|
-| **MAJOR** | Renames/removes stages, changes metadata.json structure, removes/renames artifact files | Yes — old tickets must be migrated |
-| **MINOR** | Adds capability without breaking (new findings bucket, new global pool, new optional file) | No — old tickets work as-is |
-| **PATCH** | Bug fixes, doc edits, no functional change | No |
+| Bump | When | Migration block? |
+|------|------|------------------|
+| **MAJOR** | Structural change (renames/removes stages, changes metadata shape, removes/renames artifact files) | REQUIRED |
+| **MINOR** | Adds capability OR changes the format of persistent files (plan.md, changelog.md, ac.md, etc.) | REQUIRED if any persistent file format changed; optional otherwise |
+| **PATCH** | Bug fix to orchestrator behavior, doc edit, no file format change | None |
+
+**Rule of thumb:** if a bump changes how an existing artifact file is shaped, **register a migration block**. Tickets in flight should never be stuck reading verbose old formats just because they were created before the optimization. Token-cost reductions are real wins; auto-applying them keeps every ticket on the latest cheapest format.
 
 Each ticket persists `skill_version` in `metadata.json` at intake. On every entry point (`continue`, `verify`, any stage execution), the orchestrator runs the **Migration Check** below.
 
@@ -64,9 +66,9 @@ Runs as part of the Workspace Guard sequence (right after the exclude check, bef
 1. Read `metadata.skill_version` (default `"1.0.0"` if missing — pre-versioning era).
 2. Read current SKILL frontmatter `version`.
 3. If equal → no-op.
-4. If ticket version < current version → apply each migration block below in order whose `from` matches. Bump `metadata.skill_version` to the migration's `to`. Continue until ticket version equals current version.
-5. **MINOR/PATCH bumps without a migration block:** silently bump `metadata.skill_version` to the current version. No file changes. Useful for releases that only change agent prompt formats — old tickets continue with their existing files; new writes use the new format from this iteration onward.
-6. **Always auto-apply silently.** Do NOT ask the user. Narrate ONE summary line at the end ONLY if a MAJOR migration ran with file changes: *"Migrated ticket from X.Y.Z to A.B.C: N changes applied."* For MINOR/PATCH version bumps, no narration.
+4. If ticket version < current version → walk every migration block below in chronological order. For each block whose `from` matches the ticket's current version: apply it, then bump `metadata.skill_version` to the block's `to`. Continue until the ticket's version equals the current SKILL version.
+5. If the ticket version is behind the SKILL but no migration block matches the gap (e.g. a PATCH bump): silently bump `metadata.skill_version` to current. No file changes.
+6. **Always auto-apply silently.** Do NOT ask the user. Narrate ONE summary line at the end IF any migration block actually executed: *"Migrated ticket X.Y.Z → A.B.C: N file changes."* If only a silent version-bump happened (case 5), narrate nothing.
 
 ### Migration: From 1.x → 2.0.0
 
@@ -112,6 +114,44 @@ fi
 
 **Repository-level cleanup** (orchestrator does this once per repo if needed):
 - Lessons in `.doer/knowledge/lessons/` already migrated by Workspace Guard step 5 (existing rule).
+
+### Migration: From 2.0.0 → 2.1.0
+
+MINOR bump that compacted `plan.md` and `changelog.md` formats. Existing tickets must be re-formatted so their downstream reads (test-writer, code-writer, reviewers) consume the cheaper format.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+
+# 1. Reformat plan.md if it exists and is not already compact.
+#    Detect "already compact": presence of "## Files" with a markdown table
+#    on the next non-empty line. If absent, run the format-converter agent:
+if [ -f "$TICKET_DIR/plan.md" ] && ! grep -qE '^## Files' "$TICKET_DIR/plan.md"; then
+  # Invoke a general-purpose agent with this prompt:
+  #   "Read $TICKET_DIR/plan.md (verbose 1.x format).
+  #    Re-write it IN-PLACE using the compact 2.1.0 format defined in
+  #    Stage 2's planner prompt: ## Files (table), ## Steps (numbered
+  #    bullets with file:line refs), ## Tests (bullets), ## Risks
+  #    (bullets), ## Assumptions (bullets). Preserve EVERY piece of
+  #    information from the original — only the shape changes.
+  #    Do NOT add new content, do NOT drop content, do NOT reinterpret.
+  #    Output only the rewritten file content."
+fi
+
+# 2. Reformat changelog.md if it exists and is not already compact.
+#    Detect "already compact": every "## Iteration" section is followed
+#    by bullets, no prose paragraphs. If prose detected, invoke same
+#    agent with the changelog format (see Doer/Reviewer Loop Pattern
+#    "Changelog file" subsection).
+
+# 3. Set metadata.skill_version = "2.1.0"
+```
+
+**Notes:**
+- The format-converter agent is a one-shot reformatter; it must NOT add or remove information.
+- If reformatting fails (parse error, agent unsure), leave the file untouched and bump `skill_version` anyway. The verbose format is still readable; cost optimization just doesn't apply to that ticket.
+- Tickets with no `plan.md` or `changelog.md` (early stages, e.g. just past intake) are no-ops for those steps.
 
 ---
 
