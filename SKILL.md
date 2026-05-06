@@ -280,9 +280,33 @@ Default behavior is **auto-proceed** (narrate next step, end turn, continue on n
 
 Zero BLOCKERs = converged. SUGGESTIONs are logged to `review/{stage}-review-{iter}.md` and the orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds. Do NOT ask the user whether to apply them.
 
-### Interrupt detection
+### Interrupt detection — and the auto-resume rule
 
-At any auto-proceed boundary, if the user's latest message contains `pause`, `stop`, `wait`, `hold on`, `n`, `no`, `espera`, `para`, or any clear halt signal → treat as pause request: persist `status: "paused"` + `paused_at` to metadata, acknowledge, stop. Otherwise proceed.
+At any auto-proceed boundary, the user's next message is interpreted as one of two things:
+
+| User message contains... | Interpretation |
+|--------------------------|----------------|
+| `pause`, `stop`, `wait`, `hold on`, `espera`, `para`, `n`, `no`, or a clear halt signal | **PAUSE** — persist `status: "paused"` + `paused_at`, acknowledge, stop |
+| **Anything else** (including empty, `ok`, `sí`, `dale`, `continue`, `y`, an unrelated comment, a question about the work) | **RESUME** — read `metadata.json` to find what's pending, do the next action with no further prompting |
+
+**MUST NOT** ask the user "continuar?" / "Continue? [Y/n]" between iterations of an active loop. Loop continuation is implicit. The user already opted in by starting the loop. Asking again on every iteration is what makes the orchestrator feel like it's babysitting the user — they explicitly do NOT want this.
+
+**MUST NOT** require the user to type `/doer continue <TICKET-ID>` to advance an in-flight loop. `/doer continue` is for *resuming a paused ticket across sessions*, not for nudging the next iteration. If the user has an active loop and writes literally anything non-halt, the orchestrator looks at `metadata.json → stages.<N>.convergence_loop` and proceeds:
+
+- BLOCKERs > 0 AND iteration < max → invoke doer for next iteration
+- BLOCKERs > 0 AND iteration >= max → ask user (max iterations exception)
+- BLOCKERs == 0 → converged, advance to next stage
+
+Same applies between stages: any non-halt message advances to the next stage automatically.
+
+**Loop-resume narration template** (use this exact form when re-entering after a turn boundary inside a loop):
+
+```
+Continuing Stage <N> loop, iteration <i+1>/{max}. <one-line context>...
+[invoke doer]
+```
+
+No question to the user. Just narrate what's happening and proceed.
 
 ### Pause persistence
 
