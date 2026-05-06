@@ -10,19 +10,26 @@ Scope stops before PR and deploy.
 
 ## Installation
 
-**One-time setup (per machine).** Clone once, symlink from every Claude config you use.
+**One-time setup (per machine).** Clone the repo once, then symlink from every Claude Code config directory where you want the skill available.
+
+If you only have a single Claude install, you only need one symlink (`~/.claude/skills/doer`). If you keep multiple Claude configs side-by-side (e.g. one per client, project, or environment — each in its own `~/.claude-*` directory), symlink from each. They all share the same skill.
 
 ```bash
 # 1. Clone the repo (one place only)
 mkdir -p ~/src
 git clone https://github.com/icarloscornejo/doer.git ~/src/doer
 
-# 2. Symlink from each Claude config you use
+# 2. Symlink from each Claude config directory
 ln -s ~/src/doer ~/.claude/skills/doer
-ln -s ~/src/doer ~/.claude-work/skills/doer    # optional
-ln -s ~/src/doer ~/.claude-me/skills/doer         # optional
-# ...repeat for every .claude-* you have
+
+# Optional: repeat for any additional Claude configs you maintain.
+# Example with three extra configs:
+ln -s ~/src/doer ~/.claude-work/skills/doer
+ln -s ~/src/doer ~/.claude-personal/skills/doer
+ln -s ~/src/doer ~/.claude-clientA/skills/doer
 ```
+
+**Why symlinks?** All Claude configs see the same `SKILL.md`, `lessons/`, and `preferences.md`. Editing one file updates every Claude. A single `git pull` refreshes everything.
 
 **Updates:**
 
