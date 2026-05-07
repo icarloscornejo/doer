@@ -1,6 +1,6 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 2.2.0.
+**Ticket execution orchestrator for Claude Code.** Version 2.3.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops, on-device runtime verification, automatic versioning + migrations.
 
@@ -281,7 +281,7 @@ The skill follows SemVer (MAJOR.MINOR.PATCH). Every ticket persists `skill_versi
 
 If a bump changes the shape of a persistent file, a migration block is registered. Tickets in flight are auto-upgraded the next time they're touched. The dev never has to migrate by hand.
 
-Current version: **2.2.0** (see SKILL.md frontmatter).
+Current version: **2.3.0** (see SKILL.md frontmatter).
 
 ---
 

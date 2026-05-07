@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 2.2.0
+version: 2.3.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -167,6 +167,20 @@ MINOR bump that changes orchestrator BEHAVIOR only — no file changes:
 ```
 
 The `metadata.status` field continues to use `"in_progress"` and `"complete"`. The `"paused"` value, if present from old tickets, is treated as equivalent to `"in_progress"` (resume-able). New tickets never write `"paused"`.
+
+### Migration: From 2.2.0 → 2.3.0
+
+MINOR bump that tightens behavior in three places — no file format changes, no structural changes:
+- Stage 7 runtime-logger: stricter "DO NOT" list (no variables-just-to-log, no refactors-to-enable-logging, no helpers). Stage 7 cleanup adds a post-revert drift check that scans the diff for non-log debug artifacts (variables, helpers, structural changes) that survive a clean revert.
+- Stage 3 test-writer: prohibits `RED:` / `TDD red:` / "fails because X" comments. Stage 5 code-reviewer checklist now flags any residual ones as AUTO_FIX (mechanical removal).
+- Stage boundaries: removed two narration templates that asked "Continue? [Y/n]" between stages (Stage 1 finalization + `/doer continue` resume). Hardened the no-prompt rule with explicit right/wrong examples. Stages auto-chain; the only stop is a halt signal in the next message.
+
+**Per-ticket changes:** none. Just bump `metadata.skill_version` to "2.3.0". The orchestrator's stricter behavior takes effect on the next subagent invocation.
+
+```bash
+# 1. Set metadata.skill_version = "2.3.0"
+# No file rewrites; the new prompts apply on the next agent call.
+```
 
 ---
 
@@ -417,7 +431,14 @@ At any turn boundary, the user's next message is interpreted as:
 | `stop`, `wait`, `hold on`, `para`, or a clear halt signal | **HALT** — narrate "Stopping. Run `/doer continue <TICKET-ID>` to resume." Stop. State already persisted in metadata. |
 | **Anything else** (including empty, `ok`, `sí`, `dale`, `continue`, `y`, an unrelated comment, a question about the work) | **RESUME** — read `metadata.json`, do the next pending action without further prompting |
 
-**MUST NOT** ask the user "continuar?" / "Continue? [Y/n]" between iterations or stages. Continuation is implicit.
+**MUST NOT** ask the user "continuar?" / "Continue? [Y/n]" / "¿Vamos al Stage N+1?" / "Procedo?" between iterations OR between stages. Continuation is implicit. The narration template is informative, not inquisitive:
+
+- ✅ Right: *"Stage 2 complete. Continuing to Stage 3..."* + END TURN.
+- ❌ Wrong: *"Stage 2 complete. Continue to Stage 3? [Y/n]"*
+- ❌ Wrong: *"Stage 2 complete. ¿Vamos al 3?"*
+- ❌ Wrong: *"Stage 2 complete. Ready to start Stage 3?"*
+
+The user already opted in by starting the ticket. Asking again on every stage boundary makes the orchestrator feel like it's babysitting. Stages are auto-chained; the only stop is a halt signal in the next message.
 
 **MUST NOT** require the user to type `/doer continue <TICKET-ID>` to advance work in flight. `/doer continue` is for resuming **across sessions**, not for nudging the next step. Within a session, any non-halt message advances.
 
@@ -662,7 +683,7 @@ Initialize `./.doer/knowledge/assumptions/<TICKET-ID>.md` with assumptions surfa
 
 Update `metadata.json`: stage 1 complete, advance `current_stage` to the entry point decided in Step 5.
 
-Narrate: *"Stage 1 complete. Imported stages: {list}. Next at Stage {N}. Continue? [Y/n]"*
+Narrate: *"Stage 1 complete. Imported stages: {list}. Continuing to Stage {N}..."* then END TURN. Auto-resume on next non-halt message.
 
 ---
 
@@ -754,6 +775,11 @@ Write the tests described in plan.md's test strategy. Tests MUST currently fail
 (no implementation exists yet). Follow the repo's existing test conventions
 (framework, file layout, naming). Run the test suite and confirm the new tests
 fail with meaningful messages — not import errors, not typos.
+
+DO NOT add explanatory comments like `// RED:` / `// TDD red:` / `// fails because X`
+on test bodies or KDoc/JSDoc blocks. The test name and the failing assertion
+are self-documenting. Those comments become stale the moment Stage 4 makes them
+pass and confuse PR reviewers.
 
 Write `changelog.md` describing which tests were added and which AC each covers.
 ```
@@ -849,6 +875,11 @@ In addition to the standard review scope, explicitly verify:
 [ ] No secrets, API keys, or credentials in the diff.
 [ ] Error handling is specific (not bare `except:` or swallow-all).
 [ ] At least one smoke test or script-level verification exists.
+[ ] No stale TDD-red markers in test files. Grep test files for the
+    patterns `RED:`, `TDD red:`, `// fails because`, `# fails because`
+    in comments or KDoc/JSDoc/docstring blocks. If found, classify as
+    AUTO_FIX (mechanical removal: delete the comment line; the test is
+    now passing so the marker is incorrect).
 ```
 
 Commit:
@@ -901,6 +932,18 @@ Format MANDATORY: println("DOER - <TICKET-ID> - <ClassName.fnName> - <msg>")
 
 Rules: use println (not app logger), never modify business logic, never
 touch existing logs, run the build after to verify syntax.
+
+DO NOT (these survive cleanup and pollute the PR):
+- Create a variable solely to print its value. Inline the expression.
+    Wrong:  val endpoint = if (x) "a" else "b"; println("...endpoint=$endpoint")
+    Right:  println("...endpoint=${if (x) "a" else "b"}")
+- Refactor existing code to enable logging. Do not split returns,
+  chains, or expressions just to capture an intermediate value.
+    Wrong:  val r = foo(); println("...$r"); return r
+    Right:  println("...calling foo"); return foo()    (or skip this log)
+- Add helpers, factories, or any function that is not a println.
+  The logger's only job is to add `println(...)` lines. Anything else
+  is out of scope.
 
 Return a JSON list of files touched + one-line reason each. Do NOT
 write a summary file — the orchestrator narrates it inline.
@@ -969,12 +1012,44 @@ TEMP_SHA=$(git log --grep="^doer(<TICKET-ID>): \[TEMP\] runtime debug logs" --fo
 git revert --no-edit "$TEMP_SHA"
 git commit --no-verify --amend -m "doer(<TICKET-ID>): remove runtime debug logs"
 
+# 5a. Tag check — zero printlns with the DOER tag must remain.
 if git grep -l "DOER - <TICKET-ID>" -- .; then
   echo "ERROR: Residual DOER logs found"; exit 1
 fi
+
+# 5b. Out-of-temp-commit drift check — anything that was changed by
+# the temp commit but is no longer present in the revert means a debug
+# artifact was added in a different commit and survived the revert.
+TEMP_FILES=$(git show --pretty=format: --name-only "$TEMP_SHA" | sort -u)
+DRIFT=$(for f in $TEMP_FILES; do
+  if [ -f "$f" ] && ! git diff "$TEMP_SHA^" -- "$f" | grep -q .; then continue; fi
+  # Compare file vs base for changes that don't match the temp commit's reverse:
+  diff <(git show "$TEMP_SHA":"$f" 2>/dev/null) <(cat "$f" 2>/dev/null) > /dev/null 2>&1 || echo "$f"
+done)
+# Heuristic check: variables introduced and never referenced, helper
+# functions added without callers, single-expression returns split into
+# val + return. These often slip past the tag grep. The orchestrator
+# MUST diff <base>..HEAD on every file the temp commit touched and
+# scan for these patterns:
+echo "Reviewing files touched by temp commit for non-log debug artifacts..."
+for f in $TEMP_FILES; do
+  CURRENT_DIFF=$(git diff <base>..HEAD -- "$f")
+  if [ -n "$CURRENT_DIFF" ]; then
+    echo "WARNING: $f still has changes after revert — likely a debug helper or refactor not in the temp commit."
+    echo "Inspect manually:  git diff <base>..HEAD -- $f"
+  fi
+done
 ```
 
-If residuals: re-invoke logger with *"Remove every line matching `DOER - <TICKET-ID>`. Touch nothing else."*
+If residuals or drift detected:
+- Tag residuals: re-invoke logger with *"Remove every line matching `DOER - <TICKET-ID>`. Touch nothing else."*
+- Drift residuals: invoke a general-purpose agent with the diff and the instruction *"This file was touched during runtime-verify. Remove any change that was added solely to enable debug logging — variables that captured a value just to print it, expressions split into val+return, helper functions with no real callers. Keep only the changes that belong to the ticket's actual implementation per plan.md."*
+
+After the agent completes, amend onto the previous commit:
+```bash
+git add -A
+git commit --no-verify --amend --no-edit
+```
 
 ### Step 6: Record outcome
 
@@ -1132,7 +1207,7 @@ No SHAs persisted (git history IS the source of truth). No commit needed (`.doer
    If either fails, STOP. Do NOT continue resuming. Narrate the failure and ask the user how to proceed. The Guard is a precondition, not a suggestion — proceeding without it pollutes the team's PR.
 
 6. Read the last stage's loop state (if any). If mid-loop, resume at the same iteration.
-7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}. Continue? [Y/n]"
+7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}." Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent — do NOT ask for further confirmation).
 8. Proceed.
 
 ---
