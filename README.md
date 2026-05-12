@@ -1,6 +1,6 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 2.3.0.
+**Ticket execution orchestrator for Claude Code.** Version 2.10.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops, on-device runtime verification, automatic versioning + migrations.
 
@@ -263,9 +263,16 @@ locale: es    # Spanish
 # locale: en    # English (the default; setting it explicitly is harmless)
 ```
 
-This file is gitignored; never reaches GitHub. The orchestrator reads it as the **first action** of every invocation and narrates everything in that locale, overriding any other source. The first user-facing word is always in the operating locale (anchors against drift).
+This file is gitignored; never reaches GitHub. The orchestrator reads it as the **first action** of every invocation and narrates everything in that locale, overriding any other source.
 
-Code identifiers, file paths, commands, JSON keys, git commit messages, and other technical strings stay in English regardless of locale.
+**Scope of the locale override** (only what you read live in chat):
+
+| Scope | Language |
+|-------|----------|
+| Live chat (narration, questions, summaries, confirmations) | Operating locale (es, fr, etc.) |
+| All persistent artifacts (`ac.md`, `plan.md`, `changelog.md`, review files, `wrapup.md`, lessons, assumptions, JSON values, commit messages) | **Always English** |
+
+The artifacts are read by other subagents and by future tickets across projects, so they stay in a single language (English) to keep the global lessons pool shareable and prevent cross-language confusion.
 
 ---
 
@@ -281,7 +288,7 @@ The skill follows SemVer (MAJOR.MINOR.PATCH). Every ticket persists `skill_versi
 
 If a bump changes the shape of a persistent file, a migration block is registered. Tickets in flight are auto-upgraded the next time they're touched. The dev never has to migrate by hand.
 
-Current version: **2.3.0** (see SKILL.md frontmatter).
+Current version: **2.10.0** (see SKILL.md frontmatter).
 
 ---
 
