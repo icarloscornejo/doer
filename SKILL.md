@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 3.0.3
+version: 3.0.4
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -126,30 +126,33 @@ Each ticket persists `skill_version` in `metadata.json` at intake. The orchestra
 
 The "every entry point" phrasing is too vague and gets dropped from context after compaction. The five explicit triggers above are non-negotiable.
 
-### How to read each version (deterministic, no inference)
+### How to read each version (mandatory Bash execution; no inference)
 
-Both versions in the comparison MUST be extracted from their authoritative source via a deterministic command. Do NOT infer either version from prose, migration block headers, schema examples, narration text, or any other string elsewhere in the file.
+Both versions in the comparison MUST be extracted from their authoritative source via a Bash tool call whose output is then shown verbatim in the narration. Inferring a version value from memory, from a migration block header, from a schema example, from prior narration, or from any other string in the SKILL is a **VIOLATION** of the Migration Check protocol. The orchestrator may not assert either version value unless it has just shown the corresponding Bash output in this turn.
 
-**Current SKILL frontmatter version:**
-```bash
-grep '^version:' "$(realpath <doer-skill-dir>/SKILL.md)" | head -1 | awk '{print $2}'
+**Mandatory narration template** (the orchestrator MUST emit something equivalent to this; the four lines marked `MUST` are not optional):
+
 ```
-Returns the value of the `version:` line in the YAML frontmatter (e.g. `3.0.3`). The frontmatter is the FIRST `---`-delimited block at the top of `SKILL.md`. No other `version:` reference in the file is authoritative.
-
-**Ticket `metadata.skill_version`:**
-```bash
-jq -r '.skill_version' .doer/tickets/<TICKET-ID>/metadata.json
+Migration Check (this turn):
+[MUST] $ grep '^version:' <absolute path to SKILL.md> | head -1 | awk '{print $2}'
+[MUST] -> <verbatim stdout of the command above, e.g. "3.0.4">
+[MUST] $ jq -r '.skill_version' .doer/tickets/<TICKET-ID>/metadata.json
+[MUST] -> <verbatim stdout of the command above, e.g. "3.0.0">
+Comparison: <metadata value> vs <SKILL value> -> <decision: no-op | silent bump | run migration block | error: downgrade>
 ```
-Returns the value of `metadata.skill_version`.
 
-**Comparison procedure:**
-1. Run both commands above.
-2. Compare the two strings.
-3. If the SKILL value is greater than the metadata value → run Phase 1 (case 4 if a migration block matches; case 5 silent bump otherwise).
-4. If equal → no-op.
-5. If metadata is greater than SKILL → unexpected (downgrade). Narrate and stop; do not continue.
+The two Bash tool calls MUST execute as actual tool invocations (so the user sees them in the trace). The orchestrator MUST NOT shortcut by stating values from memory.
 
-**Common failure mode this prevents:** the orchestrator parses `3.0.0` from a migration block header like `### Migration: From 2.10.0 → 3.0.0`, or from a schema example like `verified_with: "3.0.0"`, and reports it as the current SKILL version. Those strings are NOT the SKILL version. Only the frontmatter `^version:` line is.
+**Forcing rule for self-check:** before stating either version value in any narration, ask: *"Did I show a Bash output for this value in this turn?"* If no, run the Bash command first. If you find yourself about to write *"SKILL frontmatter = X.Y.Z"* without a preceding Bash output line, STOP and run the grep command first.
+
+**Comparison procedure (after both outputs are shown):**
+
+1. Compare the two strings literally.
+2. If the SKILL value is greater than the metadata value → run Phase 1 (case 4 if a migration block matches; case 5 silent bump otherwise). Narrate which case applies.
+3. If equal → narrate "no migration needed" and continue.
+4. If metadata is greater than SKILL → unexpected (downgrade). Narrate and stop; do not continue.
+
+**Common failure mode this prevents:** the orchestrator parses `3.0.0` from a migration block header like `### Migration: From 2.10.0 → 3.0.0`, from a schema example like `verified_with: "3.0.0"`, or from associative memory of a prior session, and reports it as the current SKILL version without ever running the grep command. Those strings are NOT the SKILL version. Only the frontmatter `^version:` line, read fresh via Bash this turn, is authoritative. This failure was observed in v3.0.2 and v3.0.3 (the spec said "do not infer" but lacked a forcing function); v3.0.4 adds the mandatory Bash execution + verbatim output narration as the forcing function.
 
 ### Migration Check (auto, silent)
 
