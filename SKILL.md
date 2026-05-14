@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 3.0.2
+version: 3.0.3
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -125,6 +125,31 @@ Each ticket persists `skill_version` in `metadata.json` at intake. The orchestra
 5. Before every stage transition where `metadata.skill_version` does not match the SKILL frontmatter version (cheap deterministic comparison; if equal, skip).
 
 The "every entry point" phrasing is too vague and gets dropped from context after compaction. The five explicit triggers above are non-negotiable.
+
+### How to read each version (deterministic, no inference)
+
+Both versions in the comparison MUST be extracted from their authoritative source via a deterministic command. Do NOT infer either version from prose, migration block headers, schema examples, narration text, or any other string elsewhere in the file.
+
+**Current SKILL frontmatter version:**
+```bash
+grep '^version:' "$(realpath <doer-skill-dir>/SKILL.md)" | head -1 | awk '{print $2}'
+```
+Returns the value of the `version:` line in the YAML frontmatter (e.g. `3.0.3`). The frontmatter is the FIRST `---`-delimited block at the top of `SKILL.md`. No other `version:` reference in the file is authoritative.
+
+**Ticket `metadata.skill_version`:**
+```bash
+jq -r '.skill_version' .doer/tickets/<TICKET-ID>/metadata.json
+```
+Returns the value of `metadata.skill_version`.
+
+**Comparison procedure:**
+1. Run both commands above.
+2. Compare the two strings.
+3. If the SKILL value is greater than the metadata value → run Phase 1 (case 4 if a migration block matches; case 5 silent bump otherwise).
+4. If equal → no-op.
+5. If metadata is greater than SKILL → unexpected (downgrade). Narrate and stop; do not continue.
+
+**Common failure mode this prevents:** the orchestrator parses `3.0.0` from a migration block header like `### Migration: From 2.10.0 → 3.0.0`, or from a schema example like `verified_with: "3.0.0"`, and reports it as the current SKILL version. Those strings are NOT the SKILL version. Only the frontmatter `^version:` line is.
 
 ### Migration Check (auto, silent)
 
