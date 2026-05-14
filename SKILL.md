@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 2.10.0
+version: 3.0.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -28,8 +28,8 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 1. **Narration first**: The orchestrator announces what it is about to do, what it is doing, and what just happened. The user should be able to pause at any moment.
 2. **One branch, one ticket**: All work happens on a single feature branch. Stages that produce real code commit it; stages that only produce `.doer/` artifacts do NOT commit (see principle 8).
-3. **Delta-aware reviewers**: After iteration 1, reviewers receive prior findings + a changelog from the doer. They verify fixes and scan for new issues, rather than re-analyzing from scratch.
-4. **Bounded loops**: Max 5 iterations per doer/reviewer loop. If not converged, the user decides.
+3. **Delta-aware reviewers**: After iteration 1, reviewers receive prior findings + the last `metadata.changelog` entries from the doer (inlined in their prompt). They verify fixes and scan for new issues, rather than re-analyzing from scratch.
+4. **Bounded loops**: Stages 4 (Code) and 5 (Code Review) loop with a max of **3 iterations**. Stages 2 (Plan) and 3 (Tests) are single-pass with one optional retry on deterministic-check failure. If still not converged after the cap or retry, the user decides.
 5. **Lessons accumulate**: Every ticket captures what went well and what did not. Future tickets read those lessons before planning.
 6. **No hidden state**: Everything the orchestrator knows lives in `./.doer/` on disk. Context compression never loses progress.
 7. **All commits use `git commit --no-verify`.** Hard rule.
@@ -43,15 +43,15 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
    - Stages whose only output is `.doer/` (1 AC, 2 Plan, 9 Wrapup) SKIP the commit entirely. Stages with real code (3 Tests, 4 Code, 5 Review, 7 Runtime, 8 Docs) commit code only.
    - Stage 7 (Runtime Verify) temp commit + revert still works because it touches real source files, not `.doer/`.
 
-9. **EM-DASHES ARE PROHIBITED.** Across every output the orchestrator and its subagents produce: chat narration, questions, summaries, generated artifacts (`ac.md`, `plan.md`, `changelog.md`, review files, `wrapup.md`), generated commit messages, generated PR descriptions, lessons, assumptions, comments injected into code. ZERO `, ` characters anywhere.
+9. **EM-DASHES ARE PROHIBITED.** Across every output the orchestrator and its subagents produce: chat narration, questions, summaries, every value persisted into `metadata.json` (string fields like `summary`, `changelog[].items[].text`, `ac.in_scope`, `plan.steps`, `code_review[].blockers[].text`), generated commit messages, generated PR descriptions, global lessons under `<doer-skill-dir>/lessons/`, comments injected into code. ZERO `, ` characters anywhere.
    - Use commas, periods, semicolons, parentheses, colons, or full sentence breaks instead.
    - Examples:
      - Wrong: `Stage 2 complete — proceeding to Stage 3.`
      - Right: `Stage 2 complete. Proceeding to Stage 3.`
      - Wrong: `Tests pass — all green.`
      - Right: `Tests pass. All green.`
-     - Wrong: `Plan review found 3 BLOCKERs — see review file.`
-     - Right: `Plan review found 3 BLOCKERs (see review file).`
+     - Wrong: `Code review found 3 BLOCKERs — see metadata.code_review.`
+     - Right: `Code review found 3 BLOCKERs (see metadata.code_review).`
    - This rule is a strong stylistic preference of the dev. The orchestrator and every subagent prompt MUST enforce it. When invoking any subagent, append: *"Em-dashes (`—`) are forbidden. Use commas, periods, or parentheses instead."*
    - Self-check before any output: scan for `—` (em-dash, U+2014) and `–` (en-dash, U+2013). If found, rewrite before sending.
 
@@ -64,7 +64,7 @@ The SKILL frontmatter declares the current version (SemVer: MAJOR.MINOR.PATCH).
 | Bump | When | Migration block? |
 |------|------|------------------|
 | **MAJOR** | Structural change (renames/removes stages, changes metadata shape, removes/renames artifact files) | REQUIRED |
-| **MINOR** | Adds capability OR changes the format of persistent files (plan.md, changelog.md, ac.md, etc.) | REQUIRED if any persistent file format changed; optional otherwise |
+| **MINOR** | Adds capability OR changes the shape of any persistent field in `metadata.json` (e.g. `metadata.plan.tests[]` schema), OR changes the format of a global lesson file | REQUIRED if any persistent format changed; optional otherwise |
 | **PATCH** | Bug fix to orchestrator behavior, doc edit, no file format change | None |
 
 **Rule of thumb:** if a bump changes how an existing artifact file is shaped, **register a migration block**. Tickets in flight should never be stuck reading verbose old formats just because they were created before the optimization. Token-cost reductions are real wins; auto-applying them keeps every ticket on the latest cheapest format.
@@ -104,15 +104,15 @@ Every migration block declares `affected_stages: [<stage names>]` listing the st
 
 | Stage | Spot-check |
 |-------|------------|
-| 1 ac-confirm | Re-run a lightweight AC validation: read `ac.md` and `metadata.raw`, confirm the AC list still aligns. No subagent unless validation fails. |
-| 2 plan | Invoke `plan-reviewer` ONLY (not the planner) with current `plan.md`. |
-| 3 tests | Re-run pre-checks (test suite + plan-driven count). Skip the LLM reviewer unless pre-checks find new issues. |
+| 1 ac-confirm | Re-run a lightweight AC validation: read `metadata.ac` and `metadata.intake`, confirm the AC list still aligns. No subagent unless validation fails. |
+| 2 plan | Re-run the three deterministic checks (file existence, AC coverage, assumptions present) on `metadata.plan`. No LLM. If a check fails, reopen Stage 2 with that BLOCKER. |
+| 3 tests | Re-run the three deterministic checks (parse/run, plan-driven presence, TDD red verified). No LLM. |
 | 4 code | Re-run pre-checks (test pass + lint + typecheck + plan-driven scope). Skip LLM reviewer unless pre-checks find new issues. |
 | 5 code-review | Re-run pre-checks (RED grep, secrets, smoke, bare except). Skip LLM reviewer unless pre-checks find new issues. |
 | 6 quality-gate | Re-run test suite via the skip-safe check (`last_green_sha` lookup; usually no-op). |
 | 7 runtime-verify | CANNOT auto-rerun (needs device + dev). Ask: *"Stage 7 changed behavior in <X.Y.Z>. Re-exercise on device? [Y/n]"*. If n, mark `verified_with: <new>` with note `dev_acknowledged_skip`. |
 | 8 docs-sync | Re-run pre-checks A/B/C. Skip LLM agent unless update list non-empty. |
-| 9 wrapup | No spot-check. Wrapup is the terminal stage; if its behavior changed, the dev re-runs `/doer <ID>` to wrap up again only if they want updated artifacts. |
+| 9 wrapup | No spot-check. Wrapup is the terminal stage; if its behavior changed, the dev re-runs `/doer <ID>` to refresh `metadata.summary` and `metadata.performance` only if they want updated stats. |
 
 **Spot-check outcomes:**
 
@@ -314,6 +314,133 @@ After the bump, the next `/doer <TICKET-ID>` triggers Phase 2: it looks up the u
 
 The behavioral changes apply on the next `/doer <ID>` invocation.
 
+### Migration: From 2.10.0 → 3.0.0
+
+`affected_stages: [all]`. Structural overhaul: every per-ticket `.md` artifact is consolidated into `metadata.json` as structured fields, Stages 2 and 3 lose their doer/reviewer loops (single-pass + deterministic checks + single retry), Stages 4 and 5 keep loops but cap at 3 iterations (was 5), `context.md` is eliminated, sub-agents now receive metadata slices inlined in their prompts. **Stage 7 silent auto-skip is REMOVED**; Stage 7 now always asks the dev, even when the diff is 100% non-runtime (the classification only picks the default option in the prompt). **New `mode: lite | full` field**; migrated tickets default to `mode: "full"`. Lite mode is opt-in for new tickets via the intake heuristic + dev confirmation.
+
+**MAJOR bump.** Removes/renames artifact files, changes metadata shape. Both Phase 1 (file/data migration) and Phase 2 (auto-reverify) execute on first `/doer <TICKET-ID>` after upgrade.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Stash existing .md files for safe rollback if any parser fails.
+git -C "$TICKET_DIR" stash push -m "doer-3.0.0-migration-stash" 2>/dev/null || true
+# (.doer/ is gitignored locally; stash is a fallback only when the dev had committed it.)
+
+# 2. Parse ac.md → metadata.ac (one-shot LLM parser agent).
+if [ -f "$TICKET_DIR/ac.md" ]; then
+  # Invoke a general-purpose agent with this prompt:
+  #   "Read $TICKET_DIR/ac.md (sections: ## In Scope, ## Out of Scope,
+  #    ## Open Questions (resolved), ## Applicable Lessons).
+  #    Convert to JSON matching this schema:
+  #    {
+  #      \"in_scope\": [\"<full Given/When/Then string>\", ...],
+  #      \"out_of_scope\": [\"<item>\", ...],
+  #      \"open_questions_resolved\": [{\"question\": \"...\", \"answer\": \"...\"}],
+  #      \"applicable_lessons\": [\"<slug>\", ...]
+  #    }
+  #    Output ONLY the JSON. Preserve every line of content; do not summarize."
+  # Validate: in_scope is a non-empty array of strings.
+  # On success: persist into metadata.ac. Then: rm "$TICKET_DIR/ac.md".
+  # On parse failure: leave ac.md in place, narrate the error, continue
+  # the migration of the other files. The dev will hand-fix.
+fi
+
+# 3. Parse plan.md → metadata.plan (one-shot LLM parser agent).
+if [ -f "$TICKET_DIR/plan.md" ]; then
+  # Agent prompt:
+  #   "Read $TICKET_DIR/plan.md (sections: ## Files (markdown table),
+  #    ## Steps (numbered list), ## Tests (bullets), ## Risks (bullets),
+  #    ## Assumptions (bullets)). Convert to JSON:
+  #    {
+  #      \"files\":  [{\"path\":\"...\",\"change\":\"edit|new|delete\",\"reason\":\"...\"}],
+  #      \"steps\":  [{\"order\":N,\"verb\":\"...\",\"what\":\"...\",\"where\":\"<file>:<lines>\"}],
+  #      \"tests\":  [{\"name\":\"...\",\"covers\":[\"AC-N\"],\"what\":\"...\"}],
+  #      \"risks\":  [{\"risk\":\"...\",\"mitigation\":\"...\"}],
+  #      \"assumptions\": [\"...\"]
+  #    }
+  #    Output ONLY the JSON. Preserve every item."
+  # Validate: files/steps/tests/risks are arrays; assumptions is an array (may be empty).
+  # On success: persist into metadata.plan. Then: rm "$TICKET_DIR/plan.md".
+fi
+
+# 4. Parse changelog.md → metadata.changelog (one-shot LLM parser agent).
+if [ -f "$TICKET_DIR/changelog.md" ]; then
+  # Agent prompt:
+  #   "Read $TICKET_DIR/changelog.md. Each '## Iteration N. <stage> (<initial|fixes>)'
+  #    section becomes one entry. Convert to JSON array:
+  #    [
+  #      {\"stage\":N,\"iteration\":N,\"kind\":\"initial|fixes\",
+  #       \"items\":[{\"type\":\"decision|step|fix|auto_fix\",\"text\":\"...\",
+  #                   \"blocker_id\":\"<optional>\",\"id\":\"<optional>\"}]}
+  #    ]
+  #    Map old bullets: 'Decision: X' -> {type:decision,text:X};
+  #    'Fix #B-N: X' -> {type:fix,blocker_id:B-N,text:X};
+  #    'AutoFix #AF-N: X' -> {type:auto_fix,id:AF-N,text:X};
+  #    everything else -> {type:step,text:X}.
+  #    Output ONLY the JSON array. Preserve order."
+  # On success: persist into metadata.changelog. Then: rm "$TICKET_DIR/changelog.md".
+fi
+
+# 5. Parse review/code-review.md → metadata.code_review (one-shot LLM parser).
+if [ -f "$TICKET_DIR/review/code-review.md" ]; then
+  # Agent prompt:
+  #   "Read $TICKET_DIR/review/code-review.md. Each '## Iteration N' section becomes
+  #    one entry. Convert to JSON array per the metadata.code_review schema documented
+  #    in Knowledge & State Layout. Output ONLY the JSON array."
+  # On success: persist into metadata.code_review. Then: rm the file.
+fi
+
+# 6. Parse wrapup.md (if ticket was already complete pre-migration).
+if [ -f "$TICKET_DIR/wrapup.md" ]; then
+  # Agent prompt:
+  #   "Read $TICKET_DIR/wrapup.md. Extract:
+  #    - assumptions_validation: from '## Assumptions' section, each '- X -> STATUS: reason'
+  #      becomes {text:X, status:STATUS, reason:reason or null}.
+  #    - lessons_captured: from '## Lessons captured', each '- [slug], takeaway'
+  #      becomes {slug:slug, takeaway:takeaway}.
+  #    - summary: a one-paragraph synthesis of the wrapup file (or first paragraph if present).
+  #    - performance: from '## Performance' section, parse into the metadata.performance
+  #      schema documented in Knowledge & State Layout.
+  #    Output JSON: {assumptions_validation:[...], lessons_captured:[...], summary:'...', performance:{...}}."
+  # Persist into the four metadata fields. Then: rm "$TICKET_DIR/wrapup.md".
+fi
+
+# 7. Drop deprecated files unconditionally (no parsing needed):
+rm -f "$TICKET_DIR/context.md"
+rm -f "$TICKET_DIR/review/plan-review.md"
+rm -f "$TICKET_DIR/review/tests-review.md"
+rm -f ".doer/knowledge/assumptions/<TICKET-ID>.md"
+
+# 8. Clean up empty review/ subdir (if all review files were removed):
+rmdir "$TICKET_DIR/review" 2>/dev/null || true
+
+# 9. Reset Stage 2 / Stage 3 if they were mid-loop (loops no longer exist for these stages):
+#    For each of stages.2 and stages.3:
+#    if status == "in_progress" AND iterations field exists with value > 1:
+#      set status = "pending"
+#      remove iterations, blockers, etc. (loop-specific fields)
+#      Stage will re-run as single-pass when /doer <ID> resumes.
+
+# 10. Set metadata.mode = "full" (migrated tickets default to full to preserve their existing pipeline behavior; v3.0.0 lite mode is opt-in for new tickets at intake).
+
+# 11. Set metadata.skill_version = "3.0.0"
+```
+
+**Important migration notes:**
+
+- The LLM parser agents are one-shot and operate per-file. If any agent fails (returns invalid JSON, refuses, etc.), the orchestrator narrates the failure for that file but continues with the others. The dev can run `/doer <ID>` again after fixing the offending file by hand (or accept that the field will be empty until they re-run the corresponding stage).
+- Validation is structural only (right shape, right types). The orchestrator does NOT semantically validate that the parsed content matches the original; that is the dev's responsibility if they want to spot-check after migration.
+- Stage 2 / Stage 3 reset (step 9) only applies to in-flight tickets that were stuck mid-loop. Tickets where Stage 2/3 already completed under the old loop (status=`complete`) remain `complete`; the auto-reverify (Phase 2) will spot-check them via the new deterministic checks.
+- All file deletions in step 7 are safe: those files are no longer read by any code path in v3.0.0.
+
+After Phase 1 finishes, Phase 2 auto-reverify runs (because `affected_stages: [all]`). For in-flight tickets the spot-checks fire automatically; for complete tickets the orchestrator asks once per the standard prompt.
+
+The behavioral changes apply on the next `/doer <ID>` invocation.
+
 ---
 
 ## Commands
@@ -340,7 +467,7 @@ The behavioral changes apply on the next `/doer <ID>` invocation.
 
 All state lives under `./.doer/` in the current working directory (scoped to the target repo).
 
-**Lessons are GLOBAL**: they live next to `SKILL.md` (so all repos share the same accumulated knowledge). **Assumptions are per-ticket** (specific to one piece of work).
+**Lessons are GLOBAL**: they live next to `SKILL.md` (so all repos share the same accumulated knowledge). **Everything else is per-ticket and lives in a single `metadata.json` per ticket.** No markdown sidecars, no scratch files, no per-stage review files.
 
 ```
 <doer-skill-dir>/                  # ~/src/doer/ in this install (resolve symlinks)
@@ -350,28 +477,97 @@ All state lives under `./.doer/` in the current working directory (scoped to the
     └── {slug}.md
 
 ./.doer/                           # per-repo (in CWD), gitignored via .git/info/exclude
-├── knowledge/
-│   └── assumptions/
-│       └── {TICKET-ID}.md         # per-ticket, validated at wrapup
+├── knowledge/                     # reserved for future cross-ticket data; empty by default
 └── tickets/
     └── {TICKET-ID}/
-        ├── metadata.json           # workflow state + raw intake (title, description, raw_acs, raw_context)
-        ├── ac.md                   # confirmed ACs (Stage 1)
-        ├── plan.md                 # implementation plan (Stage 2)
-        ├── context.md              # persistent scratch for sub-agents (file tree, signatures, prior decisions). Built iter 1, read on iter 2+.
-        ├── changelog.md            # doer's "what + why" log, accumulated across stages
-        ├── wrapup.md               # lessons summary + performance report (Stage 9, final stage)
-        └── review/
-            ├── plan-review.md      # ONE file per stage, sections per iteration
-            ├── tests-review.md
-            └── code-review.md
+        └── metadata.json          # SINGLE file per ticket: state + intake + ac + plan + changelog + code_review + assumptions + wrapup
 ```
 
-**Per ticket: 6 fixed files + 3 review files (only when those stages have loops).** Reflect, runtime-logs-added, runtime-log-output, performance, ticket are all gone (rolled into other artifacts or dropped as low-value).
+**Per ticket: 1 file (`metadata.json`).** Every previous artifact (`ac.md`, `plan.md`, `context.md`, `changelog.md`, `wrapup.md`, `assumptions/<T>.md`, `review/*.md`) was consolidated into `metadata.json` as structured fields in v3.0.0. One source of truth, no drift, no file-coordination cost. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
+
+### `metadata.json` schema (v3.0.0)
+
+```json
+{
+  "ticket_id": "<ID>",
+  "title": "<title>",
+  "branch": "<branch>",
+  "status": "in_progress | complete",
+  "current_stage": 1,
+  "skill_version": "3.0.0",
+  "mode": "lite | full",
+  "created_at": "<ISO8601>",
+  "completed_at": null,
+
+  "intake": {
+    "description": "<full pasted description>",
+    "raw_acs": "<full pasted ACs or 'derive'>",
+    "context": "<extra context or 'none'>",
+    "prior_work": { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }
+  },
+
+  "ac": {
+    "in_scope": ["AC-1: ...", "AC-2: ..."],
+    "out_of_scope": ["..."],
+    "open_questions_resolved": [{"question": "...", "answer": "..."}],
+    "applicable_lessons": ["<lesson-slug>"]
+  },
+
+  "plan": {
+    "files": [{"path": "...", "change": "edit | new | delete", "reason": "..."}],
+    "steps": [{"order": 1, "verb": "...", "what": "...", "where": "<file>:<line-range>"}],
+    "tests": [{"name": "...", "covers": ["AC-N"], "what": "..."}],
+    "risks": [{"risk": "...", "mitigation": "..."}],
+    "assumptions": ["..."]
+  },
+
+  "stages": {
+    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "3.0.0", "completed_at": "<ISO8601>"},
+    "2": {"name": "plan",           "status": "...", "verified_with": "3.0.0", "retry_used": false},
+    "3": {"name": "tests",          "status": "...", "verified_with": "3.0.0", "retry_used": false},
+    "4": {"name": "code",           "status": "...", "verified_with": "3.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals"},
+    "5": {"name": "code-review",    "status": "...", "verified_with": "3.0.0", "iterations": 0, "loop_outcome": "..."},
+    "6": {"name": "quality-gate",   "status": "...", "verified_with": "3.0.0"},
+    "7": {"name": "runtime-verify", "status": "...", "verified_with": "3.0.0", "ac_verdicts": {}},
+    "8": {"name": "docs-sync",      "status": "...", "verified_with": "3.0.0"},
+    "9": {"name": "wrapup",         "status": "...", "verified_with": "3.0.0"}
+  },
+
+  "changelog": [
+    {"stage": 2, "iteration": 1, "kind": "initial | fixes", "items": [
+      {"type": "decision | step | fix | auto_fix", "text": "<one-line>", "blocker_id": "<optional, only for fix>", "id": "<optional, only for auto_fix>"}
+    ]}
+  ],
+
+  "code_review": [
+    {"iteration": 1, "blockers": [{"id": "B-1", "text": "..."}], "auto_fixes": [], "suggestions": [], "info": [], "verdict": "needs_revision | converged"},
+    {"iteration": 2, "prior_blockers_resolved": ["B-1"], "prior_blockers_still_open": [], "new_blockers": [], "auto_fixes": [], "suggestions": [], "info": [], "verdict": "..."}
+  ],
+
+  "assumptions_validation": [{"text": "...", "status": "VALIDATED | INVALIDATED | UNVERIFIED", "reason": "..."}],
+  "lessons_captured": [{"slug": "<lesson-slug>", "takeaway": "..."}],
+  "summary": "<wrapup paragraph>",
+  "performance": {"started": "...", "completed": "...", "wall_clock": "...", "active": "...", "stages": [], "code": {}, "agents": {}, "convergence": {}, "reviewer_roi": "..."},
+
+  "blocking_conditions": [],
+  "commits": [],
+  "workspace_guard": "ok",
+  "runtime_build_command": null,
+  "lint_command": null,
+  "typecheck_command": null,
+  "test_command": null,
+  "last_green_sha": null,
+  "last_green_test_command": null
+}
+```
+
+**Field ownership:** `intake` (intake step), `mode` (intake's final sub-step, after a heuristic suggestion + dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7).
+
+**`mode` semantics.** `full` runs the complete pipeline as documented in each stage. `lite` is for trivial tickets (small diff, no architecture work, single area) and skips the heaviest Stage 9 ceremony, skips Stage 8 entirely, and forces single-pass behavior on Stage 4 and Stage 5 (no iter 2+, no convergence loop). See each stage's "Lite branch" subsection for the exact divergence. **`mode` is set ONCE at intake and never changes mid-ticket** (no escalation; if a lite ticket grows beyond what lite can handle, the dev aborts and reruns under full).
 
 **Path resolution for `lessons/`:** the orchestrator MUST resolve the directory of the running `SKILL.md` (following symlinks, most installs put it under `~/.claude*/skills/doer/SKILL.md` symlinked to `~/src/doer/SKILL.md`) and treat `<resolved-dir>/lessons/` as the canonical lessons directory. Use `readlink` or `realpath` if needed.
 
-On first invocation in a repo, create `./.doer/knowledge/assumptions/` if it does not exist. The global `lessons/` directory must already exist next to the skill.
+The global `lessons/` directory must already exist next to the skill. The per-repo `./.doer/` directory and the `tickets/` subdir under it are created on first invocation if missing. The `knowledge/` subdir is reserved for future use and is created lazily when something writes to it.
 
 ---
 
@@ -408,11 +604,39 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
    | 6c | "Did you write implementation code?" | If yes, capture file paths and commit/staged/uncommitted state |
    | 6d | "Did you update any documentation?" | If yes, capture file paths |
 
-   Persist all answers under `metadata.raw.prior_work`. If question 6 was `N`, write `prior_work: { "exists": false }` and skip the follow-ups.
+   Persist all answers under `metadata.intake.prior_work`. If question 6 was `N`, write `prior_work: { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }` and skip the follow-ups.
 
-2. **No `ticket.md` file**: the raw intake lives directly inside `metadata.json` as a `raw` block (see step 3). One less file, no duplication.
+2. **Compute lite signal score and ask the dev to pick `mode`.** After all six intake questions are answered (and the prior-work follow-ups if applicable), but BEFORE initializing `metadata.json`, compute a lite-suitability score from the captured intake data:
 
-3. Initialize `metadata.json` (raw intake is embedded, no separate `ticket.md`):
+   | Signal | Score |
+   |---|---|
+   | `description.length < 500` chars | +1 |
+   | `raw_acs` has ≤ 3 enumerated items OR `raw_acs.length < 300` chars | +1 |
+   | `prior_work.exists == false` | +1 |
+   | Description (case-insensitive) contains any of: `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `config flag`, `placeholder`, `hotfix`, `traducción`, `locale string` | +1 per keyword, capped at +2 |
+   | Description (case-insensitive) contains any of: `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic` | −2 (subtracted from total) |
+
+   **Total score ≥ 2 → suggest lite. Total score < 2 → suggest full.**
+
+   Then ask via `AskUserQuestion`:
+
+   ```
+   Question: Doer detected this ticket as a candidate for [lite | full] mode. Which execution mode do you want?
+
+   Options:
+     - Lite: single-pass stages 2-5 (no iter 2+, no convergence loops on 4 and 5),
+             skip Stage 8 entirely, minimal Stage 9 wrapup, history cleanup runs
+             without confirmation. Best for trivial tickets (default-value changes,
+             copy edits, prefills). If Stage 4 or 5 does not converge in iter 1,
+             you choose: accept residuals, pause, or abort + restart in full mode.
+     - Full: complete pipeline with Stages 4 and 5 looping up to 3 iterations,
+             Stage 8 docs sync (with classify pre-check), full Stage 9 wrapup
+             (assumptions validation, lessons capture, confirmed history cleanup).
+   ```
+
+   The recommended option (per the heuristic) is presented first in the option list. Persist the dev's answer to `metadata.mode`. **Once set, `mode` does NOT change for the remainder of the ticket** (no escalation; if the ticket grows past lite's capacity, the dev aborts and reruns under full).
+
+3. Initialize `metadata.json` (intake fields + chosen mode are embedded, see Knowledge & State Layout for the full schema):
 
    ```json
    {
@@ -421,43 +645,44 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
      "branch": "<branch-name>",
      "status": "in_progress",
      "current_stage": 1,
-     "skill_version": "<read from frontmatter at intake time, e.g. 2.0.0>",
+     "skill_version": "<read from frontmatter at intake time, e.g. 3.0.0>",
+     "mode": "<lite | full chosen in step 2>",
      "created_at": "<ISO8601>",
-     "raw": {
+     "completed_at": null,
+     "intake": {
        "description": "<full description from intake>",
        "raw_acs": "<pasted ACs or 'derive'>",
        "context": "<extra context or 'none'>",
        "prior_work": {
-         "exists": false,
-         "plan": null,
-         "tests": null,
-         "code": null,
-         "docs": null
+         "exists": false, "plan": null, "tests": null, "code": null, "docs": null
        }
      },
      "stages": {
        "1": {"name": "ac-confirm",     "status": "pending"},
-       "2": {"name": "plan",           "status": "pending", "loop": true},
-       "3": {"name": "tests",          "status": "pending", "loop": true},
-       "4": {"name": "code",           "status": "pending", "loop": true},
-       "5": {"name": "code-review",    "status": "pending", "loop": true},
+       "2": {"name": "plan",           "status": "pending"},
+       "3": {"name": "tests",          "status": "pending"},
+       "4": {"name": "code",           "status": "pending"},
+       "5": {"name": "code-review",    "status": "pending"},
        "6": {"name": "quality-gate",   "status": "pending"},
        "7": {"name": "runtime-verify", "status": "pending"},
        "8": {"name": "docs-sync",      "status": "pending"},
        "9": {"name": "wrapup",         "status": "pending"}
      },
+     "changelog": [],
+     "code_review": [],
      "blocking_conditions": [],
-     "commits": []
+     "commits": [],
+     "workspace_guard": null
    }
    ```
 
+   The remaining top-level fields (`ac`, `plan`, `assumptions_validation`, `lessons_captured`, `summary`, `performance`, etc.) are populated by their owning stages and start absent.
+
    **Per-stage `verified_with` rule.** When a stage transitions to `status: "complete"` (or `"skipped"`, or `"imported"`), the orchestrator MUST also write `verified_with: "<current SKILL frontmatter version>"` on that stage. Example after Stage 2 finishes under SKILL 2.10.0:
    ```json
-   "2": {"name": "plan", "status": "complete", "verified_with": "2.10.0", "completed_at": "...", ...}
+   "2": {"name": "plan", "status": "complete", "verified_with": "3.0.0", "completed_at": "...", ...}
    ```
    This is the only mechanism that lets the auto-reverify check (see Versioning & Migrations) know which stages to spot-check after a SKILL upgrade.
-
-   **Pipeline is now 9 stages** (Stage 5 Reflect was removed, its self-review value was marginal vs the formal Stage 5 Code Review). All stages renumbered accordingly.
 
 4. Create the feature branch in the current repo:
 
@@ -549,8 +774,8 @@ For deep cleanup of historical `.doer/` content from earlier commits on the feat
 
 **Per-stage narration:**
 - Before: `"Starting Stage {N}, {name}. {one-sentence goal}."` + write `stages.<N>.started_at`.
-- After: write `stages.<N>.completed_at` + `"Stage {N} complete. Committed as {sha}. Continuing to Stage {N+1}..."` then END TURN.
-- Inside loop: `"Iteration {i}/{max}: invoking {agent}... agent returned {status}, {findings} findings ({blockers} blockers)."`
+- After: write `stages.<N>.completed_at` + `"Stage {N} complete{, committed as {sha}}. Continuing to Stage {N+1}..."` then END TURN. (The `committed as {sha}` clause is included only when the stage actually produced a real-code commit. Stages 1, 2, and 9 typically do not commit — they only update `metadata.json` which is gitignored — so they omit the clause.)
+- Inside loop: `"Iteration {i}/{max}: invoking {agent}... agent returned {status}, {findings} findings ({blockers} blockers)."` (`{max}` is `3` for Stage 4 and Stage 5.)
 
 ### Turn boundaries, granularity is the WHOLE iteration
 
@@ -584,7 +809,7 @@ Then **MUST END TURN before the next iteration or the next stage.** The next use
 
 ### SUGGESTIONs never pause
 
-Zero BLOCKERs = converged. SUGGESTIONs are appended to the stage's single review file (e.g. `review/plan-review.md`) under the iteration's section. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds (next stage, in a new turn).
+Zero BLOCKERs = converged. SUGGESTIONs are persisted as part of the stage's `metadata.code_review[<iteration>]` entry. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds (next stage, in a new turn).
 
 ### Interrupt detection, and the auto-resume rule
 
@@ -612,35 +837,44 @@ The user already opted in by starting the ticket. Asking again on every stage bo
 
 ### Performance counters (consumed by Stage 9 wrapup)
 
-Persist these in `metadata.json`:
+Counters are written into `metadata.json` as the ticket progresses. Stage 9 reads them as-is into `metadata.performance` (no separate aggregation pass needed).
+
+Per-stage runtime fields (live under each `metadata.stages.<N>`):
 
 ```json
-{
-  "agent_invocations": {"agent-name": <count>, ...},
-  "stages": {
-    "<N>": {
-      "started_at": "<ISO8601>",
-      "completed_at": "<ISO8601>",
-      "pauses": [{"paused_at": "...", "resumed_at": "..."}],
-      "active_duration_seconds": <int>,
-      "convergence_loop": {
-        "iterations": <int>,
-        "converged_on_iteration": <int>,
-        "blockers_resolved_total": <int>,
-        "exit_reason": "converged | max_iterations | user_accepted"
-      }
-    }
-  }
+"<N>": {
+  "name": "...",
+  "status": "...",
+  "verified_with": "3.0.0",
+  "started_at":   "<ISO8601>",
+  "completed_at": "<ISO8601>",
+  "iterations": <int>,                                  // for stages 4 and 5 only
+  "loop_outcome": "converged | accepted_with_residuals",
+  "blockers_resolved_total": <int>                      // for stages 4 and 5 only
 }
 ```
 
-Increment `agent_invocations[<name>]` on every Agent call. Update `convergence_loop` on loop exit. Active duration excludes paused intervals.
+Top-level runtime counter for agent invocations (lives at `metadata.performance.agents`, populated incrementally on every Agent call):
+
+```json
+"performance": {
+  "agents": {"<agent-name>": <count>, ...}
+  // The remaining performance fields (started, completed, wall_clock, active, code, convergence, reviewer_roi)
+  // are filled in by Stage 9 step 3 from these per-stage and agents counters plus git log/diff.
+}
+```
+
+Increment `metadata.performance.agents[<name>]` on every Agent call. Set `metadata.stages.<N>.started_at` when the stage begins and `completed_at` on transition to `complete | skipped | imported`. Set `iterations`/`loop_outcome`/`blockers_resolved_total` on loop exit (stages 4 and 5 only).
+
+There is no `pauses` array and no `active_duration_seconds` field. `/doer pause` was removed in v2.2.0 (state persists after every Agent return; closing the session is the pause). Wall-clock duration in `metadata.performance.wall_clock` is computed from `metadata.created_at` to `metadata.completed_at`; "active" duration is the same value (no paused intervals to subtract).
 
 ---
 
 ## Doer/Reviewer Loop Pattern (Delta-Aware)
 
-Stages 2, 3, 4, 6 use this pattern. Max iterations: **5**.
+**Stages 4 (Code) and 5 (Code Review) use this pattern. Max iterations: 3.** (Dropped from 5 in v3.0.0; iterations 3+ rarely add value commensurate to cost. If 3 iterations don't converge, narrate and let the dev decide.)
+
+Stages 2 (Plan) and 3 (Tests) do NOT use this loop in v3.0.0. They are single-pass with deterministic pre-checks plus an optional single retry. See those stages' sections.
 
 ### Findings severity (4 buckets)
 
@@ -648,163 +882,140 @@ Stages 2, 3, 4, 6 use this pattern. Max iterations: **5**.
 |--------|----------|----------|
 | **BLOCKER** | Loop continues until resolved | Failing test, missing AC coverage, security issue, broken build |
 | **AUTO_FIX** | Applied automatically same iteration before convergence check | Reference to deleted function, unused import, test name stale after rename, typo |
-| **SUGGESTION** | Logged to review file, never applied, never blocks | "Consider extracting", "could use map instead of ifs", design tweaks |
+| **SUGGESTION** | Logged to `metadata.code_review`, never applied, never blocks | "Consider extracting", "could use map instead of ifs", design tweaks |
 | **INFO** | Observational only | "This file is 500 LOC", "pattern used in 3 places" |
 
 **Test for AUTO_FIX vs SUGGESTION:** *"Is there anything to decide?"* No → AUTO_FIX. Yes (trade-off, preference, design judgment) → SUGGESTION. When in doubt → SUGGESTION (be conservative. AUTO_FIX runs without user approval).
 
 **Convergence = zero BLOCKERs remaining.** AUTO_FIXes are applied within the same iteration, do not block convergence.
 
-### Review file (ONE per stage, sections per iteration)
+### Review entries (in `metadata.code_review`)
 
-Each stage with a loop has **a single review file** at `review/{stage}-review.md` (e.g. `review/plan-review.md`, `review/tests-review.md`, `review/code-review.md`). NEVER create per-iteration files like `plan-review-1.md`. The single file accumulates iteration sections:
+Stage 5 appends one object per iteration to `metadata.code_review` (a JSON array). NEVER write to a sidecar file. Shape:
 
-```markdown
-# {Stage} Review, <TICKET-ID>
-
-## Iteration 1
-- BLOCKERs: <list with IDs>
-- AUTO_FIXes applied: <list>
-- SUGGESTIONs: <list>
-- Verdict: needs_revision
-
-## Iteration 2
-- Prior BLOCKERs resolved: <ids>
-- Prior BLOCKERs still open: <ids>
-- New BLOCKERs: <list>
-- AUTO_FIXes applied: <list>
-- SUGGESTIONs: <list>
-- Verdict: converged
+```json
+{
+  "iteration": <N>,
+  "blockers":   [{"id": "B-1", "text": "<finding>"}, ...],          // iter 1 form
+  "prior_blockers_resolved":   ["B-1", ...],                         // iter 2+ form
+  "prior_blockers_still_open": ["B-2", ...],                         // iter 2+ form
+  "new_blockers": [{"id": "B-3", "text": "..."}, ...],              // iter 2+ form
+  "auto_fixes":  [{"id": "AF-1", "text": "<mechanical change>"}, ...],
+  "suggestions": [{"id": "S-1",  "text": "<observation>"}, ...],
+  "info":        [{"id": "I-1",  "text": "..."}, ...],
+  "verdict": "needs_revision | converged"
+}
 ```
 
-Append on each iteration. The reviewer reads only the most recent iteration's section + the prior BLOCKERs (passed in the prompt). Old SUGGESTIONs stay logged for the user but are NOT re-analyzed.
+The reviewer reads ONLY the most recent `metadata.code_review[-1]` entry plus prior unresolved BLOCKERs (both passed inline in the prompt). Old SUGGESTIONs stay logged for the dev but are NOT re-analyzed.
 
-### Changelog file (compact, append-only)
+### Changelog entries (in `metadata.changelog`)
 
-Each ticket has a single `changelog.md`. Every doer + AUTO_FIX pass APPENDs a section. NEVER rewrite or compress prior sections. Format MANDATORY:
+Every stage that produces output (planner, test writer, code writer, code reviewer fix-pass, runtime logger, etc.) APPENDs an entry to `metadata.changelog` (JSON array). Append-only. NEVER rewrite or compress prior entries. Shape:
 
-```markdown
-## Iteration N, <stage> (<initial | fixes>)
-- Decision/Output: <one line, terse>
-- Decision/Output: <one line>
-- Fix #<blocker-id>: <what changed + why> (only on iter 2+)
-- AutoFix #<id>: <mechanical change> (when AUTO_FIXes applied)
+```json
+{
+  "stage": <N>,
+  "iteration": <N>,
+  "kind": "initial | fixes",
+  "items": [
+    {"type": "decision", "text": "<one-line>"},
+    {"type": "step",     "text": "<one-line>"},
+    {"type": "fix",      "blocker_id": "B-1", "text": "<what + why>"},
+    {"type": "auto_fix", "id": "AF-1",        "text": "<mechanical change>"}
+  ]
+}
 ```
 
-Bullets only. No prose paragraphs. The reviewer reads this to understand what the doer just did, terse means cheap to read AND cheap to write.
-
-### `context.md` (persistent scratch for sub-agents)
-
-Sub-agents have no memory between invocations. Re-exploring the codebase on every iteration is the dominant latency cost. Solution: after iter 1, the doer writes a small `context.md` that lets iter 2+ agents skip re-exploration.
-
-**Iter 1 doer prompt addition:**
-
-```
-After producing your main artifact (plan.md / tests / code), also write
-.doer/tickets/<TICKET-ID>/context.md with this shape:
-
-```markdown
-# Ticket Context (frozen after iteration 1)
-
-## Touched paths
-- path/to/file.ext (one-line role)
-- ...
-
-## Key signatures
-- ClassName.fnName(arg1, arg2) -> ReturnType  // why it matters
-- ...
-
-## Module boundaries
-- module-a depends on module-b for X
-- ...
-
-## Decisions baked into the artifact
-- Used pattern X over Y because Z
-- ...
-```
-
-Keep it under 200 lines. This is the entire context iter 2+ agents get;
-no codebase re-exploration unless a BLOCKER demands it.
-```
+One-line items only. No prose. Sub-agents reading the changelog look at the last 1-3 entries inline in their prompt. Terse means cheap to read AND cheap to write.
 
 ### Read budgets (per iteration, per role)
 
-Sub-agent read budgets are SOFT limits expressed in their prompt. Goal: cap exploration cost without forbidding necessary reads.
+Sub-agent read budgets are SOFT limits expressed in their prompt. Goal: cap exploration cost without forbidding necessary reads. **No scratch files in v3.0.0**: every prior context that used to live in `context.md` now arrives inline in the prompt (extracted from `metadata.ac`, `metadata.plan`, last N `metadata.changelog` entries, and `git diff <base>..HEAD`).
 
 | Role | Budget |
 |------|--------|
-| Iter 1 doer | Up to 15 source files + lessons + ac.md + assumptions. Free to grep. |
-| Iter 1 reviewer | The artifact + ac.md + changelog. Up to 5 source files for spot-checks. |
-| Iter 2+ combined doer/reviewer | `context.md` + changelog + the artifact + up to 3 source files specifically tied to BLOCKER targets. |
+| Iter 1 doer | Up to 15 source files + lessons. Free to grep. Receives `metadata.ac` and `metadata.plan` inline. |
+| Iter 1 reviewer | `git diff <base>..HEAD` + last 1-2 `metadata.changelog` entries (inline) + up to 5 source files for spot-checks. Receives `metadata.ac` and `metadata.plan` inline. |
+| Iter 2+ combined fixer-reviewer | `git diff <base>..HEAD` + last 2 `metadata.changelog` entries + last `metadata.code_review` entry (all inline) + up to 3 source files specifically tied to BLOCKER targets. NO scratch reads. |
 | AUTO_FIX fixer | The lines named in the AUTO_FIX list. No exploration. |
 
-Add this line to every sub-agent prompt: *"Read budget: <N> files. Stay within it. If a BLOCKER genuinely requires more, list the extra reads in changelog and proceed."*
+Add this line to every sub-agent prompt: *"Read budget: <N> source files. Stay within it. If a BLOCKER genuinely requires more, note the extra reads in your changelog appendix and proceed."*
 
 ### Iteration 1 (clean-slate, two agent calls)
 
-1. Invoke **doer** → produces artifact + `changelog.md` + `context.md` (see above).
-2. Invoke **reviewer** → produces findings categorized BLOCKER / AUTO_FIX / SUGGESTION / INFO.
-3. **Apply AUTO_FIXes** (if any): invoke fixer pass with *"Apply each mechanically. No design changes. Append to changelog as `AutoFix #<id>: ...`"*.
-4. Zero BLOCKERs → converged. Log SUGGESTIONs/INFO to review file, narrate `"Converged. N AUTO_FIXes applied. M SUGGESTIONs logged."`, auto-proceed.
+1. Invoke **doer** → produces artifact (the code/tests/etc. the stage owns) and returns a `changelog_appendix` object that the orchestrator persists into `metadata.changelog`.
+2. Invoke **reviewer** → returns findings JSON (BLOCKER / AUTO_FIX / SUGGESTION / INFO). Orchestrator persists as a new entry in `metadata.code_review`.
+3. **Apply AUTO_FIXes** (if any): invoke fixer pass with *"Apply each mechanically. No design changes. Return a changelog appendix with `{type: 'auto_fix', id: '<id>', text: '<change>'}` items."*
+4. Zero BLOCKERs → converged. Narrate `"Converged. N AUTO_FIXes applied. M SUGGESTIONs logged."`, auto-proceed.
 5. BLOCKERs > 0 → Iteration 2.
 
 ### Iteration 2+ (delta-aware, ONE combined agent call)
 
 Iter 2+ is targeted fix verification. No need for fresh-eyes review on small changes the same agent just made. Halve the calls:
 
-1. Invoke **ONE combined "fixer-reviewer" agent** with:
-   - The artifact (current state)
-   - `context.md` (no re-exploration)
-   - `changelog.md` (what changed and why)
+1. Invoke **ONE combined "fixer-reviewer" agent** with the following payload **inlined in the prompt** (NOT as file reads):
+   - `metadata.ac` (in_scope, out_of_scope)
+   - `metadata.plan` (files, steps, tests)
+   - Last 2 `metadata.changelog` entries (what changed and why)
+   - Last `metadata.code_review` entry (prior verdict)
    - Prior BLOCKERs with IDs
+   - The diff: `git diff <base>..HEAD`
    - Instruction:
      ```
-     Step 1: Address each prior BLOCKER. Update the artifact in-place.
-       Append to changelog: "Fix #<id>: <what + why>" per BLOCKER.
+     Step 1: Address each prior BLOCKER. Update code/tests in-place.
+       For each fix, add to your output: {type: "fix", blocker_id: "<id>", text: "<what + why>"}
 
-     Step 2: Self-review your fix. For each prior BLOCKER, mark RESOLVED
-       or STILL_OPEN. Scan ONLY the lines you just touched for new issues.
+     Step 2: Self-review your fix. For each prior BLOCKER, mark RESOLVED or STILL_OPEN. Scan ONLY the lines you just touched for new issues.
 
      Step 3: Output JSON:
      {
-       "prior_blockers_resolved": ["id-1", ...],
-       "prior_blockers_still_open": ["id-2", ...],
-       "new_blockers": [...],
-       "auto_fixes": [...],
-       "suggestions": [...],
-       "info": [...]
+       "changelog_appendix": {
+         "stage": <N>, "iteration": <N>, "kind": "fixes",
+         "items": [{type, text, ...}, ...]
+       },
+       "code_review_entry": {
+         "iteration": <N>,
+         "prior_blockers_resolved": ["id-1", ...],
+         "prior_blockers_still_open": ["id-2", ...],
+         "new_blockers": [{"id": "B-X", "text": "..."}, ...],
+         "auto_fixes": [...],
+         "suggestions": [...],
+         "info": [...],
+         "verdict": "needs_revision | converged"
+       }
      }
 
-     Read budget: 3 files max beyond context.md and changelog.md.
+     Read budget: 3 source files max beyond the diff.
      ```
 2. Apply AUTO_FIXes (separate fixer pass if needed).
-3. Remaining BLOCKERs = still_open + new. Zero → converged. Otherwise → next iteration.
+3. Remaining BLOCKERs = still_open + new. Zero → converged. Otherwise → next iteration (subject to max 3).
 
 **Why combined:** for iter 2+, the changes are small and the reviewer would re-read the same context the doer just wrote. One agent does both with the changelog as its trail. Trade-off: weaker than fresh-eyes review, but iter 1 already had a fresh-eyes review pass, so the high-impact biases were caught upfront. The dev can always force a fresh-eyes pass by setting `metadata.stages.<N>.force_fresh_review = true`.
 
-### Max iterations reached (5) without convergence
+### Max iterations reached (3) without convergence
 
-Narrate: *"Stage {N} did not converge after 5 iterations. {N} BLOCKERs remain: {list}. Options: 1) one more iteration, 2) accept and continue, 3) pause."* Record choice in `metadata.stages.<N>.loop_outcome`.
+Narrate: *"Stage {N} did not converge after 3 iterations. {N} BLOCKERs remain: {list}. Options: 1) one more iteration, 2) accept and continue, 3) pause."* If option 1 converges → `loop_outcome = "converged"`. If option 2 → `loop_outcome = "accepted_with_residuals"`. If option 3 → leave `metadata.stages.<N>.status = "in_progress"` and do NOT set `loop_outcome` (the dev resumes later via `/doer continue`).
 
 ---
 
 ## Stage 1. AC Confirm
 
-**Goal:** produce testable ACs in `ac.md` + detect/import any pre-existing work.
+**Goal:** produce testable ACs in `metadata.ac` + detect/import any pre-existing work.
 
 **No subagent, orchestrator runs this directly.** No commit at end (only `.doer/` writes, which is gitignored).
 
 ### Step 1: Load context
 
-1. Read `metadata.json`. Pull `title`, `raw.description`, `raw.raw_acs`, `raw.context`, and `raw.prior_work` (all captured during intake).
+1. Read `metadata.json`. Pull `title`, `intake.description`, `intake.raw_acs`, `intake.context`, and `intake.prior_work` (all captured during intake).
 2. Read `<doer-skill-dir>/lessons/*.md` (global, cross-project, see Knowledge & State Layout for path resolution). Note any whose `when_it_applies` matches this ticket.
 
 ### Step 2: Branch on prior work (no question, read metadata)
 
 The intake already asked "Have you done any work?" and the four follow-ups (plan, tests, code, docs). Do NOT ask again.
 
-- `metadata.raw.prior_work.exists == false` → skip Steps 3-5. Go to Step 6 (AC confirm) with entry stage = 1.
-- `metadata.raw.prior_work.exists == true` → continue to Step 3 (inspect).
+- `metadata.intake.prior_work.exists == false` → skip Steps 3-5. Go to Step 6 (AC confirm) with entry stage = 1.
+- `metadata.intake.prior_work.exists == true` → continue to Step 3 (inspect).
 
 ### Step 3: Inspect the repo (only when prior_work.exists)
 
@@ -869,7 +1080,7 @@ Mark imported stages in `metadata.json`:
 }
 ```
 
-If a plan was imported but isn't written down, prompt the user to paste/summarize it into `plan.md` (or orchestrator drafts from summary + diff and user confirms). Same pattern for imported tests/code (note their file paths in metadata).
+If a plan was imported but isn't written down, prompt the user to paste/summarize it. Either way, persist the result into `metadata.plan` using the schema documented in Knowledge & State Layout (or orchestrator drafts the structured plan from the summary + diff and the user confirms). Same pattern for imported tests/code (note their file paths in `metadata.stages.<N>.imported_paths`).
 
 ### Step 6: AC confirmation (single combined check)
 
@@ -907,17 +1118,20 @@ ONE question for the entire Stage 1 contract. No item-by-item drilling.
 
 ### Step 7: Write artifacts
 
-Write `ac.md`:
-```markdown
-# <TICKET-ID>. Acceptance Criteria
-## In Scope
-- AC-1: GIVEN ... WHEN ... THEN ...
-## Out of Scope
-## Open Questions (resolved)
-## Applicable Lessons
+Persist the confirmed Stage 1 output into `metadata.ac`:
+
+```json
+"ac": {
+  "in_scope": ["AC-1: GIVEN ... WHEN ... THEN ...", "AC-2: ..."],
+  "out_of_scope": ["<item>", "..."],
+  "open_questions_resolved": [{"question": "<Q>", "answer": "<A>"}],
+  "applicable_lessons": ["<lesson-slug>", "..."]
+}
 ```
 
-Initialize `./.doer/knowledge/assumptions/<TICKET-ID>.md` with assumptions surfaced.
+Each `in_scope` entry is a complete Given/When/Then string starting with the AC ID. `applicable_lessons` lists slugs of global lessons (`<doer-skill-dir>/lessons/{slug}.md`) whose `when_it_applies` matches this ticket; downstream agents read those lesson files when relevant.
+
+No sidecar `ac.md` file. No separate assumptions file (assumptions surface in Stage 2 inside `metadata.plan.assumptions`).
 
 ### Step 8: Finalize
 
@@ -927,179 +1141,295 @@ Narrate: *"Stage 1 complete. Imported stages: {list}. Continuing to Stage {N}...
 
 ---
 
-## Stage 2. Plan (Doer/Reviewer Loop)
+## Stage 2. Plan (Single-Pass + Deterministic Checks)
 
-**Goal:** produce an implementation plan written to `plan.md`.
+**Goal:** produce a structured implementation plan persisted into `metadata.plan`.
+
+**No loop. No reviewer LLM.** A single planner agent produces the plan, then deterministic checks validate structure and coverage. If checks fail, the planner is invoked **once more** (single retry) with the BLOCKERs inline. Second failure aborts the stage and hands control to the dev.
+
+**Why no loop:** the plan reviewer judged an LLM artifact before any evidence existed (no tests, no code). Most of its useful output (file existence, AC coverage, assumption presence) is mechanical and is now caught by deterministic checks. Semantic plan critique is moved downstream where the reviewer has real evidence to look at (Stage 4 / 5).
 
 **Doer agent:** general-purpose, prompted as "implementation planner".
-**Reviewer agent:** general-purpose, prompted as "plan reviewer".
 
 ### Planner prompt (skeleton)
 
 ```
-Read:
-- ./.doer/tickets/<TICKET-ID>/metadata.json (raw.* for intake context)
-- ./.doer/tickets/<TICKET-ID>/ac.md
-- <doer-skill-dir>/lessons/*.md (global, apply those whose scope matches)
-- ./.doer/knowledge/assumptions/<TICKET-ID>.md
+You are the implementation planner for ticket <TICKET-ID>.
 
-Explore the codebase to understand structure relevant to this ticket.
+The orchestrator has already loaded these and inlined them below:
 
-Produce ./.doer/tickets/<TICKET-ID>/plan.md using the COMPACT format below.
-Use bullets and tables. No prose paragraphs. Be terse, the plan will be
-read multiple times by other agents (token cost matters).
+== metadata.ac ==
+<JSON dump of metadata.ac: in_scope, out_of_scope, open_questions_resolved, applicable_lessons>
 
-```markdown
-# <TICKET-ID> Plan
+== metadata.intake ==
+<JSON dump of metadata.intake: description, raw_acs, context, prior_work>
 
-## Files
-| Path | Change | Reason |
-|------|--------|--------|
-| ... | new/edit/delete | one-line why |
+== Applicable lessons (read these files in full before planning) ==
+<for each slug in metadata.ac.applicable_lessons, the resolved file path
+under <doer-skill-dir>/lessons/{slug}.md>
 
-## Steps
-1. <verb> <thing>, `<file>:<line-range>`
-2. ...
+Explore the codebase to understand the structure relevant to this ticket.
+Read budget: up to 15 source files. Free to grep.
 
-## Tests
-- <test name> covers <AC-N>
-- ...
+Produce the plan as a JSON object matching this exact shape:
 
-## Risks
-- <risk> → <mitigation>
+{
+  "files": [
+    {"path": "<repo-relative path>", "change": "edit | new | delete", "reason": "<one-line>"}
+  ],
+  "steps": [
+    {"order": 1, "verb": "<add | modify | delete | rename | refactor>", "what": "<thing>", "where": "<file>:<line-range or 'new'>"}
+  ],
+  "tests": [
+    {"name": "<test function or describe block name>", "covers": ["AC-1", "AC-3"], "what": "<one-line of what the test asserts>"}
+  ],
+  "risks": [
+    {"risk": "<one-line>", "mitigation": "<one-line>"}
+  ],
+  "assumptions": ["<one-line>", "..."]
+}
 
-## Assumptions
-- <new assumption> (also append to assumptions/<TICKET-ID>.md)
-```
+Also produce a changelog appendix:
 
-Also append to changelog.md (compact format, one section per iteration):
+{
+  "stage": 2, "iteration": 1, "kind": "initial",
+  "items": [
+    {"type": "decision", "text": "<one-line decision + brief why>"},
+    ...
+  ]
+}
 
-```markdown
-## Iteration 1. Plan (initial)
-- Decision: <X> because <Y>
-- Decision: ...
-```
+Output BOTH as a single JSON object: {"plan": {...}, "changelog_appendix": {...}}.
+
+Constraints:
+- Every entry in metadata.ac.in_scope MUST be referenced by at least one test in `tests[].covers`.
+- Every file path in `files[]` MUST be relative to the repo root (no leading `./` or absolute paths).
+- Use `change: "new"` only if the file does NOT currently exist; `change: "edit"` only if it does.
+- Be terse, no prose, one-line items.
+- Read budget: 15 source files. Stay within it. If a BLOCKER from the deterministic checks needs more, add it on retry.
 
 Do NOT write code. Do NOT run tests. Plan only.
 ```
 
-### Plan reviewer prompt (skeleton)
+### Deterministic checks (post-planner)
 
+Run all three. They are mechanical, free of LLM cost, and cover what the prior reviewer judged.
+
+**Check A. File existence matches `change`.**
+For each `metadata.plan.files[i]`:
+- `change: "edit" | "delete"` → the file MUST exist at that path.
+- `change: "new"` → the file MUST NOT exist at that path.
+Mismatches → BLOCKER:
 ```
-Read plan.md, ac.md, changelog.md, and metadata.json (raw.* for original intake).
-
-Judge the plan against:
-- AC coverage: does every AC have a clear path in the plan?
-- Step granularity: are steps small and independently verifiable?
-- Test strategy: does it cover the ACs and edge cases?
-- Risk awareness: are real risks identified? Any hand-wavy "should work" steps?
-- New dependencies: any new libraries proposed without justification?
-
-Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. (See Doer/Reviewer Loop Pattern section for the classification rules and the AUTO_FIX-vs-SUGGESTION decision test.)
+- B-1 (file exists/missing): src/foo.kt is `change: edit` but does not exist
+- B-2 (file already exists): src/bar.ts is `change: new` but already exists
 ```
 
-Run the doer/reviewer loop until convergence. **No commit**: `plan.md` lives in `.doer/` (gitignored).
+**Check B. AC coverage by tests.**
+For each entry in `metadata.ac.in_scope`, extract the `AC-N` ID prefix and verify at least one entry in `metadata.plan.tests` lists it under `covers[]`. Missing → BLOCKER:
+```
+- B-3 (coverage): AC-3 has no test in plan.tests
+```
+
+**Check C. Assumptions field present.**
+`metadata.plan.assumptions` MUST exist as an array (may be empty `[]`). Missing or wrong type → BLOCKER:
+```
+- B-4 (assumptions): plan.assumptions field absent or not an array
+```
+
+### Single retry policy
+
+If Checks A/B/C produce any BLOCKERs:
+1. Re-invoke the planner ONCE with the BLOCKERs inline:
+   ```
+   Your prior plan failed deterministic validation:
+   <list BLOCKERs>
+
+   Produce a corrected plan as the same JSON shape. Address every BLOCKER. Do not introduce unrelated changes.
+   ```
+2. Re-run the three checks on the new plan.
+3. Set `metadata.stages.2.retry_used = true`.
+4. If still failing → ABORT the stage. Narrate to the dev:
+   ```
+   Stage 2 failed validation twice. Remaining BLOCKERs: <list>.
+   The plan is in metadata.plan; review and correct, then run /doer continue.
+   ```
+   Set `metadata.stages.2.status = "blocked"`. Do not proceed to Stage 3.
+
+   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing `metadata.plan` by hand, the orchestrator detects `metadata.stages.2.status == "blocked"` and re-runs ONLY the three deterministic checks (file existence, AC coverage, assumptions present) on the corrected plan. No new planner agent invocation. If checks pass → mark stage complete, proceed to Stage 3. If checks still fail → re-narrate the BLOCKERs and stay `blocked`.
+
+If checks pass (first try or after retry):
+1. Persist the planner's `plan` object into `metadata.plan` (overwriting any prior value).
+2. Append the planner's `changelog_appendix` into `metadata.changelog`.
+3. Add each new assumption to `metadata.plan.assumptions` (the planner already did this; nothing extra needed).
+4. Set `metadata.stages.2.status = "complete"`, `metadata.stages.2.verified_with = <SKILL version>`, `metadata.stages.2.completed_at = <ISO8601>`, `metadata.stages.2.retry_used = <true|false>`.
+5. Narrate `"Stage 2 complete: N files, M tests planned. Continuing to Stage 3."` Auto-proceed.
+
+**No commit.** `metadata.json` lives in `.doer/` which is gitignored.
 
 ---
 
-## Stage 3. Tests (Doer/Reviewer Loop, TDD Red)
+## Stage 3. Tests (Single-Pass + Deterministic Checks, TDD Red)
 
 **Goal:** write failing tests that encode the ACs. No implementation yet.
+
+**No loop. No reviewer LLM.** A single test-writer agent produces the tests, then deterministic checks validate. If checks fail, the writer is invoked **once more** (single retry) with the BLOCKERs inline. Second failure aborts the stage.
+
+**Why no loop:** the test reviewer asked questions like "are all ACs covered?" and "do the tests actually fail?", both of which are mechanical. The semantic critique (brittle assertions, over-mocking) is moved into the Stage 4 reviewer where the diff makes it obvious.
+
+**Doer agent:** general-purpose, prompted as "test writer".
 
 ### Test writer prompt (skeleton)
 
 ```
-Read ac.md, plan.md, .doer/tickets/<TICKET-ID>/context.md (Stage 2 already
-explored the codebase, reuse that context).
+You are the test writer for ticket <TICKET-ID>. TDD red phase: write tests
+that currently FAIL because no implementation exists yet.
+
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump of metadata.ac>
+
+== metadata.plan ==
+<JSON dump of metadata.plan>
+
+== Last changelog entries ==
+<JSON dump of metadata.changelog[-2:] for context>
 
 Read 2-3 existing test files in the repo to learn local conventions (framework,
-file layout, naming). Do NOT re-explore the codebase; context.md has the
-relevant signatures and module boundaries.
+file layout, naming). Read budget: 5 source files for convention discovery, plus
+any source file referenced in metadata.plan.files that you need to understand
+the surface you are testing.
 
-Write the tests described in plan.md's "## Tests" section. Tests MUST currently
-fail (no implementation exists yet). Run the test suite and confirm the new
-tests fail with MEANINGFUL messages, not import errors, not typos.
+Write every test listed in metadata.plan.tests. Each test MUST currently fail
+with a MEANINGFUL assertion failure (the expected behavior is missing), NOT an
+import error, NOT a typo, NOT a setup crash.
 
 DO NOT add explanatory comments like `// RED:` / `// TDD red:` / `// fails because X`
 on test bodies or KDoc/JSDoc blocks. The test name and the failing assertion
 are self-documenting. Those comments become stale the moment Stage 4 makes them
 pass and confuse PR reviewers.
 
-Append to changelog.md: which tests were added and which AC each covers
-(format defined in the Loop Pattern section).
+Output a single JSON object describing what you did:
+
+{
+  "tests_added": [
+    {"name": "<test name>", "file": "<repo-relative path>", "covers": ["AC-N"]}
+  ],
+  "changelog_appendix": {
+    "stage": 3, "iteration": 1, "kind": "initial",
+    "items": [
+      {"type": "step", "text": "Added <test name> in <file> covering <AC-N>"},
+      ...
+    ]
+  }
+}
 ```
 
-### Pre-reviewer deterministic checks
+### Deterministic checks (post-writer)
 
-After the test-writer returns, run these checks BEFORE invoking the reviewer. They are deterministic, cheap, and catch obvious failures without burning an LLM call.
+Run all three. They cover what a test reviewer LLM would have asked.
 
-**Check A. Syntax / parse / build:**
+**Check A. Tests parse and run.**
 ```bash
 <repo's test command>   # e.g. npm test, pytest, ./gradlew test, go test ./...
 ```
-Capture the output. If failures are syntax errors, import errors, missing references, or compile errors (i.e. the tests do not even RUN), classify each as a BLOCKER and skip the reviewer this iteration. Hand the failures back to the writer directly:
+If the output shows syntax errors, import errors, missing references, or compile errors (the tests do not RUN at all), classify each as a BLOCKER:
 ```
-Skipping reviewer: <N> deterministic BLOCKERs found.
 - B-1 (syntax): <file>:<line>: <error>
 - B-2 (import): <file>: <error>
-Address these in iteration N+1.
 ```
 
-**Check B. Plan-driven test count:**
-Parse `## Tests` from `plan.md` to extract the expected list. Compare with the test files/cases the writer actually produced. For each item missing, classify as a BLOCKER:
+**Check B. Plan-driven test presence.**
+For each `metadata.plan.tests[i]`, verify a test with that name was added (use the writer's reported `tests_added[]` plus a grep for the test name in repo test files for confirmation). For each missing → BLOCKER:
 ```
-- B-3 (coverage): plan called for `testLoginRetryAfterTimeout` (covers AC-3), not found.
-```
-
-**If checks A or B produced any BLOCKERs**, end the iteration here. Do NOT invoke the reviewer for that iteration. Next iteration the writer addresses the deterministic BLOCKERs and re-runs the checks.
-
-**If both checks pass cleanly**, proceed to invoke the reviewer (below) for the semantic review.
-
-### Test reviewer prompt (skeleton)
-
-```
-Read plan.md, ac.md, the new tests, changelog.md, and context.md.
-
-The deterministic checks already passed: tests parse, tests run, every test
-named in plan.md exists. Focus on what those checks cannot catch:
-
-- Are tests failing for the right reason? (the assertion that fires is the
-  assertion that should fire, not a side effect of missing setup)
-- Are edge cases from the plan covered?
-- Any brittle assertions (over-precise, time/order dependent, snapshot-only)?
-- Any over-mocking that defeats the purpose of the test?
-
-Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. See Doer/Reviewer
-Loop Pattern for classification rules.
+- B-3 (presence): plan called for `testLoginRetryAfterTimeout` (covers AC-3), not found.
 ```
 
-Run loop until convergence. Commit:
-```bash
-git add -A
-git commit --no-verify -m "doer(<TICKET-ID>): failing tests (TDD red)"
+**Check C. TDD red verified by execution.**
+Parse the test runner output from Check A. For each test in `metadata.plan.tests`, verify it FAILED (assertion failure). If any test PASSED, that is wrong (no implementation should exist yet) → BLOCKER:
 ```
+- B-4 (TDD red): testLoginSuccess passed unexpectedly. Either the assertion is too weak, or unrelated code already satisfies it.
+```
+
+### Single retry policy
+
+If Checks A/B/C produce any BLOCKERs:
+1. Re-invoke the test writer ONCE with the BLOCKERs inline. Same prompt body, prepended with:
+   ```
+   Your prior tests failed validation:
+   <list BLOCKERs>
+
+   Address every BLOCKER. Output the same JSON shape.
+   ```
+2. Re-run the three checks.
+3. Set `metadata.stages.3.retry_used = true`.
+4. If still failing → ABORT. Narrate:
+   ```
+   Stage 3 failed validation twice. Remaining BLOCKERs: <list>.
+   Inspect the tests, then run /doer continue.
+   ```
+   Set `metadata.stages.3.status = "blocked"`. Do not proceed.
+
+   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing the tests by hand, the orchestrator detects `metadata.stages.3.status == "blocked"` and re-runs ONLY the three deterministic checks (parse/run, plan-driven presence, TDD red verified). No new test-writer agent invocation. If checks pass → mark stage complete, proceed to Stage 4. If checks still fail → re-narrate and stay `blocked`.
+
+If checks pass:
+1. Append the writer's `changelog_appendix` into `metadata.changelog`.
+2. Set `metadata.stages.3.status = "complete"`, `verified_with`, `completed_at`, `retry_used`.
+3. Commit the failing tests:
+   ```bash
+   git add -A
+   git commit --no-verify -m "doer(<TICKET-ID>): failing tests (TDD red)"
+   ```
+4. Narrate `"Stage 3 complete: N tests added, all failing as expected. Continuing to Stage 4."` Auto-proceed.
 
 ---
 
 ## Stage 4. Code (Doer/Reviewer Loop, TDD Green)
 
-**Goal:** make the failing tests pass. Implement per plan.md.
+**Goal:** make the failing tests pass. Implement per `metadata.plan`. Loop with **max 3 iterations** in `full` mode (see Doer/Reviewer Loop Pattern). In `lite` mode, single-pass only (see "Lite branch" subsection at the end).
+
+**Mode check.** At entry, read `metadata.mode`. If `lite`, follow the "Lite branch" rules at the end of this section. If `full`, run the full doer/reviewer loop documented below.
 
 ### Code writer prompt (skeleton)
 
 ```
-Read ac.md, plan.md, the tests added in Stage 3, and context.md (Stage 2's
-codebase exploration). Use metadata.json `raw.*` only if you need original
-intake context.
+You are the code writer for ticket <TICKET-ID>. TDD green phase.
+
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump of metadata.ac>
+
+== metadata.plan ==
+<JSON dump of metadata.plan>
+
+== Tests added in Stage 3 ==
+<list of test file paths from metadata.changelog Stage 3 entries; the agent
+reads them as part of its source budget>
+
+== Last changelog entries ==
+<JSON dump of metadata.changelog[-2:]>
 
 Implement the plan. Follow existing codebase conventions. Do not add new
-dependencies unless plan.md specifies them (if you must, flag it in changelog).
+dependencies unless metadata.plan specifies them (if you must, return a
+changelog item flagging it).
 
 After implementation, run the full test suite. All tests (new and pre-existing)
 MUST pass.
 
-Append to changelog.md: each plan step and how it was executed, with file
-paths and a one-line rationale per step (format defined in the Loop Pattern).
+Output JSON:
+{
+  "changelog_appendix": {
+    "stage": 4, "iteration": <N>, "kind": "initial",
+    "items": [
+      {"type": "step", "text": "<plan step + how it was executed + file path>"},
+      ...
+    ]
+  }
+}
+
+Read budget: 15 source files (iter 1) or 3 source files beyond the diff (iter 2+).
 ```
 
 ### Pre-reviewer deterministic checks
@@ -1130,26 +1460,39 @@ Failures here are BLOCKERs auto:
 ```
 
 **Check C. Plan-driven file scope:**
-Parse `## Files` from plan.md to extract the expected change list. Compare with `git diff --name-only <base>..HEAD` from this stage's writer. Two cases:
-- File in plan but NOT touched → BLOCKER (`B-5: plan called for src/foo.kt edit, not modified`)
-- File touched but NOT in plan → INFO with note (could be legit follow-up; reviewer decides):
+Iterate `metadata.plan.files[]` to extract the expected change list. Compare with `git diff --name-only <base>..HEAD` from this stage's writer. Two cases:
+- File in `metadata.plan.files[]` but NOT touched → BLOCKER (`B-5: plan called for src/foo.kt edit, not modified`)
+- File touched but NOT in `metadata.plan.files[]` → INFO with note (could be legit follow-up; reviewer decides):
   ```
-  - I-1 (scope): writer touched src/bar.kt which is not in plan.md's ## Files. Reviewer should validate this is intentional.
+  - I-1 (scope): writer touched src/bar.kt which is not in metadata.plan.files. Reviewer should validate this is intentional.
   ```
 
-**If any of A/B/C produced BLOCKERs**, end the iteration here. Do NOT invoke the reviewer for that iteration. Hand the BLOCKERs to the iter-N+1 fixer.
+**If any of A/B/C produced BLOCKERs**, end the iteration here. Do NOT invoke the reviewer for that iteration. Hand the BLOCKERs to the iter-N+1 fixer (see Loop Pattern).
 
 **If all clean**, proceed to invoke the reviewer (below) for the semantic review.
 
 ### Code reviewer prompt (skeleton)
 
 ```
-Read ac.md, plan.md, tests, the implementation diff (git diff against the
-branch base), changelog.md, and context.md.
+You are the code reviewer for ticket <TICKET-ID>.
+
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump>
+
+== metadata.plan ==
+<JSON dump>
+
+== Last 2 metadata.changelog entries ==
+<JSON dump>
+
+== Implementation diff ==
+<output of `git diff <base>..HEAD`>
 
 The deterministic checks already passed: all tests green, lint clean,
-typecheck clean, every file in plan.md was touched. Focus on what those
-checks cannot catch:
+typecheck clean, every file in metadata.plan.files was touched. Focus on what
+those checks cannot catch:
 
 1. AC match: does the behavior implement every AC? Trace each AC to test + code.
 2. Correctness: edge cases, error paths, concurrency, off-by-one, null handling.
@@ -1160,11 +1503,11 @@ checks cannot catch:
 
 Focus on the diff. Do NOT re-review files that were not touched.
 
-Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. See Doer/Reviewer
-Loop Pattern for classification rules.
+Output findings as JSON code_review_entry per the Loop Pattern. Read budget:
+5 source files (iter 1) or 3 source files (iter 2+) beyond the diff.
 ```
 
-Run loop until convergence. Commit:
+Run loop until convergence (max 3 iterations). On every loop iteration the orchestrator persists the writer's `changelog_appendix` to `metadata.changelog` and the reviewer's findings to `metadata.code_review`. Commit on convergence:
 ```bash
 git add -A
 git commit --no-verify -m "doer(<TICKET-ID>): implementation (TDD green)"
@@ -1176,11 +1519,34 @@ metadata.last_green_sha = <git rev-parse HEAD>
 metadata.last_green_test_command = <the test command that ran>
 ```
 
+### Lite branch (`metadata.mode == "lite"`)
+
+Single-pass only. No iter 2+. No convergence loop.
+
+1. Invoke the **code writer** ONCE (iter 1). Persist its `changelog_appendix` to `metadata.changelog`.
+2. Run the deterministic pre-checks (A: tests pass, B: lint/typecheck, C: plan-driven file scope) exactly as in the full branch.
+3. If any pre-check produces BLOCKERs, narrate to the dev:
+   ```
+   Stage 4 lite: iter 1 deterministic checks failed. BLOCKERs: <list>.
+   Lite mode does not iterate. Options:
+     1) Accept residuals (mark stage complete with metadata.stages.4.loop_outcome = "accepted_with_residuals").
+     2) Pause (status stays in_progress; rerun /doer continue after fixing manually).
+     3) Abort and restart in full mode. Lite-siempre-lite means we do NOT mutate metadata.mode mid-ticket. To restart cleanly: (a) `git reset --hard <base>` if you want to discard code/test commits made under lite, (b) `rm .doer/tickets/<ID>/metadata.json`, (c) `/doer <ID>` to re-enter intake and pick full mode.
+   ```
+   Persist the dev's choice in `metadata.stages.4`. Option 1 → status complete with residuals. Option 2 → leave status in_progress, no `loop_outcome`. Option 3 → narrate the cleanup steps; do NOT modify `metadata.mode`.
+4. If pre-checks are clean, invoke the **code reviewer** ONCE (iter 1). Persist its findings to `metadata.code_review`.
+5. If reviewer finds zero BLOCKERs → converged. Apply any AUTO_FIXes. Commit. Persist `metadata.stages.4.loop_outcome = "converged"` and `metadata.stages.4.iterations = 1`.
+6. If reviewer finds BLOCKERs → narrate the same 3-option prompt as step 3, and persist the dev's choice with the same semantics (option 1 → complete with residuals, option 2 → in_progress, option 3 → abort instructions).
+
+After commit (whichever path), persist the green-test marker the same as the full branch.
+
 ---
 
 ## Stage 5. Code Review (Hybrid: Deterministic + Reviewer LLM)
 
 **Goal:** PR-readiness check. Catch the mechanical "should never reach a PR" issues with deterministic greps, then invoke the reviewer LLM only for the semantic judgements that require it.
+
+**Mode check.** At entry, read `metadata.mode`. If `lite`, follow the "Lite branch" rules at the end of this section. If `full`, run the full hybrid loop documented below.
 
 ### Pre-reviewer deterministic checks
 
@@ -1202,7 +1568,7 @@ git diff <base>..HEAD | grep -nEi '(api[_-]?key|secret|token|password|bearer|aws
 Any match → BLOCKER. Do not auto-fix; the dev must rotate credentials and amend.
 
 **Check C. Smoke / end-to-end test exists.**
-Inspect plan.md's `## Tests` section + the actual tests added in Stage 3. Look for at least one test that exercises the full flow described in the ACs (not just unit isolation). If none → SUGGESTION (not BLOCKER, since some tickets legitimately have only unit-level tests):
+Inspect `metadata.plan.tests` + the actual tests added in Stage 3 (paths in `metadata.changelog` Stage 3 entries). Look for at least one test that exercises the full flow described in the ACs (not just unit isolation). If none → SUGGESTION (not BLOCKER, since some tickets legitimately have only unit-level tests):
 ```
 - S-1 (smoke): no end-to-end test detected. Consider adding one if the
   ticket touches a user-facing flow.
@@ -1227,10 +1593,22 @@ Otherwise, invoke the reviewer LLM with a TIGHT scope. Stage 4's reviewer alread
 ```
 You are the PR-readiness reviewer for ticket <TICKET-ID>.
 
-Read: ac.md, plan.md, the diff (git diff <base>..HEAD), changelog.md,
-and context.md. The deterministic checks already ran (RED markers,
-secrets, swallow-all handlers). Stage 4's reviewer already validated
-correctness and AC behavior.
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump>
+
+== metadata.plan ==
+<JSON dump>
+
+== Last 2 metadata.changelog entries ==
+<JSON dump>
+
+== Diff ==
+<output of `git diff <base>..HEAD`>
+
+The deterministic checks already ran (RED markers, secrets, swallow-all
+handlers). Stage 4's reviewer already validated correctness and AC behavior.
 
 Your scope is narrow. Judge ONLY:
 
@@ -1272,6 +1650,28 @@ metadata.last_green_test_command = <the test command that ran>
 ```
 If the post-commit test run fails, that is a regression: surface as a BLOCKER and re-enter the iter loop. Do not advance.
 
+### Lite branch (`metadata.mode == "lite"`)
+
+Single-pass only. No iter 2+. No convergence loop.
+
+1. Run all four deterministic pre-checks (A: stale TDD-red markers, B: secrets, C: smoke, D: swallow-all handlers) exactly as in the full branch.
+2. Apply any AUTO_FIXes that came out of pre-checks.
+3. If Check B (secrets) produced BLOCKERs → narrate and abort the stage. Lite does not loop. The dev must rotate credentials and rerun manually.
+4. If pre-checks are clean of BLOCKERs (SUGGESTIONs are OK), invoke the **PR-readiness reviewer LLM ONCE** with the full scope (one logical unit, semantic error handling, stale comments). Same prompt as the full branch.
+5. If reviewer returns zero BLOCKERs → converged. Persist findings to `metadata.code_review` (one entry, iteration 1). Apply any AUTO_FIXes. Commit if there was anything to fix.
+6. If reviewer returns BLOCKERs → narrate to the dev:
+   ```
+   Stage 5 lite: reviewer found N BLOCKERs in iter 1. Lite mode does not iterate.
+   BLOCKERs: <list>
+   Options:
+     1) Accept residuals (mark stage complete with metadata.stages.5.loop_outcome = "accepted_with_residuals").
+     2) Pause (status stays in_progress; rerun /doer continue after fixing manually).
+     3) Abort and restart in full mode (same procedure as Stage 4 lite: git reset, rm metadata.json, rerun /doer <ID>).
+   ```
+   Persist the dev's choice in `metadata.stages.5`. Same semantics as Stage 4 lite: option 1 completes with residuals, option 2 stays in_progress, option 3 narrates abort steps.
+
+Persist `metadata.stages.5.iterations = 1` always. `metadata.stages.5.loop_outcome` is set ONLY when the stage actually completes (option 1 → `accepted_with_residuals`, or step 5 path → `converged`). Option 2 (pause) leaves status in_progress without `loop_outcome`.
+
 ---
 
 ## Stage 6. Quality Gate (Validation, Not Loop)
@@ -1304,7 +1704,7 @@ The last green test run is tracked in `metadata.last_green_sha`. Stages 4 and 5 
 4. **If any test fails:** narrate the failures and ask: *"Tests failing: {list}. Options: 1) Return to Stage 4 to fix, 2) Return to Stage 5 to re-review, 3) Pause for manual fix. Which?"*
 
 5. **If all tests pass:**
-   - Write the log to `.doer/tickets/<TICKET-ID>/test-log.txt` for the dev's reference (lives on disk only, gitignored, no commit).
+   - Persist a brief summary in `metadata.stages.6.test_summary = "<N>/<N> tests passed in <duration>"` (counts and timing only; the dev's terminal already has the full output, no need to duplicate it on disk).
    - Update `metadata.last_green_sha = <current HEAD>` and `metadata.last_green_test_command`.
    - Narrate *"Quality gate passed: <N>/<N> tests green. Continuing to Stage 7."* and proceed.
 
@@ -1314,9 +1714,12 @@ The last green test run is tracked in `metadata.last_green_sha`. Stages 4 and 5 
 
 **Goal:** verify on-device behavior against ACs via dense temporary debug logs. Logs NEVER reach the final branch.
 
-### Auto-skip (no runtime code touched)
+### Always ask (Stage 7 is NEVER auto-skipped)
 
-Before asking anything, classify the diff. Run:
+**Stage 7 MUST be explicitly approved or skipped by the dev.** The orchestrator MUST NOT skip Stage 7 silently under any circumstance, including when the diff is 100% docs/config and no runtime code was touched. Silent auto-skip was removed in v3.0.0 because it produced false-positive skips that hid real verification gaps.
+
+Classify the diff first to inform the default suggestion (this is for UX only, NOT a skip decision):
+
 ```bash
 git diff --name-only <base>..HEAD
 ```
@@ -1325,15 +1728,41 @@ Classify each path:
 - **Non-runtime:** `*.md`, files under `docs/`, `README*`, `CHANGELOG*`, `*.yml`/`*.yaml`/`*.json` config, `*.env.example`, `.github/`, `.gitlab-ci.yml`, `package.json` (only version/dep edits), `build.gradle` (only version/dep edits).
 - **Runtime:** anything else (source code, real config that the app reads at runtime, migrations, etc.).
 
-If ALL paths in the diff are non-runtime, auto-skip Stage 7 silently:
-```
-metadata.stages.7.status = "skipped"
-metadata.stages.7.skipped_reason = "no runtime code in diff"
-narrate: "Stage 7 skipped: diff is docs/config only, no runtime to exercise."
-```
-Continue to Stage 8.
+Then ALWAYS ask via `AskUserQuestion`. The classification picks the default suggestion but does NOT bypass the prompt:
 
-If any path is runtime, ask once: *"Does this ticket produce runtime behavior worth exercising on device? [Y/n]"*. If `n`, mark skipped with the dev's reason. If `y`, proceed.
+**Case A. All paths are non-runtime:**
+```
+Question: Stage 7 is runtime verification on device. The diff in this ticket is
+100% non-runtime (docs/config only). There is likely nothing to exercise on
+device. How do you want to proceed?
+
+Options:
+  - Skip Stage 7 (recommended): mark as skipped with reason "no runtime code in diff"
+  - Run Stage 7 anyway: I will inject debug logs and you exercise on device
+```
+
+**Case B. At least one path is runtime:**
+```
+Question: Stage 7 is runtime verification on device. The diff touches runtime
+code. Do you want to exercise the ACs on a real device/simulator now?
+
+Options:
+  - Run Stage 7 (recommended): I will inject debug logs and walk you through
+  - Skip Stage 7: mark as skipped, you take responsibility for runtime correctness
+```
+
+In BOTH cases, the dev's choice is recorded:
+
+- **If skipped:**
+  ```json
+  metadata.stages.7.status = "skipped"
+  metadata.stages.7.skipped_reason = "<dev's chosen reason or default text from the option>"
+  metadata.stages.7.skipped_acknowledged_by = "dev"
+  narrate: "Stage 7 skipped at dev's request: <reason>. Continuing to Stage 8."
+  ```
+- **If run:** proceed to Step 1 (Inject logs) below.
+
+**Why no silent auto-skip:** even on a doc-only diff, the dev may have manually changed runtime behavior outside the doer flow (e.g. a hotfix on another branch that got merged in), or the classification heuristic may misjudge a file (e.g. a YAML that the app actually reads at runtime). Asking always is cheap (one prompt) and prevents Claude from quietly dropping the only on-device verification step.
 
 ### Log format (language-aware)
 
@@ -1366,8 +1795,16 @@ Invoke a general-purpose agent:
 ```
 You are the runtime-logger agent for ticket <TICKET-ID>.
 
-Read: .doer/tickets/<TICKET-ID>/ac.md, plan.md, context.md, and
-`git diff <base>..HEAD`.
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump>
+
+== metadata.plan ==
+<JSON dump>
+
+== Diff ==
+<output of `git diff <base>..HEAD`>
 
 Scope: every file in the diff PLUS every file in the call path the ACs
 exercise (deps, helpers, repositories, view models). Follow imports
@@ -1440,7 +1877,13 @@ When the dev pastes the log output, pass it **directly in the prompt** to the an
 ```
 You are the runtime-log analyzer for ticket <TICKET-ID>.
 
-Read: ac.md, plan.md.
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump>
+
+== metadata.plan ==
+<JSON dump>
 
 Log excerpt from the dev's session:
 <<<
@@ -1508,7 +1951,7 @@ done
 
 If residuals or drift detected:
 - Tag residuals: re-invoke logger with *"Remove every line matching `DOER - `. Touch nothing else."*
-- Drift residuals: invoke a general-purpose agent with the diff and the instruction *"This file was touched during runtime-verify. Remove any change that was added solely to enable debug logging, variables that captured a value just to print it, expressions split into val+return, helper functions with no real callers. Keep only the changes that belong to the ticket's actual implementation per plan.md."*
+- Drift residuals: invoke a general-purpose agent with the diff and the instruction *"This file was touched during runtime-verify. Remove any change that was added solely to enable debug logging, variables that captured a value just to print it, expressions split into val+return, helper functions with no real callers. Keep only the changes that belong to the ticket's actual implementation per `metadata.plan` (inlined in this prompt: <JSON dump>)."*
 
 After the agent completes, amend onto the previous commit:
 ```bash
@@ -1518,7 +1961,7 @@ git commit --no-verify --amend --no-edit
 
 ### Step 6: Record outcome
 
-Persist to `metadata.json → stages.7`:
+Persist to `metadata.stages.7`:
 ```json
 {
   "name": "runtime-verify",
@@ -1535,6 +1978,15 @@ No SHAs persisted (git history IS the source of truth). No commit needed (`.doer
 ## Stage 8. Docs Sync
 
 **Goal:** update user-facing documentation when the change actually affects it. Skip aggressively when it doesn't. The doc updater never freelances; it gets an exact list of what to update.
+
+**Mode check.** At entry, read `metadata.mode`. If `lite`, skip Stage 8 ENTIRELY without running any pre-check:
+```
+metadata.stages.8.status = "skipped"
+metadata.stages.8.skipped_reason = "lite mode"
+metadata.stages.8.skipped_acknowledged_by = "lite_mode"
+narrate: "Stage 8 skipped: lite mode. Continuing to Stage 9."
+```
+Continue to Stage 9. The pre-checks below only run in `full` mode.
 
 ### Pre-check A: classify ticket (should docs even run?)
 
@@ -1619,8 +2071,19 @@ Continue to Stage 9.
 ```
 You are the docs-updater agent for ticket <TICKET-ID>.
 
-Read: ac.md, plan.md, changelog.md, context.md, and the diff
-(`git diff <base>..HEAD`).
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump>
+
+== metadata.plan ==
+<JSON dump>
+
+== Last 2 metadata.changelog entries ==
+<JSON dump>
+
+== Diff ==
+<output of `git diff <base>..HEAD`>
 
 Update list (this is your ENTIRE scope, do not freelance beyond it):
 <paste the structured list from the pre-check>
@@ -1638,7 +2101,8 @@ Rules:
 - Do NOT add em-dashes.
 - Keep changes minimal and factual.
 
-Append to changelog.md a brief summary of doc edits made.
+Output JSON: {"changelog_appendix": {"stage": 8, "iteration": 1, "kind": "initial",
+"items": [{"type": "step", "text": "<one-line summary of doc edit>"}, ...]}}.
 ```
 
 ### Commit
@@ -1654,18 +2118,26 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
 
 ## Stage 9. Wrapup (Lessons + Assumptions + Performance)
 
-**Goal:** capture lessons, validate assumptions, write a single `wrapup.md` (lessons + assumptions + performance, no separate file), clean `.doer/` from branch history.
+**Goal:** validate assumptions, capture lessons, persist a one-paragraph summary plus performance stats into `metadata.json`, clean `.doer/` from branch history. No `wrapup.md` sidecar (everything goes into `metadata.summary`, `metadata.performance`, `metadata.assumptions_validation`, `metadata.lessons_captured`).
 
-1. **Validate assumptions.** Read `.doer/knowledge/assumptions/<TICKET-ID>.md`. Mark each VALIDATED, INVALIDATED (reason), or UNVERIFIED.
+**Mode-dependent steps.** Steps 1 and 2 run only in `full` mode. In `lite` mode, skip them and jump to step 3 (the orchestrator still produces `metadata.summary` and `metadata.performance`, but auto-generates without dev interaction). Step 5 (history cleanup) skips its confirmation prompt in `lite` mode and runs the cleanup directly after creating the backup ref. All other steps run identically in both modes.
 
-2. **Capture lessons (with auto-detected candidates).**
+1. **Validate assumptions.** *(`full` mode only; skipped in `lite`.)* Read `metadata.plan.assumptions`. For each assumption, decide VALIDATED, INVALIDATED (with reason), or UNVERIFIED based on what actually happened during Stages 4-7. Persist as `metadata.assumptions_validation`:
+   ```json
+   "assumptions_validation": [
+     {"text": "<assumption from metadata.plan.assumptions>", "status": "VALIDATED | INVALIDATED | UNVERIFIED", "reason": "<one-line, only if INVALIDATED>"}
+   ]
+   ```
+
+2. **Capture lessons (with auto-detected candidates).** *(`full` mode only; skipped in `lite`.)*
 
    Before asking the user, scan `metadata.json` for signals that often produce a lesson worth keeping. Build a candidate list:
 
    | Signal | Suggested lesson framing |
    |--------|--------------------------|
-   | Any looped stage took ≥3 iterations to converge | "Stage <N> ({name}) needed <K> iterations. What pattern made it slow?" |
-   | A loop hit max iterations and the user accepted residual findings | "Stage <N> didn't fully converge. What unresolved class of issue is worth flagging for next time?" |
+   | A looped stage (4 or 5) hit the max of 3 iterations and was accepted with residuals | "Stage <N> didn't fully converge. What unresolved class of issue is worth flagging for next time?" |
+   | A looped stage took 3 iterations to converge | "Stage <N> ({name}) needed 3 iterations. What pattern made it slow?" |
+   | Stage 2 or Stage 3 used its single retry (`metadata.stages.<N>.retry_used == true`) | "Stage <N> failed deterministic checks once. What kept the planner/test-writer from getting it right the first time?" |
    | Stage 7 (Runtime Verify) returned RETURN_TO_STAGE_<N> | "Runtime behavior diverged from tests. What gap in the test strategy let this through?" |
    | An assumption was marked INVALIDATED in step 1 | "Assumption '{text}' turned out wrong. What should we check up front next time?" |
    | Stage X had BLOCKERs categorized as 'security' or 'data integrity' | "A {category} BLOCKER appeared late. Is this a class of mistake we keep making?" |
@@ -1679,11 +2151,11 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    Reply with: comma-separated numbers to accept, `add: <your lesson>` to add another, `none` to skip, or `edit <N>: <new framing>` to reword.
    ```
 
-   For each accepted candidate, ask the user to fill in: `what happened`, `why it matters`, `takeaway`. Or accept the orchestrator's draft based on metadata + changelog and let the user edit.
+   For each accepted candidate, ask the user to fill in: `what happened`, `why it matters`, `takeaway`. Or accept the orchestrator's draft based on `metadata.changelog` and let the user edit.
 
    If NO signals detected, ask once: *"Any lesson worth saving for future tickets? Reply with one, or `none`."* (one prompt, not multiple).
 
-   For each lesson, write to the GLOBAL pool at `<doer-skill-dir>/lessons/{slug}.md` (NOT under `.doer/`). Format:
+   For each lesson, write to the GLOBAL pool at `<doer-skill-dir>/lessons/{slug}.md` (lessons remain as files; they are cross-project knowledge, not per-ticket state). Format:
    ```markdown
    ---
    slug: <kebab-case>
@@ -1696,41 +2168,57 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    ## Takeaway
    ```
 
-3. **Write `wrapup.md`**: single consolidated file with everything. Pull data from `metadata.json` (stage timestamps, agent_invocations, convergence_loop), `git log/diff` (commits/LOC), and the repo test command (pass/fail):
-   ```markdown
-   # <TICKET-ID>. Wrapup
-
-   ## Assumptions
-   - <item> → VALIDATED | INVALIDATED: <reason> | UNVERIFIED
-
-   ## Lessons captured
-   - [<slug>], <one-line takeaway>
-
-   ## Commits
-   <SHA list>
-
-   ## Performance
-   - Timing: started <X>, completed <Y>, wall clock <Z>, active <W> (excludes paused)
-   - Stages: | N | name | status | duration | iterations | BLOCKERs resolved |
-   - Code: <commits> commits, <files> files (<src> src / <tests> tests / <docs> docs), +<add>/-<rem> LOC, <X/Y> tests passing
-   - Agents: <agent>: <count>, ...
-   - Convergence: iter1 <a>, iter2+ <b>, max-iter <c>, avg <d>
-   - Reviewer ROI: <X>/<Y> looped stages converged on iter 1 with zero BLOCKERs (<%>%). Use this over time to decide if the reviewer should become opt-in for low-complexity tickets.
+   Then persist a reference to each lesson in `metadata.lessons_captured`:
+   ```json
+   "lessons_captured": [
+     {"slug": "<kebab-case>", "takeaway": "<one-line>"}
+   ]
    ```
 
-4. **Update `metadata.json`:** `status: "complete"`, `completed_at: <ISO8601>`.
+3. **Persist summary + performance into `metadata.json`.** Pull data from `metadata.json` itself (stage timestamps, iteration counts, retry flags), `git log/diff` (commits/LOC), and the repo test command (pass/fail). Write into:
+
+   ```json
+   "summary": "<one-paragraph plain prose: what the ticket delivered, what was actually changed, any notable surprises>",
+
+   "performance": {
+     "started":     "<ISO8601, from metadata.created_at>",
+     "completed":   "<ISO8601, now>",
+     "wall_clock":  "<duration string>",
+     "active":      "<duration string; equals wall_clock since /doer pause was removed in 2.2.0>",
+     "stages": [
+       {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "<HH:MM:SS>"},
+       {"n": 2, "name": "plan",       "status": "complete", "duration": "...", "retry_used": false},
+       {"n": 4, "name": "code",       "status": "complete", "duration": "...", "iterations": 2, "blockers_resolved": 1},
+       ...
+     ],
+     "code": {"commits": <N>, "files": {"total": <N>, "src": <N>, "tests": <N>, "docs": <N>}, "loc": {"add": <N>, "rem": <N>}, "tests_passing": "<X/Y>"},
+     "agents": {"<agent-name>": <invocation-count>, ...},
+     "convergence": {"iter1": <N>, "iter2+": <N>, "max_iter_hit": <N>, "avg": <N>},
+     "reviewer_roi": "<X>/<Y> looped stages converged on iter 1 with zero BLOCKERs (<%>%). Use this over time to decide if the reviewer should become opt-in."
+   }
+   ```
+
+   No sidecar file. Everything is in `metadata.json` and the dev (or `/doer status`) reads it from there.
+
+4. **Update `metadata.json`:** `status: "complete"`, `completed_at: <ISO8601>`. Set `metadata.stages.9.status = "complete"`, `metadata.stages.9.verified_with = <SKILL version>`.
 
 5. **PR-ready history cleanup**: remove `.doer/` from prior commits on the feature branch:
    ```bash
    DIRTY=$(git log --format=%H --diff-filter=ACMR -- '.doer/*' "<base>..HEAD" 2>/dev/null)
    ```
-   If empty → skip to step 6. Otherwise confirm with user (destructive, changes SHAs). On approval:
+   If empty → skip to step 6. Otherwise:
+
+   **`full` mode:** confirm with user (destructive, changes SHAs). On approval, proceed with the cleanup commands below. On decline, narrate *"Skipping history cleanup. Run /doer cleanup-history later."*
+
+   **`lite` mode:** skip the confirmation prompt and run the cleanup commands directly (the backup ref is still created so rollback remains possible). Narrate *"Stage 9 lite: history cleanup ran without confirmation. Backup ref: refs/doer-backup/<TICKET-ID>-pre-cleanup-<ts>."*
+
+   Cleanup commands (both modes):
    ```bash
    git update-ref "refs/doer-backup/<TICKET-ID>-pre-cleanup-$(date +%s)" HEAD
    git filter-branch -f --index-filter 'git rm -r --cached --ignore-unmatch .doer/' --prune-empty "<base>..HEAD"
    git update-ref -d refs/original/refs/heads/<branch-name> 2>/dev/null || true
    ```
-   Verify `git log --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"` is empty. Tell user the backup ref (rollback: `git reset --hard <ref>`). On decline: narrate *"Skipping history cleanup. Run /doer cleanup-history later."*
+   Verify `git log --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"` is empty. In `full` mode, tell the user the backup ref (rollback: `git reset --hard <ref>`).
 
 6. **Final commit** (only if uncommitted real changes, wrapup itself has none since it only writes to `.doer/`):
    ```bash
@@ -1741,8 +2229,8 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    ```
 
 7. **Recommend a final commit message.** The dev typically squashes the per-stage commits into a single PR-ready commit. Generate a recommendation based on:
-   - `ac.md` (what the ticket promised)
-   - `changelog.md` (what was actually done)
+   - `metadata.ac.in_scope` (what the ticket promised)
+   - `metadata.changelog` (what was actually done across all stages)
    - `git log <base>..HEAD --oneline` (commit history of the branch)
 
    Format MANDATORY: `<TICKET-ID>: <imperative subject line, ≤72 chars>`
@@ -1791,11 +2279,11 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    Three branches for case 3:
 
    **a. User pastes a template:** Detect every section heading and `<!-- comment -->` placeholder. Fill each section using:
-   - `ac.md` (what was promised) for "What is the story about" / "Change Summary" / "Current bug behavior" sections.
-   - `changelog.md` (what was actually done) for "My solution" / "My fix" / "How I solved it" sections.
-   - `runtime-analysis.md` (if Stage 7 ran) for "Verification" / "Testing" sections.
-   - `wrapup.md` lessons for "Notes" / "Risks" sections.
-   - `metadata.json` for ticket ID, title.
+   - `metadata.ac` (what was promised) for "What is the story about" / "Change Summary" / "Current bug behavior" sections.
+   - `metadata.changelog` (what was actually done) for "My solution" / "My fix" / "How I solved it" sections.
+   - `metadata.stages.7.ac_verdicts` (if Stage 7 ran) for "Verification" / "Testing" sections.
+   - `metadata.lessons_captured` and `metadata.assumptions_validation` for "Notes" / "Risks" sections.
+   - `metadata.ticket_id` and `metadata.title` for ticket ID and title.
 
    If a section in the template does not apply to this ticket (example: a "Regression" section in a feature ticket), keep the heading present but write `> N/A for this ticket.` so the dev sees the orchestrator considered it.
 
@@ -1805,19 +2293,19 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
 
    ```markdown
    ## Summary
-   <one-paragraph description of what this ticket delivered, taken from ac.md>
+   <one-paragraph description of what this ticket delivered, taken from metadata.summary or metadata.ac.in_scope>
 
    ## Changes
-   <bulleted list of what was implemented, taken from changelog.md>
+   <bulleted list of what was implemented, taken from metadata.changelog (decision and step items)>
 
    ## How to test
-   <bulleted list of test scenarios, taken from ac.md acceptance criteria as Given/When/Then>
+   <bulleted list of test scenarios, taken from metadata.ac.in_scope rendered as Given/When/Then>
 
    ## Verification
-   <if Stage 7 ran: AC verdict summary from runtime-analysis.md. Otherwise: "Unit tests pass: <X/Y>.">
+   <if Stage 7 ran: AC verdict summary from metadata.stages.7.ac_verdicts. Otherwise: "Unit tests pass: <X/Y>.">
 
    ## Notes
-   <relevant lessons or risks from wrapup.md, if any. Otherwise omit this section.>
+   <relevant entries from metadata.lessons_captured or metadata.assumptions_validation (INVALIDATED items), if any. Otherwise omit this section.>
    ```
 
    **c. User replies `skip`:** Skip the PR description step entirely. Continue to step 9.
@@ -1837,7 +2325,7 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    ```
    ````
 
-9. Narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Wrapup: .doer/tickets/<TICKET-ID>/wrapup.md. Run your pre-commit checks, squash with the recommended message, paste the PR description, then push and open the PR manually."*
+9. Narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended message, paste the PR description, then push and open the PR manually."*
 
 ---
 
@@ -1898,8 +2386,12 @@ This is the path that runs when `/doer <TICKET-ID>` detects `./.doer/tickets/<TI
 
    If either fails, STOP. Do NOT continue resuming. Narrate the failure and ask the user how to proceed. The Guard is a precondition, not a suggestion, proceeding without it pollutes the team's PR.
 
-6. Read the last stage's loop state (if any). If mid-loop, resume at the same iteration.
-7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}." Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent, do NOT ask for further confirmation).
+6. Read `metadata.stages.<current_stage>.status`:
+   - `pending` → start the stage normally.
+   - `in_progress` → resume at the same iteration (read loop state if any).
+   - `blocked` (Stages 2 and 3 only) → re-run ONLY the deterministic checks for that stage (no new agent invocation). See "Resuming from `blocked`" subsection in the stage's docs. If checks pass, mark complete and proceed.
+   - `complete | skipped | imported` → unexpected here (current_stage should not point at one of these). Treat as data drift: advance current_stage to the next pending stage and continue.
+7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}{, status: {status}} in {mode} mode." (Read `metadata.mode` for the mode label.) Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent, do NOT ask for further confirmation).
 8. Proceed.
 
 ---
@@ -1910,14 +2402,15 @@ Render:
 
 ```
 Ticket: <TICKET-ID>, <title>
-Type: <type>  Branch: <branch>  Status: <status>
+Mode: <lite | full>  Branch: <branch>  Status: <status>
 Current Stage: {N} ({name})
 
 Progress:
   [✓] 1 ac-confirm
   [✓] 2 plan
-  [~] 3 tests     (iteration 2/5, 1 BLOCKER open)
-  [ ] 4 code
+  [✓] 3 tests
+  [~] 4 code      (iteration 2/3, 1 BLOCKER open)
+  [ ] 5 code-review
   ...
 
 Blockers: <list or "none">
@@ -2025,7 +2518,7 @@ Standalone version of the wrapup's history cleanup step. Use it when:
 1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`. Resolve `branch-name` and `base-branch` (default `main`, fall back to `master`).
 2. Verify the user is currently on `branch-name`. If not, ask before checking it out.
 3. Run the **Workspace Guard** (idempotent, ensures `.doer/` is excluded going forward).
-4. Run steps **a through g** of the wrapup's "PR-ready history cleanup" (detect dirty commits → confirm with user → backup ref → `git filter-branch` → verify → reset housekeeping refs → narrate). Same logic, no duplication.
+4. Run the same logic as Stage 9 step 5 (PR-ready history cleanup): detect dirty commits via `git log --diff-filter=ACMR -- '.doer/*'`, confirm with user (always, even if `metadata.mode == "lite"`; this command is invoked manually so the dev should explicitly approve), create backup ref, `git filter-branch` to strip `.doer/` from history, verify the strip succeeded, reset housekeeping refs, narrate the backup ref name.
 5. Narrate the result. Do NOT commit anything new, this command is purely a history rewrite.
 
 ### Safety
@@ -2043,7 +2536,7 @@ If the cleanup detection finds zero dirty commits, narrate *"Nothing to clean, b
 
 - **Agent returns error:** narrate the error, ask user to retry (max 3), or pause.
 - **Git operation fails:** narrate, present options (resolve manually, pause, abort stage).
-- **Tests cannot be detected:** ask the user for the test command. Save it to `metadata.json → test_command` for future stages.
+- **Tests cannot be detected:** ask the user for the test command. Save it to `metadata.test_command` for future stages.
 - **User says `stop` / `wait` / `para`:** state is already persisted after each Agent return. Narrate the current position and stop. Resume via `/doer continue <TICKET-ID>` later.
 
 ---
@@ -2051,10 +2544,10 @@ If the cleanup detection finds zero dirty commits, narrate *"Nothing to clean, b
 ## Agent Invocation Contract
 
 All subagents (doer or reviewer) must:
-- Receive a prompt that specifies: input files to read, output file(s) to write, success criteria, and the "do not" list (e.g. "do not ask the user questions, the orchestrator handles that").
-- Write their output artifacts to disk before returning.
-- Write `changelog.md` describing what they did and why.
-- Return a short JSON summary: `{"status": "success" | "failed", "artifacts": [...], "summary": "<one line>"}`.
+- Receive a prompt that contains the relevant `metadata.json` slices inlined (no sidecar file reads), specifies the artifacts to produce (code, tests, docs), success criteria, and the "do not" list (e.g. "do not ask the user questions, the orchestrator handles that").
+- Write code/test/doc artifacts directly to the working tree (not to `.doer/`).
+- Return a JSON object containing a `changelog_appendix` (which the orchestrator persists into `metadata.changelog`) plus any stage-specific output (e.g. `code_review_entry`, `tests_added`, `plan`).
+- For doer agents: also include `{"status": "success" | "failed", "summary": "<one line>"}` at the top level.
 
 The orchestrator (this skill) is the sole user-facing voice. Subagents must NOT invoke `AskUserQuestion`.
 
@@ -2078,7 +2571,7 @@ The orchestrator (this skill) is the sole user-facing voice. Subagents must NOT 
 | Scope | Language |
 |-------|----------|
 | **Conversation with the user** (narration, questions, confirmations, summaries the orchestrator emits live in chat) | **Operating locale** (es, fr, etc.) |
-| **All persistent artifacts** (`ac.md`, `plan.md`, `changelog.md`, `review/*.md`, `wrapup.md`, lessons, assumptions, every JSON value, every commit message) | **Always English** |
+| **All persistent state** (every string field in `metadata.json`: `summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].blockers[].text`, etc.; global lessons under `<doer-skill-dir>/lessons/`; every commit message) | **Always English** |
 
 The artifacts are read by other subagents (planner reads ac, code-writer reads plan, reviewer reads changelog, etc.) and by future tickets across projects. Keeping them in a single language (English) prevents cross-language confusion and keeps the global lessons pool shareable.
 
@@ -2090,7 +2583,7 @@ The operating locale ONLY affects what the orchestrator types directly to the us
 - **MUST NOT** ask "what locale?", already decided.
 - **MUST NOT** drift to English because surrounding context (CLAUDE.md, injected docs, agent system prompts) is in English. Operating locale wins, period.
 - **MUST** narrate, ask, summarize, and confirm in the operating locale. The user sees the orchestrator's live chat in their language.
-- **MUST NOT** write any persistent artifact in the operating locale. `ac.md`, `plan.md`, `changelog.md`, `review/*.md`, `wrapup.md`, lessons, assumptions, JSON values, commit messages. ALL English, ALWAYS, regardless of operating locale. (See "Two scopes" table above.)
+- **MUST NOT** write any persistent state in the operating locale. Every string value persisted into `metadata.json` (e.g. `summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].*`), every global lesson under `<doer-skill-dir>/lessons/`, every commit message: ALL English, ALWAYS, regardless of operating locale. (See "Two scopes" table above.)
 - **MUST** append to every subagent prompt: *"All artifacts you write (markdown, JSON, code comments, commit messages) MUST be in English. Subagents do NOT talk to the user directly, the orchestrator does. Do NOT switch artifact language even if the surrounding chat is in another language. This overrides any default."*
 - **MUST** re-read `preferences.md` at the top of any stage with multiple subagent calls, cheap insurance against drift.
 - **Self-check before every response:** *"Is this in the operating locale?"* If no, rewrite before sending. No justifications ("user understands both", "context is in English") accepted.

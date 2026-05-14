@@ -1,8 +1,8 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 2.10.0.
+**Ticket execution orchestrator for Claude Code.** Version 3.0.0.
 
-Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops, on-device runtime verification, automatic versioning + migrations.
+Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, two execution modes (lite for trivial tickets, full for everything else), delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
 Scope stops before PR and deploy. Anything upstream (PRD, architecture, ticket creation) or downstream (PR assembly, CI, deploy) is out of scope by design.
 
@@ -47,9 +47,9 @@ One pull refreshes every symlinked Claude. The Migration Check auto-applies any 
 
 | Command | Description |
 |---------|-------------|
-| `/doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, type, ACs, context, branch name. |
-| `/doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). |
-| `/doer status <TICKET-ID>` | Show current stage, loop state, blockers. |
+| `/doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, ACs, context, branch name, prior-work flags, then runs a lite-suitability heuristic and asks you to confirm `mode: lite` or `mode: full`. |
+| `/doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). Resume narration mentions the mode. |
+| `/doer status <TICKET-ID>` | Show current stage, mode, loop state, blockers. |
 | `/doer list` | List all tickets under `./.doer/tickets/`. |
 
 ### Escape-hatch commands (rarely needed; flows below run automatically)
@@ -83,9 +83,27 @@ Once a ticket is active, natural language works alongside slash commands. Whatev
 
 You don't need to type `/doer continue` to nudge the next iteration. That command is only for resuming **across sessions**.
 
-### Stage skipping
+---
 
-Stages cannot be skipped manually. Every stage runs. The only way to skip is through Stage 1's pre-existing-work detection. If you already wrote a plan, tests, or code by hand, the orchestrator detects it and jumps to the right entry stage automatically.
+## Modes (lite vs full)
+
+At the end of intake, the orchestrator computes a lite-suitability score from your description, AC count, prior-work flag, and keyword signals (e.g. `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `placeholder`, `hotfix` push toward lite; `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic` push toward full). It then asks you to pick a mode:
+
+| Aspect | Lite | Full |
+|---|---|---|
+| Stage 1 (AC Confirm) | Same | Same |
+| Stage 2 (Plan) | Single-pass + 3 deterministic checks + 1 retry | Same (no difference) |
+| Stage 3 (Tests, TDD red) | Single-pass + 3 deterministic checks + 1 retry | Same (no difference) |
+| Stage 4 (Code, TDD green) | Iter 1 only. Non-convergence prompts: accept residuals, pause, or abort + restart in full | Doer/reviewer loop, max 3 iterations |
+| Stage 5 (Code Review) | Deterministic checks + 1 LLM reviewer single-shot | Deterministic + LLM reviewer in loop, max 3 iterations |
+| Stage 6 (Quality Gate) | Same | Same |
+| Stage 7 (Runtime Verify) | Same. Always asks the dev | Same |
+| Stage 8 (Docs Sync) | Skipped entirely | Runs with classify pre-check |
+| Stage 9 (Wrapup) | Minimal: auto-summary + performance only. Skip assumptions validation, skip lessons capture, history cleanup runs without confirmation | Full: validate assumptions, capture lessons (interactive), confirmed history cleanup |
+
+**Lite-siempre-lite.** Once `metadata.mode` is set at intake, it does NOT change mid-ticket. If a lite ticket grows beyond what lite can handle, you can: accept residuals at the prompt, pause, or abort + restart in full mode (`git reset --hard <base>`, `rm .doer/tickets/<ID>/metadata.json`, then `/doer <ID>` to re-enter intake).
+
+The heuristic only **suggests** a mode; you confirm. Override freely.
 
 ---
 
@@ -93,8 +111,8 @@ Stages cannot be skipped manually. Every stage runs. The only way to skip is thr
 
 ```mermaid
 flowchart TD
-    A[1 AC Confirm]:::gate --> B[2 Plan]:::loop
-    B --> C[3 Tests TDD red]:::loop
+    A[1 AC Confirm]:::single --> B[2 Plan]:::single
+    B --> C[3 Tests TDD red]:::single
     C --> D[4 Code TDD green]:::loop
     D --> E[5 Code Review]:::loop
     E --> F[6 Quality Gate]:::gate
@@ -107,17 +125,18 @@ flowchart TD
     classDef final fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7
     classDef plain fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
     classDef runtime fill:#4c1d95,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
+    classDef single fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
 ```
 
 Color legend:
 
-- **Blue**: doer/reviewer loop (max 5 iterations)
-- **Amber**: validation gate
-- **Purple**: on-device runtime verification with temporary debug logs
-- **Green**: wrapup (lessons + performance)
-- **Slate**: single-pass stage
+- **Blue**: doer/reviewer loop (Stages 4 and 5; max 3 iterations in full mode, single-pass in lite)
+- **Amber**: validation gate (test suite execution)
+- **Purple**: on-device runtime verification with temporary debug logs (always asks the dev; never silent skip)
+- **Green**: wrapup (lessons + performance in full mode; minimal in lite)
+- **Slate**: single-pass stage (Stages 1, 2, 3, 8). Stages 2 and 3 use deterministic checks plus one retry on check failure
 
-Stages with code (3, 4, 5, 7, 8) commit on the feature branch. Stages whose only output is in `.doer/` (1, 2, 9) skip the commit, since `.doer/` is gitignored locally and never reaches the team.
+Stages with real-code commits (3, 4, 5, 7, 8) commit on the feature branch. Stages whose only output is `metadata.json` (1, 2, 9) skip the commit, since `metadata.json` is gitignored locally and never reaches the team.
 
 ---
 
@@ -154,18 +173,20 @@ flowchart TD
 
 ## Doer / Reviewer Loop
 
-Stages 2, 3, 4, and 5 run a delta-aware convergence loop. **One full iteration runs in a single turn** (doer + reviewer + AUTO_FIX pass if needed). Works identically in CLI and IDE plugins.
+**Stages 4 (Code) and 5 (Code Review) only.** Max 3 iterations in `full` mode, single-pass in `lite` mode. **One full iteration runs in a single turn** (doer + reviewer + AUTO_FIX pass if needed). Works identically in CLI and IDE plugins.
+
+Stages 2 (Plan) and 3 (Tests) do NOT loop. They run single-pass, then deterministic checks decide pass/fail. On check failure, the writer agent is invoked **once more** with the BLOCKERs inline. A second failure aborts the stage with `status: "blocked"`; the dev fixes manually and reruns `/doer continue` (the orchestrator re-runs only the deterministic checks, no new agent invocation).
 
 ```mermaid
 flowchart TD
-    Start([Start iteration]):::plain --> Doer[Doer produces artifact + changelog]:::doer
+    Start([Start iteration]):::plain --> Doer[Doer produces artifact + changelog appendix]:::doer
     Doer --> Reviewer[Reviewer categorizes findings]:::reviewer
     Reviewer --> Auto{AUTO_FIXes?}:::decision
     Auto -- "yes" --> Fixer[Fixer applies mechanical fixes]:::doer
     Auto -- "no" --> Check{BLOCKERs?}:::decision
     Fixer --> Check
     Check -- "0 BLOCKERs" --> Done([Converged]):::success
-    Check -- "> 0 BLOCKERs" --> Max{Iteration < 5?}:::decision
+    Check -- "> 0 BLOCKERs" --> Max{Iteration < 3?}:::decision
     Max -- "yes" --> Next[End turn → next iteration is a new turn]:::plain
     Max -- "no" --> Ask([Ask user: retry / accept / pause]):::warn
 
@@ -177,16 +198,18 @@ flowchart TD
     classDef warn fill:#78350f,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
 ```
 
-**Iteration 1**: reviewer is clean-slate.
-**Iteration 2+**: reviewer receives prior findings + doer's changelog. Marks each prior BLOCKER as `RESOLVED` or `STILL_OPEN`. Scans only the areas the doer touched for new issues.
+**Iteration 1**: reviewer is clean-slate (gets `metadata.ac`, `metadata.plan`, the diff, the last `metadata.changelog` entries inline).
+**Iteration 2+**: ONE combined fixer-reviewer agent. Receives prior findings + last `metadata.code_review` entry + doer's last changelog appendices, all inline. Marks each prior BLOCKER as `RESOLVED` or `STILL_OPEN`. Scans only the areas the doer touched for new issues.
+
+**Lite mode collapses the loop**: a single iteration runs (doer + reviewer + AUTO_FIX). On non-convergence the dev picks: accept residuals, pause, or abort + restart in full mode. No iter 2+.
 
 ### Findings (4 buckets)
 
 | Bucket | Behavior | Examples |
 |--------|----------|----------|
-| `BLOCKER` | Loop continues until resolved | Failing test, missing AC coverage, security issue, broken build |
+| `BLOCKER` | Loop continues until resolved (or single-shot in lite) | Failing test, missing AC coverage, security issue, broken build |
 | `AUTO_FIX` | Applied automatically same iteration before convergence check | Reference to deleted function, unused import, test name stale after rename, typo |
-| `SUGGESTION` | Logged to review file, never applied, never blocks | "Consider extracting", "could use map instead", design tweaks |
+| `SUGGESTION` | Logged to `metadata.code_review`, never applied, never blocks | "Consider extracting", "could use map instead", design tweaks |
 | `INFO` | Observational only | "This file is 500 LOC", "pattern used in 3 places" |
 
 The decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* No → AUTO_FIX. Yes → SUGGESTION. When in doubt → SUGGESTION (conservative; AUTO_FIX runs without asking).
@@ -195,7 +218,7 @@ The decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* N
 
 ## State Layout
 
-**Lessons are GLOBAL**: they live next to `SKILL.md`, shared across every project that uses doer. **Assumptions are per-ticket.**
+**Lessons are GLOBAL**: they live next to `SKILL.md`, shared across every project that uses doer. **Everything per-ticket lives in a single `metadata.json`** (no markdown sidecars, no scratch files, no per-stage review files; v3.0.0 consolidated all of that into structured fields).
 
 ```
 <doer-skill-dir>/                  # ~/src/doer/ (resolve symlinks)
@@ -205,23 +228,31 @@ The decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* N
     └── {slug}.md
 
 ./.doer/                           # per-repo (in CWD), auto-added to .git/info/exclude
-├── knowledge/
-│   └── assumptions/
-│       └── {TICKET-ID}.md
+├── knowledge/                     # reserved for future cross-ticket data; empty by default
 └── tickets/
     └── {TICKET-ID}/
-        ├── metadata.json          # workflow state + raw intake (no separate ticket.md)
-        ├── ac.md                  # confirmed ACs (Stage 1)
-        ├── plan.md                # implementation plan (Stage 2), compact tables
-        ├── changelog.md           # doer's "what + why" log (compact bullets)
-        ├── wrapup.md              # lessons + assumptions + performance (Stage 9)
-        └── review/
-            ├── plan-review.md     # ONE file per stage, sections per iteration
-            ├── tests-review.md
-            └── code-review.md
+        └── metadata.json          # SINGLE file: state + intake + ac + plan + changelog + code_review + assumptions_validation + lessons_captured + summary + performance
 ```
 
-**Per ticket: ~6 files at completion.** Each file has a single, well-defined purpose listed above.
+**Per ticket: 1 file (`metadata.json`).** Top-level fields cover the full ticket lifecycle:
+
+| Field | Owner | Notes |
+|---|---|---|
+| `mode` | Intake (heuristic + dev confirm) | `lite` or `full`. Set ONCE; never changes mid-ticket |
+| `intake` | Intake | Raw description, ACs as pasted, context, prior-work flags |
+| `ac` | Stage 1 | Structured: `in_scope[]`, `out_of_scope[]`, `open_questions_resolved[]`, `applicable_lessons[]` |
+| `plan` | Stage 2 | Structured: `files[]`, `steps[]`, `tests[]`, `risks[]`, `assumptions[]` |
+| `changelog` | Every doer stage appends | Append-only array of `{stage, iteration, kind, items[]}` |
+| `code_review` | Stage 5 appends | Append-only array of `{iteration, blockers, auto_fixes, suggestions, info, verdict}` |
+| `assumptions_validation` | Stage 9 (full only) | Each plan assumption marked VALIDATED / INVALIDATED / UNVERIFIED |
+| `lessons_captured` | Stage 9 (full only) | Refs to global lessons added during this ticket |
+| `summary` | Stage 9 | One-paragraph wrapup |
+| `performance` | Stage 9 | Timing, agent invocation counts, convergence stats, reviewer ROI |
+| `stages.<N>.{status, verified_with, ...}` | State machine | Per-stage status + stage-specific runtime fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7) |
+
+Sub-agents receive the relevant slices of metadata **inlined in their prompts**; they do not read sidecar files. There is no `context.md`, no `ac.md`, no `plan.md`, no `changelog.md`, no `wrapup.md`, no `review/` directory in v3.0.0. They were all consolidated into `metadata.json` to eliminate drift, file-coordination cost, and re-read overhead in subagent loops.
+
+**Migrating from v2.10.0**: the first `/doer <ID>` after upgrade auto-runs the migration block. LLM parser agents convert the old `.md` files into the corresponding metadata fields, then delete the files. Existing tickets default to `mode: "full"` to preserve their pipeline behavior.
 
 ---
 
@@ -235,9 +266,9 @@ A hard rule. The Workspace Guard runs at every entry point and ensures:
 4. The Migration Check auto-upgrades the ticket to the current skill version.
 5. Stage 9 wrapup runs `git filter-branch` to strip any `.doer/` content from prior commits on the feature branch (only when needed; typically a no-op for tickets created with the Workspace Guard active from the start).
 
-**`.doer/` files always remain on disk.** The cleanup at wrapup only rewrites git history; it never touches the filesystem. After a ticket completes, you can still run `/doer status <TICKET-ID>`, `/doer list`, or `/doer continue <TICKET-ID>` and see every artifact (plan, ac, changelog, review files, wrapup, performance) intact in `./.doer/tickets/<TICKET-ID>/`.
+**`.doer/` files always remain on disk.** The cleanup at wrapup only rewrites git history; it never touches the filesystem. After a ticket completes, you can still run `/doer status <TICKET-ID>`, `/doer list`, or `/doer continue <TICKET-ID>` and read everything (ac, plan, changelog, code review history, wrapup summary, performance stats) directly from `./.doer/tickets/<TICKET-ID>/metadata.json`.
 
-The team sees ONLY real code commits. No doer artifacts, no metadata, no review files.
+The team sees ONLY real code commits. No doer artifacts, no metadata, no review history.
 
 ---
 
@@ -270,9 +301,9 @@ This file is gitignored; never reaches GitHub. The orchestrator reads it as the 
 | Scope | Language |
 |-------|----------|
 | Live chat (narration, questions, summaries, confirmations) | Operating locale (es, fr, etc.) |
-| All persistent artifacts (`ac.md`, `plan.md`, `changelog.md`, review files, `wrapup.md`, lessons, assumptions, JSON values, commit messages) | **Always English** |
+| All persistent state (every string field in `metadata.json`: `summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].blockers[].text`, etc.; global lessons under `<doer-skill-dir>/lessons/`; every commit message) | **Always English** |
 
-The artifacts are read by other subagents and by future tickets across projects, so they stay in a single language (English) to keep the global lessons pool shareable and prevent cross-language confusion.
+The persisted state is read by other subagents and by future tickets across projects, so it stays in a single language (English) to keep the global lessons pool shareable and prevent cross-language confusion.
 
 ---
 
@@ -282,13 +313,15 @@ The skill follows SemVer (MAJOR.MINOR.PATCH). Every ticket persists `skill_versi
 
 | Bump | When | Migration block |
 |------|------|------------------|
-| MAJOR | Renames/removes stages, changes metadata shape, removes/renames artifact files | REQUIRED |
-| MINOR | Adds capability OR changes the format of persistent files | REQUIRED if any persistent file format changed |
-| PATCH | Bug fix to orchestrator behavior, no file format change | None |
+| MAJOR | Renames/removes stages, changes the shape of `metadata.json`, removes/renames artifact files | REQUIRED |
+| MINOR | Adds capability OR changes the shape of any persistent field | REQUIRED if any persistent format changed |
+| PATCH | Bug fix to orchestrator behavior, no format change | None |
 
-If a bump changes the shape of a persistent file, a migration block is registered. Tickets in flight are auto-upgraded the next time they're touched. The dev never has to migrate by hand.
+If a bump changes the shape of any persistent field, a migration block is registered. Tickets in flight are auto-upgraded the next time they're touched. The dev never has to migrate by hand.
 
-Current version: **2.10.0** (see SKILL.md frontmatter).
+The migration also runs Phase 2 auto-reverify: spot-checks completed stages whose `verified_with` is older than the current SKILL version. For in-flight tickets the spot-checks fire automatically; for closed tickets the orchestrator asks once.
+
+Current version: **3.0.0** (see SKILL.md frontmatter). The 2.10.0 → 3.0.0 migration parses old `.md` artifacts via LLM parser agents into structured `metadata.json` fields, drops the `.md` files, and sets `mode: "full"` on existing tickets.
 
 ---
 
