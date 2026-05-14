@@ -66,7 +66,7 @@ State is persisted to `metadata.json` after every Agent return; no separate "sav
 | Action | When to use |
 |--------|-------------|
 | Close the session / quit Claude | End-of-day. Session exit doesn't lose anything; resume next day. |
-| Write `stop`, `wait`, `para` | At any turn boundary. Orchestrator narrates where it stopped and stops. |
+| Write `stop`, `wait`, `hold on` | At any turn boundary. Orchestrator narrates where it stopped and stops. |
 | Press `Esc` | Mid-Agent (the orchestrator is waiting for a subagent). Cancels the current Agent call. Works in CLI clients that support it. |
 | `Ctrl+C` in the parent shell | Mid-Agent in terminal-based clients (e.g. Android Studio terminal) where `Esc` doesn't propagate. |
 
@@ -78,8 +78,8 @@ Once a ticket is active, natural language works alongside slash commands. Whatev
 
 | You write... | Orchestrator does |
 |---|---|
-| Anything non-halt (`ok`, `sí`, `continue`, `the plan looks good`, an unrelated question, even an empty message) | **Continue**: reads `metadata.json` and runs the next pending action |
-| A halt signal (`stop`, `wait`, `para`, `hold on`) | **Stop**: narrates current position and exits |
+| Anything non-halt (`ok`, `yes`, `continue`, `the plan looks good`, an unrelated question, even an empty message) | **Continue**: reads `metadata.json` and runs the next pending action |
+| A halt signal (`stop`, `wait`, `hold on`) | **Stop**: narrates current position and exits |
 
 You don't need to type `/doer continue` to nudge the next iteration. That command is only for resuming **across sessions**.
 
@@ -101,7 +101,7 @@ At the end of intake, the orchestrator computes a lite-suitability score from yo
 | Stage 8 (Docs Sync) | Skipped entirely | Runs with classify pre-check |
 | Stage 9 (Wrapup) | Minimal: auto-summary + performance only. Skip assumptions validation, skip lessons capture, history cleanup runs without confirmation | Full: validate assumptions, capture lessons (interactive), confirmed history cleanup |
 
-**Lite-siempre-lite.** Once `metadata.mode` is set at intake, it does NOT change mid-ticket. If a lite ticket grows beyond what lite can handle, you can: accept residuals at the prompt, pause, or abort + restart in full mode (`git reset --hard <base>`, `rm .doer/tickets/<ID>/metadata.json`, then `/doer <ID>` to re-enter intake).
+**Once-lite-always-lite.** Once `metadata.mode` is set at intake, it does NOT change mid-ticket. If a lite ticket grows beyond what lite can handle, you can: accept residuals at the prompt, pause, or abort + restart in full mode (`git reset --hard <base>`, `rm .doer/tickets/<ID>/metadata.json`, then `/doer <ID>` to re-enter intake).
 
 The heuristic only **suggests** a mode; you confirm. Override freely.
 

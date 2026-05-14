@@ -26,7 +26,7 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 ## Core Principles
 
-1. **Narration first (every action, every decision).** The orchestrator narrates EVERY action it takes and EVERY internal decision it makes, not just stage transitions. This includes: before each tool call ("Voy a leer X para Y"), before each Agent invocation ("Invoco parser agent porque Z"), per-step progress in multi-step operations ("Step 3 de 11: parseando ..."), and reasoning the orchestrator would otherwise keep internal ("Detecté X en metadata, voy a Y porque Z"). The user must NEVER face a silent stretch longer than a single tool call. Long-running operations (migration, multi-file logger injection, multi-iteration loops) MUST emit progress narration, not just a final summary. Output-token cost of narration is a tiny fraction of total ticket cost; the UX win of "the user can always pause" outweighs it. The user should be able to pause at any moment because they always know where the orchestrator is.
+1. **Narration first (every action, every decision).** The orchestrator narrates EVERY action it takes and EVERY internal decision it makes, not just stage transitions. This includes: before each tool call ("Reading X to determine Y"), before each Agent invocation ("Invoking parser agent because Z"), per-step progress in multi-step operations ("Step 3 of 11: parsing changelog.md..."), and reasoning the orchestrator would otherwise keep internal ("Detected X in metadata, doing Y because Z"). The user must NEVER face a silent stretch longer than a single tool call. Long-running operations (migration, multi-file logger injection, multi-iteration loops) MUST emit progress narration, not just a final summary. Output-token cost of narration is a tiny fraction of total ticket cost; the UX win of "the user can always pause" outweighs it. The user should be able to pause at any moment because they always know where the orchestrator is.
 2. **One branch, one ticket**: All work happens on a single feature branch. Stages that produce real code commit it; stages that only produce `.doer/` artifacts do NOT commit (see principle 8).
 3. **Delta-aware reviewers**: After iteration 1, reviewers receive prior findings + the last `metadata.changelog` entries from the doer (inlined in their prompt). They verify fixes and scan for new issues, rather than re-analyzing from scratch.
 4. **Bounded loops**: Stages 4 (Code) and 5 (Code Review) loop with a max of **3 iterations**. Stages 2 (Plan) and 3 (Tests) are single-pass with one optional retry on deterministic-check failure. If still not converged after the cap or retry, the user decides.
@@ -460,7 +460,7 @@ The behavioral changes apply on the next `/doer <ID>` invocation.
 
 **Backward compat:** `/doer continue <ID>`, `/doer start <ID>`, etc. are accepted as aliases, the verb is parsed and ignored. `/doer <ID>` always does the right thing.
 
-**There is no `/doer pause`.** State persists automatically after every Agent return. To stop, just close the session or write `stop` / `wait` / `para`. To resume, `/doer continue <TICKET-ID>` from any future session.
+**There is no `/doer pause`.** State persists automatically after every Agent return. To stop, just close the session or write `stop` / `wait` / `hold on`. To resume, `/doer continue <TICKET-ID>` from any future session.
 
 **Stages cannot be skipped manually.** Every stage must run. The only way to skip stages is through Stage 1's pre-existing-work detection (see Stage 1 below). This is by design: the orchestrator decides which stages to skip, not the user.
 
@@ -618,7 +618,7 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
    | `description.length < 500` chars | +1 |
    | `raw_acs` has ≤ 3 enumerated items OR `raw_acs.length < 300` chars | +1 |
    | `prior_work.exists == false` | +1 |
-   | Description (case-insensitive) contains any of: `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `config flag`, `placeholder`, `hotfix`, `traducción`, `locale string` | +1 per keyword, capped at +2 |
+   | Description (case-insensitive) contains any of: `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `config flag`, `placeholder`, `hotfix`, `translation`, `locale string` | +1 per keyword, capped at +2 |
    | Description (case-insensitive) contains any of: `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic` | −2 (subtracted from total) |
 
    **Total score ≥ 2 → suggest lite. Total score < 2 → suggest full.**
@@ -822,14 +822,14 @@ At any turn boundary, the user's next message is interpreted as:
 
 | User message contains... | Interpretation |
 |--------------------------|----------------|
-| `stop`, `wait`, `hold on`, `para`, or a clear halt signal | **HALT**: narrate "Stopping. Run `/doer continue <TICKET-ID>` to resume." Stop. State already persisted in metadata. |
-| **Anything else** (including empty, `ok`, `sí`, `dale`, `continue`, `y`, an unrelated comment, a question about the work) | **RESUME**: read `metadata.json`, do the next pending action without further prompting |
+| `stop`, `wait`, `hold on`, or a clear halt signal | **HALT**: narrate "Stopping. Run `/doer continue <TICKET-ID>` to resume." Stop. State already persisted in metadata. |
+| **Anything else** (including empty, `ok`, `yes`, `continue`, `go`, `y`, an unrelated comment, a question about the work) | **RESUME**: read `metadata.json`, do the next pending action without further prompting |
 
-**MUST NOT** ask the user "continuar?" / "Continue? [Y/n]" / "¿Vamos al Stage N+1?" / "Procedo?" between iterations OR between stages. Continuation is implicit. The narration template is informative, not inquisitive:
+**MUST NOT** ask the user "Continue? [Y/n]" / "Shall I proceed?" / "Ready for the next stage?" between iterations OR between stages. Continuation is implicit. The narration template is informative, not inquisitive:
 
 - ✅ Right: *"Stage 2 complete. Continuing to Stage 3..."* + END TURN.
 - ❌ Wrong: *"Stage 2 complete. Continue to Stage 3? [Y/n]"*
-- ❌ Wrong: *"Stage 2 complete. ¿Vamos al 3?"*
+- ❌ Wrong: *"Stage 2 complete. Shall I move on to Stage 3?"*
 - ❌ Wrong: *"Stage 2 complete. Ready to start Stage 3?"*
 
 The user already opted in by starting the ticket. Asking again on every stage boundary makes the orchestrator feel like it's babysitting. Stages are auto-chained; the only stop is a halt signal in the next message.
@@ -1536,7 +1536,7 @@ Single-pass only. No iter 2+. No convergence loop.
    Lite mode does not iterate. Options:
      1) Accept residuals (mark stage complete with metadata.stages.4.loop_outcome = "accepted_with_residuals").
      2) Pause (status stays in_progress; rerun /doer continue after fixing manually).
-     3) Abort and restart in full mode. Lite-siempre-lite means we do NOT mutate metadata.mode mid-ticket. To restart cleanly: (a) `git reset --hard <base>` if you want to discard code/test commits made under lite, (b) `rm .doer/tickets/<ID>/metadata.json`, (c) `/doer <ID>` to re-enter intake and pick full mode.
+     3) Abort and restart in full mode. Once-lite-always-lite: we do NOT mutate metadata.mode mid-ticket. To restart cleanly: (a) `git reset --hard <base>` if you want to discard code/test commits made under lite, (b) `rm .doer/tickets/<ID>/metadata.json`, (c) `/doer <ID>` to re-enter intake and pick full mode.
    ```
    Persist the dev's choice in `metadata.stages.4`. Option 1 → status complete with residuals. Option 2 → leave status in_progress, no `loop_outcome`. Option 3 → narrate the cleanup steps; do NOT modify `metadata.mode`.
 4. If pre-checks are clean, invoke the **code reviewer** ONCE (iter 1). Persist its findings to `metadata.code_review`.
@@ -2568,7 +2568,7 @@ If the cleanup detection finds zero dirty commits, narrate *"Nothing to clean, b
 - **Agent returns error:** narrate the error, ask user to retry (max 3), or pause.
 - **Git operation fails:** narrate, present options (resolve manually, pause, abort stage).
 - **Tests cannot be detected:** ask the user for the test command. Save it to `metadata.test_command` for future stages.
-- **User says `stop` / `wait` / `para`:** state is already persisted after each Agent return. Narrate the current position and stop. Resume via `/doer continue <TICKET-ID>` later.
+- **User says `stop` / `wait` / `hold on`:** state is already persisted after each Agent return. Narrate the current position and stop. Resume via `/doer continue <TICKET-ID>` later.
 
 ---
 
