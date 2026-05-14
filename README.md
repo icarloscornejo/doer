@@ -87,7 +87,16 @@ You don't need to type `/doer continue` to nudge the next iteration. That comman
 
 ## Modes (lite vs full)
 
-At the end of intake, the orchestrator computes a lite-suitability score from your description, AC count, prior-work flag, and keyword signals (e.g. `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `placeholder`, `hotfix` push toward lite; `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic` push toward full). It then asks you to pick a mode:
+At the end of intake, the orchestrator computes a lite-suitability score from four inputs:
+
+- Length of the description
+- Number of acceptance criteria
+- Whether prior work exists
+- Keyword signals in the description:
+  - **Pushes toward lite**: `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `placeholder`, `hotfix`, `translation`, `locale string`
+  - **Pushes toward full**: `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic`
+
+It then asks you to pick a mode:
 
 | Aspect | Lite | Full |
 |---|---|---|
@@ -250,9 +259,24 @@ The decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* N
 | `performance` | Stage 9 | Timing, agent invocation counts, convergence stats, reviewer ROI |
 | `stages.<N>.{status, verified_with, ...}` | State machine | Per-stage status + stage-specific runtime fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7) |
 
-Sub-agents receive the relevant slices of metadata **inlined in their prompts**; they do not read sidecar files. There is no `context.md`, no `ac.md`, no `plan.md`, no `changelog.md`, no `wrapup.md`, no `review/` directory in v3.0.0. They were all consolidated into `metadata.json` to eliminate drift, file-coordination cost, and re-read overhead in subagent loops.
+Sub-agents receive the relevant slices of metadata **inlined in their prompts**; they do not read sidecar files.
 
-**Migrating from v2.10.0**: the first `/doer <ID>` after upgrade auto-runs the migration block. LLM parser agents convert the old `.md` files into the corresponding metadata fields, then delete the files. Existing tickets default to `mode: "full"` to preserve their pipeline behavior.
+What got consolidated into `metadata.json` in v3.0.0 (and no longer exists as a file):
+
+- `context.md`
+- `ac.md`
+- `plan.md`
+- `changelog.md`
+- `wrapup.md`
+- The `review/` directory
+
+The consolidation eliminates drift between sidecar files, file-coordination cost across stages, and re-read overhead in subagent loops.
+
+**Migrating from v2.10.0:**
+
+- The first `/doer <ID>` after upgrade auto-runs the migration block.
+- LLM parser agents convert each old `.md` file into its corresponding metadata field, then delete the file.
+- Existing tickets default to `mode: "full"` to preserve their pipeline behavior.
 
 ---
 
@@ -266,7 +290,14 @@ A hard rule. The Workspace Guard runs at every entry point and ensures:
 4. The Migration Check auto-upgrades the ticket to the current skill version.
 5. Stage 9 wrapup runs `git filter-branch` to strip any `.doer/` content from prior commits on the feature branch (only when needed; typically a no-op for tickets created with the Workspace Guard active from the start).
 
-**`.doer/` files always remain on disk.** The cleanup at wrapup only rewrites git history; it never touches the filesystem. After a ticket completes, you can still run `/doer status <TICKET-ID>`, `/doer list`, or `/doer continue <TICKET-ID>` and read everything (ac, plan, changelog, code review history, wrapup summary, performance stats) directly from `./.doer/tickets/<TICKET-ID>/metadata.json`.
+**`.doer/` files always remain on disk.** The cleanup at wrapup only rewrites git history; it never touches the filesystem.
+
+After a ticket completes you can still:
+
+- Run `/doer status <TICKET-ID>` for a summary
+- Run `/doer list` to see all tickets
+- Run `/doer continue <TICKET-ID>` to inspect or extend
+- Read `./.doer/tickets/<TICKET-ID>/metadata.json` directly for ac, plan, changelog, code review history, wrapup summary, and performance stats
 
 The team sees ONLY real code commits. No doer artifacts, no metadata, no review history.
 
@@ -296,14 +327,20 @@ locale: es    # Spanish
 
 This file is gitignored; never reaches GitHub. The orchestrator reads it as the **first action** of every invocation and narrates everything in that locale, overriding any other source.
 
-**Scope of the locale override** (only what you read live in chat):
+**Scope of the locale override:**
 
 | Scope | Language |
 |-------|----------|
-| Live chat (narration, questions, summaries, confirmations) | Operating locale (es, fr, etc.) |
-| All persistent state (every string field in `metadata.json`: `summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].blockers[].text`, etc.; global lessons under `<doer-skill-dir>/lessons/`; every commit message) | **Always English** |
+| Live chat (narration, questions, summaries, confirmations) | Operating locale (`es`, `fr`, etc.) |
+| Persistent state on disk | **Always English** |
 
-The persisted state is read by other subagents and by future tickets across projects, so it stays in a single language (English) to keep the global lessons pool shareable and prevent cross-language confusion.
+"Persistent state on disk" includes:
+
+- Every string field in `metadata.json` (`summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].blockers[].text`, etc.)
+- Global lessons under `<doer-skill-dir>/lessons/`
+- Every commit message
+
+**Why English-only on disk:** the persisted state is read by other subagents and by future tickets across projects. A single language keeps the global lessons pool shareable and prevents cross-language confusion.
 
 ---
 
@@ -319,9 +356,28 @@ The skill follows SemVer (MAJOR.MINOR.PATCH). Every ticket persists `skill_versi
 
 If a bump changes the shape of any persistent field, a migration block is registered. Tickets in flight are auto-upgraded the next time they're touched. The dev never has to migrate by hand.
 
-The migration also runs Phase 2 auto-reverify: spot-checks completed stages whose `verified_with` is older than the current SKILL version. For in-flight tickets the spot-checks fire automatically; for closed tickets the orchestrator asks once.
+The migration also runs Phase 2 auto-reverify: spot-checks completed stages whose `verified_with` is older than the current SKILL version.
 
-Current version: **3.0.1** (see SKILL.md frontmatter). The 2.10.0 → 3.0.0 migration parses old `.md` artifacts via LLM parser agents into structured `metadata.json` fields, drops the `.md` files, and sets `mode: "full"` on existing tickets. The 3.0.0 → 3.0.1 PATCH bump tightens narration (every action and decision is narrated, not just stage transitions; long-running operations emit progress) and tightens read budgets across sub-agents (migration parsers, Stage 7 logger/analyzer, Stage 8 docs-updater, Stage 9 lessons capture, Stage 2 planner in lite mode, Stage 4 code writer in lite mode); no metadata format changes.
+- **In-flight tickets**: spot-checks fire automatically before resume.
+- **Closed tickets**: the orchestrator asks once whether to reverify.
+
+### Recent releases
+
+**Current version: 3.0.1** (see SKILL.md frontmatter).
+
+- **3.0.1 (PATCH)** — narration tightening + read-budget tightening across sub-agents.
+  - Narration: every action and decision is narrated, not just stage transitions. Long-running operations (migration, multi-file logger injection, multi-iteration loops) emit progress instead of going silent.
+  - Read budgets: tightened on migration parsers (1 file), Stage 7 logger (diff + 5 deps), Stage 7 analyzer (0 source), Stage 8 docs-updater (0 source), Stage 9 lessons capture (0 source), Stage 2 planner (10 in full / 5 in lite, was 15), Stage 4 code writer (15 in full / 8 in lite, was 15).
+  - No metadata format changes; no migration block needed.
+
+- **3.0.0 (MAJOR)** — single `metadata.json` per ticket, lite mode, looser stages dropped to single-pass.
+  - Consolidated every per-ticket `.md` artifact (`ac.md`, `plan.md`, `context.md`, `changelog.md`, `wrapup.md`, `assumptions/<T>.md`, `review/*.md`) into structured fields in `metadata.json`.
+  - Stages 2 (Plan) and 3 (Tests) lost their doer/reviewer loops; now single-pass with deterministic checks plus one retry on failure.
+  - Stages 4 (Code) and 5 (Code Review) cap at 3 iterations (was 5).
+  - Eliminated `context.md` scratch file; sub-agents receive metadata slices inlined in their prompts.
+  - Added `mode: "lite" | "full"` (binary, set ONCE at intake via heuristic + dev confirm, never mutates mid-ticket).
+  - Removed Stage 7's silent auto-skip: it now always asks the dev.
+  - Migration block parses old `.md` artifacts via LLM parser agents and sets `mode: "full"` on existing tickets.
 
 ---
 
