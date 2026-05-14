@@ -361,23 +361,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-### Recent releases
-
 **Current version: 3.0.1** (see SKILL.md frontmatter).
-
-- **3.0.1 (PATCH)** — narration tightening + read-budget tightening across sub-agents.
-  - Narration: every action and decision is narrated, not just stage transitions. Long-running operations (migration, multi-file logger injection, multi-iteration loops) emit progress instead of going silent.
-  - Read budgets: tightened on migration parsers (1 file), Stage 7 logger (diff + 5 deps), Stage 7 analyzer (0 source), Stage 8 docs-updater (0 source), Stage 9 lessons capture (0 source), Stage 2 planner (10 in full / 5 in lite, was 15), Stage 4 code writer (15 in full / 8 in lite, was 15).
-  - No metadata format changes; no migration block needed.
-
-- **3.0.0 (MAJOR)** — single `metadata.json` per ticket, lite mode, looser stages dropped to single-pass.
-  - Consolidated every per-ticket `.md` artifact (`ac.md`, `plan.md`, `context.md`, `changelog.md`, `wrapup.md`, `assumptions/<T>.md`, `review/*.md`) into structured fields in `metadata.json`.
-  - Stages 2 (Plan) and 3 (Tests) lost their doer/reviewer loops; now single-pass with deterministic checks plus one retry on failure.
-  - Stages 4 (Code) and 5 (Code Review) cap at 3 iterations (was 5).
-  - Eliminated `context.md` scratch file; sub-agents receive metadata slices inlined in their prompts.
-  - Added `mode: "lite" | "full"` (binary, set ONCE at intake via heuristic + dev confirm, never mutates mid-ticket).
-  - Removed Stage 7's silent auto-skip: it now always asks the dev.
-  - Migration block parses old `.md` artifacts via LLM parser agents and sets `mode: "full"` on existing tickets.
 
 ---
 
