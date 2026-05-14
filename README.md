@@ -1,6 +1,6 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 3.0.0.
+**Ticket execution orchestrator for Claude Code.** Version 3.0.1.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, two execution modes (lite for trivial tickets, full for everything else), delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -321,7 +321,7 @@ If a bump changes the shape of any persistent field, a migration block is regist
 
 The migration also runs Phase 2 auto-reverify: spot-checks completed stages whose `verified_with` is older than the current SKILL version. For in-flight tickets the spot-checks fire automatically; for closed tickets the orchestrator asks once.
 
-Current version: **3.0.0** (see SKILL.md frontmatter). The 2.10.0 → 3.0.0 migration parses old `.md` artifacts via LLM parser agents into structured `metadata.json` fields, drops the `.md` files, and sets `mode: "full"` on existing tickets.
+Current version: **3.0.1** (see SKILL.md frontmatter). The 2.10.0 → 3.0.0 migration parses old `.md` artifacts via LLM parser agents into structured `metadata.json` fields, drops the `.md` files, and sets `mode: "full"` on existing tickets. The 3.0.0 → 3.0.1 PATCH bump tightens narration (every action and decision is narrated, not just stage transitions; long-running operations emit progress) and tightens read budgets across sub-agents (migration parsers, Stage 7 logger/analyzer, Stage 8 docs-updater, Stage 9 lessons capture, Stage 2 planner in lite mode, Stage 4 code writer in lite mode); no metadata format changes.
 
 ---
 

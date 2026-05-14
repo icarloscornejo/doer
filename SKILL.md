@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 3.0.0
+version: 3.0.1
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -26,7 +26,7 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 ## Core Principles
 
-1. **Narration first**: The orchestrator announces what it is about to do, what it is doing, and what just happened. The user should be able to pause at any moment.
+1. **Narration first (every action, every decision).** The orchestrator narrates EVERY action it takes and EVERY internal decision it makes, not just stage transitions. This includes: before each tool call ("Voy a leer X para Y"), before each Agent invocation ("Invoco parser agent porque Z"), per-step progress in multi-step operations ("Step 3 de 11: parseando ..."), and reasoning the orchestrator would otherwise keep internal ("Detecté X en metadata, voy a Y porque Z"). The user must NEVER face a silent stretch longer than a single tool call. Long-running operations (migration, multi-file logger injection, multi-iteration loops) MUST emit progress narration, not just a final summary. Output-token cost of narration is a tiny fraction of total ticket cost; the UX win of "the user can always pause" outweighs it. The user should be able to pause at any moment because they always know where the orchestrator is.
 2. **One branch, one ticket**: All work happens on a single feature branch. Stages that produce real code commit it; stages that only produce `.doer/` artifacts do NOT commit (see principle 8).
 3. **Delta-aware reviewers**: After iteration 1, reviewers receive prior findings + the last `metadata.changelog` entries from the doer (inlined in their prompt). They verify fixes and scan for new issues, rather than re-analyzing from scratch.
 4. **Bounded loops**: Stages 4 (Code) and 5 (Code Review) loop with a max of **3 iterations**. Stages 2 (Plan) and 3 (Tests) are single-pass with one optional retry on deterministic-check failure. If still not converged after the cap or retry, the user decides.
@@ -82,7 +82,7 @@ Runs as part of the Workspace Guard sequence (right after the exclude check, bef
 3. If equal → no-op for Phase 1.
 4. If ticket version < current version → walk every migration block below in chronological order. For each block whose `from` matches the ticket's current version: apply it, then bump `metadata.skill_version` to the block's `to`. Continue until the ticket's version equals the current SKILL version.
 5. If the ticket version is behind the SKILL but no migration block matches the gap (e.g. a PATCH bump): silently bump `metadata.skill_version` to current. No file changes.
-6. **Always auto-apply silently.** Do NOT ask the user. Narrate ONE summary line at the end IF any migration block actually executed: *"Migrated ticket X.Y.Z → A.B.C: N file changes."* If only a silent version-bump happened (case 5), narrate nothing.
+6. **Always auto-apply without asking the user**, but **NOT silently in execution**. Per Core Principle 1 (Narration first), the orchestrator MUST narrate progress per step inside any non-trivial migration block (one narration line per step is the minimum: *"Migration step 3/11: parsing changelog.md → metadata.changelog..."*, then *"...done"* on completion). The "no confirmations" rule is about not pausing for user input; it is NOT a license to go silent for minutes while parser agents run. At the end, narrate ONE summary line IF any migration block actually executed: *"Migrated ticket X.Y.Z → A.B.C: N steps, M files changed."* If only a silent version-bump happened (case 5, no actual block ran), narrate nothing.
 
 **Phase 2: per-stage auto-reverify (introduced in 2.10.0)**
 
@@ -322,11 +322,16 @@ The behavioral changes apply on the next `/doer <ID>` invocation.
 
 **Per-ticket changes:**
 
+**Narration requirement** (per Core Principle 1): the orchestrator MUST narrate before EACH numbered step below, e.g. *"Migration 2.10.0 → 3.0.0, step 1/11: stashing existing .md files..."*. Do NOT execute the bash block silently. After the last step, narrate ONE summary line: *"Migrated ticket 2.10.0 → 3.0.0: 11 steps, N files parsed, M files dropped."*
+
+**Parser agent read budget**: every parser agent invoked in steps 2-6 below MUST receive the explicit instruction *"Read budget: exactly 1 file (the one named in your prompt). No directory listings, no exploration of related files. If the named file is missing or unreadable, fail fast and let the orchestrator handle it."* Each parser is one-shot, single-file. Exploration is wasted tokens.
+
 ```bash
 TICKET_DIR=.doer/tickets/<TICKET-ID>
 META=$TICKET_DIR/metadata.json
 
 # 1. Stash existing .md files for safe rollback if any parser fails.
+#    Narrate: "Step 1/11: stashing .md files for rollback safety."
 git -C "$TICKET_DIR" stash push -m "doer-3.0.0-migration-stash" 2>/dev/null || true
 # (.doer/ is gitignored locally; stash is a fallback only when the dev had committed it.)
 
@@ -1169,7 +1174,7 @@ The orchestrator has already loaded these and inlined them below:
 under <doer-skill-dir>/lessons/{slug}.md>
 
 Explore the codebase to understand the structure relevant to this ticket.
-Read budget: up to 15 source files. Free to grep.
+Read budget: up to 10 source files in `full` mode, up to 5 in `lite` mode (the orchestrator inlines the chosen mode in the prompt). Free to grep within the budget.
 
 Produce the plan as a JSON object matching this exact shape:
 
@@ -1206,7 +1211,7 @@ Constraints:
 - Every file path in `files[]` MUST be relative to the repo root (no leading `./` or absolute paths).
 - Use `change: "new"` only if the file does NOT currently exist; `change: "edit"` only if it does.
 - Be terse, no prose, one-line items.
-- Read budget: 15 source files. Stay within it. If a BLOCKER from the deterministic checks needs more, add it on retry.
+- Read budget: 10 source files in `full` mode, 5 in `lite` mode. Stay within it. If a BLOCKER from the deterministic checks needs more, add it on retry.
 
 Do NOT write code. Do NOT run tests. Plan only.
 ```
@@ -1429,7 +1434,7 @@ Output JSON:
   }
 }
 
-Read budget: 15 source files (iter 1) or 3 source files beyond the diff (iter 2+).
+Read budget: 15 source files (iter 1, `full` mode) or 8 source files (iter 1, `lite` mode) or 3 source files beyond the diff (iter 2+, `full` mode only; lite has no iter 2+).
 ```
 
 ### Pre-reviewer deterministic checks
@@ -1810,6 +1815,11 @@ Scope: every file in the diff PLUS every file in the call path the ACs
 exercise (deps, helpers, repositories, view models). Follow imports
 outward from the diff. Stop at framework/SDK boundaries.
 
+Read budget: every file in the diff (mandatory; you must read all of them)
+PLUS up to 5 additional source files for call-path exploration. The +5 caps
+exploration, not diff reads. If a BLOCKER genuinely requires more than 5
+extra files, note the extra reads in your output and proceed.
+
 Log: function entry (args), conditional branches (which + why), state
 changes, external boundaries (API/DB/IO/threads/coroutines), exception
 catches, function exit (return or void).
@@ -1862,11 +1872,23 @@ Commit is identified later by its unique message prefix.
 
 ### Step 3: Hand off to dev
 
-Narrate the file list inline + build/filter commands:
+Narrate the file list inline + build/filter commands. **Project-aware filter suggestion**: detect the project type from the diff's file extensions and offer the simplest filter as the primary recommendation, with native OS log streams as fallback for release builds.
+
+| Project type | Primary filter (simplest) | Fallback (release builds, no Metro/dev server) |
+|---|---|---|
+| React Native (`.tsx`/`.jsx` in diff) | Metro bundler stdout: pipe `pnpm run bundle:ios` (or equivalent) through `grep "DOER - "` | iOS: `xcrun simctl spawn booted log stream --predicate 'eventMessage CONTAINS "DOER - "'` / Android: `adb logcat \| grep "DOER - "` |
+| Native iOS (`.swift` in diff) | `xcrun simctl spawn booted log stream --predicate 'eventMessage CONTAINS "DOER - "'` | Xcode console |
+| Native Android (`.kt`/`.java` in diff) | `adb logcat \| grep "DOER - "` | Android Studio Logcat |
+| Web (`.ts`/`.js` not in RN tree) | Browser DevTools console | Node test runner stdout |
+| Backend (Python, Go, Rust, Ruby, Java server) | Process stdout / `tail -f` of the run command | Container logs / journald |
+
+Use the table to pick the filter. If unclear, offer the top two options and let the dev pick.
+
 ```
 Runtime logs injected across N files: <list>.
 Build & run: <build command, detect or ask once, persist as metadata.runtime_build_command>
-Exercise each AC, filter with: <e.g. adb logcat | grep "DOER - ">
+Exercise each AC, filter with: <primary filter from the table for this project type>
+                       (fallback: <fallback filter from the table>)
 Paste filtered output here when ready.
 ```
 
@@ -1892,6 +1914,9 @@ Log excerpt from the dev's session:
 
 For each AC: was the code path hit? Did values match expected? Any
 unexpected errors? Any branch that should have been exercised but wasn't?
+
+Read budget: 0 source files. You receive metadata.ac, metadata.plan, and the
+log paste inline. Do NOT read code. Your job is pure analysis on the inputs.
 
 Return JSON:
 {
@@ -2088,6 +2113,12 @@ The orchestrator has inlined these below:
 Update list (this is your ENTIRE scope, do not freelance beyond it):
 <paste the structured list from the pre-check>
 
+Read budget: ONLY the doc files named in the update list above. 0 source
+files (the diff is already inlined; pre-checks already validated stale refs
+and new public surface). If you feel you need to read a source file to apply
+a doc edit, that is a sign the pre-check missed something; flag it in the
+output instead of exploring.
+
 For each stale reference: rename if a clear target exists, otherwise
 remove or rewrite that mention to reflect what now exists.
 
@@ -2151,7 +2182,7 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    Reply with: comma-separated numbers to accept, `add: <your lesson>` to add another, `none` to skip, or `edit <N>: <new framing>` to reword.
    ```
 
-   For each accepted candidate, ask the user to fill in: `what happened`, `why it matters`, `takeaway`. Or accept the orchestrator's draft based on `metadata.changelog` and let the user edit.
+   For each accepted candidate, ask the user to fill in: `what happened`, `why it matters`, `takeaway`. Or accept the orchestrator's draft based on `metadata.changelog` and let the user edit. **Read budget for any agent invoked here: 0 source files.** Lessons drafting reads only `metadata.json` fields and `git log/diff`; it does NOT explore the codebase.
 
    If NO signals detected, ask once: *"Any lesson worth saving for future tickets? Reply with one, or `none`."* (one prompt, not multiple).
 
