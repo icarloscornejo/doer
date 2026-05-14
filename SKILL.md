@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 3.0.1
+version: 3.0.2
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -57,6 +57,53 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 ---
 
+## Context Continuity (Anti-Compaction)
+
+The Claude Code harness compacts long conversations to fit in context. When that happens mid-pipeline, the orchestrator can lose: locale (drifts to English), narration discipline, schema knowledge (forgets which `metadata.stages.<N>` fields are required), full-SHA convention, Migration Check timing, and other rules baked into SKILL.md. Symptoms observed in prior tickets: abbreviated SHAs, missing `loop_outcome` / `iterations` / `started_at` fields, silent skips of Stage 7 ask-rule, locale flip from `es` to English, `metadata.skill_version` not bumped on PATCH upgrades.
+
+### Heartbeat anchor
+
+This SKILL contains a known anchor string the orchestrator must be able to quote verbatim from context:
+
+> **DOER-HEARTBEAT-v3: every action narrated, every field validated, every SHA full-length, every Migration Check explicit.**
+
+(That exact line. 18 words. Treat it as a checksum for context freshness.)
+
+### Self-check protocol
+
+At every **stage transition** AND at the start of every **`/doer continue` invocation** (which includes implicit resumes after natural-language messages), the orchestrator MUST perform a heartbeat self-check BEFORE doing anything else:
+
+1. Self-question: *"Can I quote the DOER-HEARTBEAT anchor from my current context, verbatim?"*
+2. If **YES** → context is fresh. Skip re-hydration. Continue normally.
+3. If **NO** → context was compacted. Trigger **forced re-hydration** (next subsection) before doing anything else. Do NOT proceed to the stage logic until re-hydration completes.
+
+The cost of the self-check itself is zero (pure reasoning, no tool call). The cost of re-hydration is paid only when compaction is detected, which is rare in normal operation.
+
+### Forced re-hydration steps
+
+When the heartbeat is missing, perform these reads BEFORE the next stage logic. Narrate each step (per Core Principle 1):
+
+1. *"Compaction detected: heartbeat anchor missing from context. Re-hydrating."*
+2. Read `<doer-skill-dir>/preferences.md` → re-establish operating locale.
+3. Read `./.doer/tickets/<TICKET-ID>/metadata.json` → re-establish ticket state, mode, current_stage, prior changelog/code_review entries.
+4. Read the relevant section of `SKILL.md` for `metadata.current_stage` (e.g. if current_stage is 4, re-read the "Stage 4. Code" section). One section, not the whole file.
+5. Read this Context Continuity section + the Versioning & Migrations section (Migration Check Phase 1 must run after re-hydration if `metadata.skill_version` is behind the SKILL frontmatter version).
+6. Narrate: *"Re-hydration complete. Resuming at Stage <N> (<name>) in <mode> mode, locale <locale>."*
+7. Run Migration Check Phase 1 + Phase 2 explicitly (see Versioning & Migrations).
+8. Continue with the original stage logic.
+
+This treats every detected compaction as if the dev had just typed `/doer continue <TICKET-ID>` from a fresh session. The goal is uniform behavior regardless of whether compaction happened.
+
+### What re-hydration is NOT
+
+- Not "re-read the entire SKILL on every turn" (too expensive).
+- Not "re-read on every tool call" (too expensive).
+- Not "always run on stage transition unconditionally" (wastes tokens when context is fresh).
+
+The trigger is the heartbeat self-check at stage boundaries. That is all.
+
+---
+
 ## Versioning & Migrations
 
 The SKILL frontmatter declares the current version (SemVer: MAJOR.MINOR.PATCH).
@@ -69,7 +116,15 @@ The SKILL frontmatter declares the current version (SemVer: MAJOR.MINOR.PATCH).
 
 **Rule of thumb:** if a bump changes how an existing artifact file is shaped, **register a migration block**. Tickets in flight should never be stuck reading verbose old formats just because they were created before the optimization. Token-cost reductions are real wins; auto-applying them keeps every ticket on the latest cheapest format.
 
-Each ticket persists `skill_version` in `metadata.json` at intake. On every entry point (`continue`, `verify`, any stage execution), the orchestrator runs the **Migration Check** below.
+Each ticket persists `skill_version` in `metadata.json` at intake. The orchestrator runs the **Migration Check** below at every one of these explicit trigger points (NOT only at `/doer continue`):
+
+1. Start of every `/doer <TICKET-ID>` invocation, after the Workspace Guard finishes.
+2. Start of every `/doer continue <TICKET-ID>` (same path; `/doer continue` is just an alias).
+3. Start of every `/doer verify <TICKET-ID>`.
+4. After every successful **forced re-hydration** (see Context Continuity section). Compaction can land mid-pipeline; the heartbeat-triggered re-hydration must re-run the Migration Check because the orchestrator may have lost track of `skill_version` mismatches.
+5. Before every stage transition where `metadata.skill_version` does not match the SKILL frontmatter version (cheap deterministic comparison; if equal, skip).
+
+The "every entry point" phrasing is too vague and gets dropped from context after compaction. The five explicit triggers above are non-negotiable.
 
 ### Migration Check (auto, silent)
 
@@ -440,7 +495,7 @@ rmdir "$TICKET_DIR/review" 2>/dev/null || true
 - The LLM parser agents are one-shot and operate per-file. If any agent fails (returns invalid JSON, refuses, etc.), the orchestrator narrates the failure for that file but continues with the others. The dev can run `/doer <ID>` again after fixing the offending file by hand (or accept that the field will be empty until they re-run the corresponding stage).
 - Validation is structural only (right shape, right types). The orchestrator does NOT semantically validate that the parsed content matches the original; that is the dev's responsibility if they want to spot-check after migration.
 - Stage 2 / Stage 3 reset (step 9) only applies to in-flight tickets that were stuck mid-loop. Tickets where Stage 2/3 already completed under the old loop (status=`complete`) remain `complete`; the auto-reverify (Phase 2) will spot-check them via the new deterministic checks.
-- All file deletions in step 7 are safe: those files are no longer read by any code path in v3.0.0.
+- All file deletions in step 7 are safe: those files are no longer read by any code path.
 
 After Phase 1 finishes, Phase 2 auto-reverify runs (because `affected_stages: [all]`). For in-flight tickets the spot-checks fire automatically; for complete tickets the orchestrator asks once per the standard prompt.
 
@@ -488,7 +543,7 @@ All state lives under `./.doer/` in the current working directory (scoped to the
         └── metadata.json          # SINGLE file per ticket: state + intake + ac + plan + changelog + code_review + assumptions + wrapup
 ```
 
-**Per ticket: 1 file (`metadata.json`).** Every previous artifact (`ac.md`, `plan.md`, `context.md`, `changelog.md`, `wrapup.md`, `assumptions/<T>.md`, `review/*.md`) was consolidated into `metadata.json` as structured fields in v3.0.0. One source of truth, no drift, no file-coordination cost. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
+**Per ticket: 1 file (`metadata.json`).** Everything (ac, plan, changelog, code review history, assumptions, lessons captured, summary, performance) lives as structured fields inside `metadata.json`. One source of truth, no drift, no file-coordination cost. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
 
 ### `metadata.json` schema (v3.0.0)
 
@@ -871,15 +926,15 @@ Top-level runtime counter for agent invocations (lives at `metadata.performance.
 
 Increment `metadata.performance.agents[<name>]` on every Agent call. Set `metadata.stages.<N>.started_at` when the stage begins and `completed_at` on transition to `complete | skipped | imported`. Set `iterations`/`loop_outcome`/`blockers_resolved_total` on loop exit (stages 4 and 5 only).
 
-There is no `pauses` array and no `active_duration_seconds` field. `/doer pause` was removed in v2.2.0 (state persists after every Agent return; closing the session is the pause). Wall-clock duration in `metadata.performance.wall_clock` is computed from `metadata.created_at` to `metadata.completed_at`; "active" duration is the same value (no paused intervals to subtract).
+There is no `pauses` array and no `active_duration_seconds` field. There is no `/doer pause` command; state persists after every Agent return, so closing the session IS pausing. Wall-clock duration in `metadata.performance.wall_clock` is computed from `metadata.created_at` to `metadata.completed_at`; "active" duration is the same value (no paused intervals to subtract).
 
 ---
 
 ## Doer/Reviewer Loop Pattern (Delta-Aware)
 
-**Stages 4 (Code) and 5 (Code Review) use this pattern. Max iterations: 3.** (Dropped from 5 in v3.0.0; iterations 3+ rarely add value commensurate to cost. If 3 iterations don't converge, narrate and let the dev decide.)
+**Stages 4 (Code) and 5 (Code Review) use this pattern. Max iterations: 3.** Iterations 3+ rarely add value commensurate to cost; if 3 iterations don't converge, narrate and let the dev decide.
 
-Stages 2 (Plan) and 3 (Tests) do NOT use this loop in v3.0.0. They are single-pass with deterministic pre-checks plus an optional single retry. See those stages' sections.
+Stages 2 (Plan) and 3 (Tests) do NOT use this loop. They are single-pass with deterministic pre-checks plus an optional single retry. See those stages' sections.
 
 ### Findings severity (4 buckets)
 
@@ -936,7 +991,7 @@ One-line items only. No prose. Sub-agents reading the changelog look at the last
 
 ### Read budgets (per iteration, per role)
 
-Sub-agent read budgets are SOFT limits expressed in their prompt. Goal: cap exploration cost without forbidding necessary reads. **No scratch files in v3.0.0**: every prior context that used to live in `context.md` now arrives inline in the prompt (extracted from `metadata.ac`, `metadata.plan`, last N `metadata.changelog` entries, and `git diff <base>..HEAD`).
+Sub-agent read budgets are SOFT limits expressed in their prompt. Goal: cap exploration cost without forbidding necessary reads. **No scratch files**: every piece of context the sub-agent needs arrives inline in the prompt (extracted from `metadata.ac`, `metadata.plan`, last N `metadata.changelog` entries, and `git diff <base>..HEAD`).
 
 | Role | Budget |
 |------|--------|
@@ -1001,6 +1056,47 @@ Iter 2+ is targeted fix verification. No need for fresh-eyes review on small cha
 ### Max iterations reached (3) without convergence
 
 Narrate: *"Stage {N} did not converge after 3 iterations. {N} BLOCKERs remain: {list}. Options: 1) one more iteration, 2) accept and continue, 3) pause."* If option 1 converges → `loop_outcome = "converged"`. If option 2 → `loop_outcome = "accepted_with_residuals"`. If option 3 → leave `metadata.stages.<N>.status = "in_progress"` and do NOT set `loop_outcome` (the dev resumes later via `/doer continue`).
+
+---
+
+## Stage Finalization Checklist (applies to every stage)
+
+Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `"imported"` / `"blocked"`), the orchestrator MUST run a deterministic checklist that validates the per-stage required fields are present in metadata. This is a no-LLM check (just JSON field presence). It catches the common post-compaction failure mode where the orchestrator forgets which fields the schema requires.
+
+**If any required field is missing, the orchestrator MUST write it before transitioning.** If it cannot be derived (e.g. `started_at` was never recorded), use the best available proxy (e.g. `git log` of the stage's commit timestamp, or current time, or `null` with an explanatory note). Narrate which fields were back-filled and why.
+
+### Required fields per stage
+
+| Stage | Always required | Required when status is `complete` | Required when status is `skipped` |
+|---|---|---|---|
+| 1 ac-confirm | `name`, `status`, `verified_with` | `completed_at` | `skipped_reason` |
+| 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
+| 3 tests | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
+| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a (Stage 4 is never skipped) |
+| 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a |
+| 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
+| 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
+| 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at` | `skipped_reason` (and `skipped_acknowledged_by = "lite_mode"` if mode is lite) |
+| 9 wrapup | `name`, `status`, `verified_with` | `completed_at` | n/a |
+
+### Top-level required fields when transitioning ticket to `status: "complete"`
+
+When Stage 9 marks the ticket complete, the checklist also verifies:
+- `metadata.completed_at` is set (ISO8601)
+- `metadata.summary` is a non-empty string
+- `metadata.performance` is a populated object (has at least `started`, `completed`, `wall_clock`)
+- `metadata.last_green_sha` is a 40-character SHA (full length, never abbreviated)
+- `metadata.last_green_test_command` is non-null
+
+### Validation procedure
+
+For each required field listed above:
+1. Read `metadata.stages.<N>.<field>` (or top-level `metadata.<field>`).
+2. If absent or null when it should not be, narrate: *"Finalization check: `metadata.stages.<N>.<field>` missing. Back-filling from <source>."* Then write it.
+3. If a value is present but obviously wrong (e.g. `last_green_sha` is fewer than 40 characters, `iterations` is negative, `loop_outcome` is not in the enum), narrate the issue and correct it.
+4. Re-read after writing to confirm the value persisted.
+
+Only after all required fields validate clean, write the final `status` and continue.
 
 ---
 
@@ -1520,7 +1616,7 @@ git commit --no-verify -m "doer(<TICKET-ID>): implementation (TDD green)"
 
 After the commit, persist the green-test marker so Stage 6 can skip re-running an unchanged tree:
 ```json
-metadata.last_green_sha = <git rev-parse HEAD>
+metadata.last_green_sha = <git rev-parse HEAD>   # MUST be the full 40-char SHA. NEVER abbreviated. The skip-safe check in Stage 6 compares this string-equal to `git rev-parse HEAD` of the new HEAD; an abbreviated SHA breaks the comparison.
 metadata.last_green_test_command = <the test command that ran>
 ```
 
@@ -1650,7 +1746,7 @@ If the dev had nothing to fix (all pre-checks clean and reviewer found zero BLOC
 
 If a commit happened, run the test suite once more and update the green-test marker so Stage 6 can skip:
 ```json
-metadata.last_green_sha = <git rev-parse HEAD>
+metadata.last_green_sha = <git rev-parse HEAD>   # MUST be the full 40-char SHA. NEVER abbreviated. The skip-safe check in Stage 6 compares this string-equal to `git rev-parse HEAD` of the new HEAD; an abbreviated SHA breaks the comparison.
 metadata.last_green_test_command = <the test command that ran>
 ```
 If the post-commit test run fails, that is a regression: surface as a BLOCKER and re-enter the iter loop. Do not advance.
@@ -1688,7 +1784,7 @@ Persist `metadata.stages.5.iterations = 1` always. `metadata.stages.5.loop_outco
 The last green test run is tracked in `metadata.last_green_sha`. Stages 4 and 5 update this field whenever they finish a successful test suite execution:
 ```json
 {
-  "last_green_sha": "<HEAD SHA at the moment all tests passed>",
+  "last_green_sha": "<HEAD SHA at the moment all tests passed; MUST be the full 40-char output of `git rev-parse HEAD`, never abbreviated>",
   "last_green_test_command": "<the command that produced green>"
 }
 ```
@@ -1710,7 +1806,7 @@ The last green test run is tracked in `metadata.last_green_sha`. Stages 4 and 5 
 
 5. **If all tests pass:**
    - Persist a brief summary in `metadata.stages.6.test_summary = "<N>/<N> tests passed in <duration>"` (counts and timing only; the dev's terminal already has the full output, no need to duplicate it on disk).
-   - Update `metadata.last_green_sha = <current HEAD>` and `metadata.last_green_test_command`.
+   - Update `metadata.last_green_sha = <full 40-char output of git rev-parse HEAD; MUST NOT abbreviate>` and `metadata.last_green_test_command`.
    - Narrate *"Quality gate passed: <N>/<N> tests green. Continuing to Stage 7."* and proceed.
 
 ---
@@ -1721,7 +1817,7 @@ The last green test run is tracked in `metadata.last_green_sha`. Stages 4 and 5 
 
 ### Always ask (Stage 7 is NEVER auto-skipped)
 
-**Stage 7 MUST be explicitly approved or skipped by the dev.** The orchestrator MUST NOT skip Stage 7 silently under any circumstance, including when the diff is 100% docs/config and no runtime code was touched. Silent auto-skip was removed in v3.0.0 because it produced false-positive skips that hid real verification gaps.
+**Stage 7 MUST be explicitly approved or skipped by the dev.** The orchestrator MUST NOT skip Stage 7 silently under any circumstance, including when the diff is 100% docs/config and no runtime code was touched. Silent auto-skip is forbidden because it produces false-positive skips that hide real verification gaps.
 
 Classify the diff first to inform the default suggestion (this is for UX only, NOT a skip decision):
 
@@ -2215,7 +2311,7 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
      "started":     "<ISO8601, from metadata.created_at>",
      "completed":   "<ISO8601, now>",
      "wall_clock":  "<duration string>",
-     "active":      "<duration string; equals wall_clock since /doer pause was removed in 2.2.0>",
+     "active":      "<duration string; equals wall_clock since there is no pause concept>",
      "stages": [
        {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "<HH:MM:SS>"},
        {"n": 2, "name": "plan",       "status": "complete", "duration": "...", "retry_used": false},

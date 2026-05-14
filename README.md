@@ -1,6 +1,6 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 3.0.1.
+**Ticket execution orchestrator for Claude Code.** Version 3.0.2.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, two execution modes (lite for trivial tickets, full for everything else), delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -361,7 +361,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 3.0.1** (see SKILL.md frontmatter).
+**Current version: 3.0.2** (see SKILL.md frontmatter).
 
 ---
 
@@ -372,6 +372,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **Orchestrator is the sole voice.** Subagents write artifacts and return JSON summaries. Only the orchestrator prompts the user.
 - **Iteration as a turn.** A full doer/reviewer iteration (incl. AUTO_FIX) runs in a single turn. Works identically in CLI and IDE plugins.
 - **No hidden state.** Everything is on disk in `./.doer/`. Context compression cannot lose progress; closing the session = pausing.
+- **Context continuity (anti-compaction).** Long Claude Code sessions get compacted to fit in context, which can drop SKILL.md rules from the orchestrator's working memory. The orchestrator runs a heartbeat self-check at every stage transition and every `/doer continue`; if the heartbeat anchor is missing from context, it triggers forced re-hydration (re-read preferences, the relevant SKILL section, and metadata). Cost: zero in normal operation, paid only when compaction is detected.
 - **No push, no PR, no deploy.** `/doer` stops after wrapup. You push and open the PR manually after running your project's pre-commit checks (lint, format, full tests) and squashing/reordering commits as desired.
 
 ---
