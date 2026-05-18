@@ -1,6 +1,6 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 3.0.6.
+**Ticket execution orchestrator for Claude Code.** Version 4.0.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, two execution modes (lite for trivial tickets, full for everything else), delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -102,8 +102,8 @@ It then asks you to pick a mode:
 |---|---|---|
 | Stage 1 (AC Confirm) | Same | Same |
 | Stage 2 (Plan) | Single-pass + 3 deterministic checks + 1 retry | Same (no difference) |
-| Stage 3 (Tests, TDD red) | Single-pass + 3 deterministic checks + 1 retry | Same (no difference) |
-| Stage 4 (Code, TDD green) | Iter 1 only. Non-convergence prompts: accept residuals, pause, or abort + restart in full | Doer/reviewer loop, max 3 iterations |
+| Stage 3 (Tests: Direct / TDD / BDD) | Single-pass + deterministic checks + 1 retry; branch chosen at intake | Same (no difference) |
+| Stage 4 (Code, strategy-aware) | Iter 1 only. Non-convergence prompts: accept residuals, pause, or abort + restart in full | Doer/reviewer loop, max 3 iterations |
 | Stage 5 (Code Review) | Deterministic checks + 1 LLM reviewer single-shot | Deterministic + LLM reviewer in loop, max 3 iterations |
 | Stage 6 (Quality Gate) | Same | Same |
 | Stage 7 (Runtime Verify) | Same. Always asks the dev | Same |
@@ -116,13 +116,36 @@ The heuristic only **suggests** a mode; you confirm. Override freely.
 
 ---
 
+## Testing strategy (Direct / TDD / BDD)
+
+Independently of lite vs full, the orchestrator also infers a testing strategy at intake. The two axes are independent: any combination of mode + testing strategy is valid.
+
+| Strategy | When | Stage 3 behavior |
+|---|---|---|
+| Direct | Cosmetic/trivial change (label rename, copy fix, constant change, no AC) | DEFERRED: Stage 4 runs first, regression tests written after Stage 4. Tests expected to PASS. No red phase. |
+| TDD | Isolated technical unit (mapper, transformer, helper, parser, calculator) | Failing unit tests first; Stage 4 makes them pass. Standard red/green. |
+| BDD | User-facing behavior, observable bug, analytics with AC, flow with multiple states | Given/When/Then scenario tests first (failing); Stage 4 implements code derived from scenario names. |
+
+The orchestrator scans the title, description, and raw ACs at intake. Both `mode` (lite/full) and `testing_strategy` (direct/tdd/bdd) are inferred and presented in **ONE combined confirmation**. Either axis can be overridden in the same prompt:
+
+```
+Y                                          accept both as inferred
+change strategy:bdd                        keep mode, switch testing strategy
+change mode:full                           keep testing strategy, switch mode
+change strategy:tdd change mode:full       override both at once
+```
+
+`testing_strategy` is set ONCE at intake and never changes mid-ticket (same rule as `mode`). Pre-existing tickets created before v4.0.0 are migrated to `testing_strategy.mode = "tdd"` for backward compatibility.
+
+---
+
 ## Pipeline (9 stages)
 
 ```mermaid
 flowchart TD
     A[1 AC Confirm]:::single --> B[2 Plan]:::single
-    B --> C[3 Tests TDD red]:::single
-    C --> D[4 Code TDD green]:::loop
+    B --> C[3 Tests Direct or TDD or BDD]:::single
+    C --> D[4 Code Implementation]:::loop
     D --> E[5 Code Review]:::loop
     E --> F[6 Quality Gate]:::gate
     F --> G[7 Runtime Verify]:::runtime
@@ -361,7 +384,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 3.0.6** (see SKILL.md frontmatter).
+**Current version: 4.0.0** (see SKILL.md frontmatter).
 
 ---
 

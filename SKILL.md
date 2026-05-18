@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 3.0.6
+version: 4.0.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -191,7 +191,7 @@ Every migration block declares `affected_stages: [<stage names>]` listing the st
 |-------|------------|
 | 1 ac-confirm | Re-run a lightweight AC validation: read `metadata.ac` and `metadata.intake`, confirm the AC list still aligns. No subagent unless validation fails. |
 | 2 plan | Re-run the three deterministic checks (file existence, AC coverage, assumptions present) on `metadata.plan`. No LLM. If a check fails, reopen Stage 2 with that BLOCKER. |
-| 3 tests | Re-run the three deterministic checks (parse/run, plan-driven presence, TDD red verified). No LLM. |
+| 3 tests | Re-run the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode` (parse/run + presence + red-phase for `tdd`/`bdd`; parse/run + regression coverage for `direct`). No LLM. |
 | 4 code | Re-run pre-checks (test pass + lint + typecheck + plan-driven scope). Skip LLM reviewer unless pre-checks find new issues. |
 | 5 code-review | Re-run pre-checks (RED grep, secrets, smoke, bare except). Skip LLM reviewer unless pre-checks find new issues. |
 | 6 quality-gate | Re-run test suite via the skip-safe check (`last_green_sha` lookup; usually no-op). |
@@ -531,6 +531,59 @@ After Phase 1 finishes, Phase 2 auto-reverify runs (because `affected_stages: [a
 
 The behavioral changes apply on the next `/doer <ID>` invocation.
 
+### Migration: From 3.0.6 -> 4.0.0
+
+`affected_stages: [1, 3, 4]`
+
+MAJOR bump. Adds unified `testing_strategy` + pipeline_mode inference at intake (single combined confirm replaces the standalone lite/full question), branches Stage 3 into three modes (direct, tdd, bdd), introduces a new `deferred` status for Stage 3 (used only in `direct` mode, where Stage 3 runs AFTER Stage 4), makes Stage 4 strategy-aware, and adds new persistent fields to `metadata.json` (`testing_strategy`, `mode_overridden_by_dev`, `metadata.stages.3.testing_strategy_mode`).
+
+Why MAJOR: `metadata.json` shape changes (new top-level field, new per-stage field, new `deferred` value in the `status` enum); the Stage 3 state machine changes (a stage may now run after a later-numbered stage). Both Phase 1 (file/data migration) and Phase 2 (auto-reverify) execute on first `/doer <TICKET-ID>` after upgrade.
+
+This block also covers any 3.0.x source via Phase 1 case 5 silent bump, then Phase 1 case 4 matches `from: 3.0.6` to apply the changes below. Patch versions 3.0.0 through 3.0.6 silently bump to 3.0.6 first.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# Narrate before each step (per Core Principle 1).
+
+# 1. Add metadata.testing_strategy with default tdd (preserves existing TDD-red behavior).
+#    Narrate: "Migration 3.0.6 -> 4.0.0, step 1/3: defaulting testing_strategy to tdd for backward compatibility."
+#    Idempotent: skip if metadata.testing_strategy already exists.
+jq '.testing_strategy //= {
+  "mode": "tdd",
+  "rationale": "pre-existing ticket, defaulting to tdd for backward compatibility",
+  "signals": ["migrated"],
+  "overridden_by_dev": false
+}' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 2. Add metadata.mode_overridden_by_dev = false if absent (cosmetic flag, prior tickets
+#    accepted the suggested mode without an explicit override marker).
+jq '.mode_overridden_by_dev //= false' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 3. Backfill metadata.stages.3.testing_strategy_mode = "tdd" if Stage 3 exists.
+#    Idempotent: leave alone if already set.
+jq '
+  if (.stages | has("3")) and (.stages."3" | has("testing_strategy_mode") | not)
+  then .stages."3".testing_strategy_mode = "tdd"
+  else . end
+' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 4. Set metadata.skill_version = "4.0.0".
+jq '.skill_version = "4.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No file rewrites. The new branches and prompts apply on the next chat turn or subagent call.
+- Tickets currently mid-Stage 3 (`status == "in_progress"` or `status == "blocked"`) keep their existing TDD-red contract because `testing_strategy.mode = "tdd"`. Phase 2 auto-reverify spot-checks Stage 3 with the same three deterministic checks (parse/run, plan-driven presence, TDD red verified) it used before; nothing changes for them.
+- Tickets that have already completed Stage 3 keep `testing_strategy_mode = "tdd"`. They never use the `direct` deferred path.
+- `deferred` is a new value in the Stage 3 `status` enum. Existing tickets never use it (their migration default is `tdd`). Only NEW tickets created after upgrade can land in `deferred` (when intake infers `direct`).
+
+The behavioral changes apply on the next `/doer <ID>` invocation.
+
 ---
 
 ## Commands
@@ -575,7 +628,7 @@ All state lives under `./.doer/` in the current working directory (scoped to the
 
 **Per ticket: 1 file (`metadata.json`).** Everything (ac, plan, changelog, code review history, assumptions, lessons captured, summary, performance) lives as structured fields inside `metadata.json`. One source of truth, no drift, no file-coordination cost. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
 
-### `metadata.json` schema (v3.0.0)
+### `metadata.json` schema (v4.0.0)
 
 ```json
 {
@@ -584,8 +637,15 @@ All state lives under `./.doer/` in the current working directory (scoped to the
   "branch": "<branch>",
   "status": "in_progress | complete",
   "current_stage": 1,
-  "skill_version": "3.0.0",
+  "skill_version": "4.0.0",
   "mode": "lite | full",
+  "mode_overridden_by_dev": false,
+  "testing_strategy": {
+    "mode": "direct | tdd | bdd",
+    "rationale": "<one sentence explaining why this mode was chosen>",
+    "signals": ["<signal-id>", "..."],
+    "overridden_by_dev": false
+  },
   "created_at": "<ISO8601>",
   "completed_at": null,
 
@@ -612,15 +672,15 @@ All state lives under `./.doer/` in the current working directory (scoped to the
   },
 
   "stages": {
-    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "3.0.0", "completed_at": "<ISO8601>"},
-    "2": {"name": "plan",           "status": "...", "verified_with": "3.0.0", "retry_used": false},
-    "3": {"name": "tests",          "status": "...", "verified_with": "3.0.0", "retry_used": false},
-    "4": {"name": "code",           "status": "...", "verified_with": "3.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals"},
-    "5": {"name": "code-review",    "status": "...", "verified_with": "3.0.0", "iterations": 0, "loop_outcome": "..."},
-    "6": {"name": "quality-gate",   "status": "...", "verified_with": "3.0.0"},
-    "7": {"name": "runtime-verify", "status": "...", "verified_with": "3.0.0", "ac_verdicts": {}},
-    "8": {"name": "docs-sync",      "status": "...", "verified_with": "3.0.0"},
-    "9": {"name": "wrapup",         "status": "...", "verified_with": "3.0.0"}
+    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "4.0.0", "completed_at": "<ISO8601>"},
+    "2": {"name": "plan",           "status": "...", "verified_with": "4.0.0", "retry_used": false},
+    "3": {"name": "tests",          "status": "pending | in_progress | complete | deferred | skipped | imported | blocked", "verified_with": "4.0.0", "retry_used": false, "testing_strategy_mode": "direct | tdd | bdd"},
+    "4": {"name": "code",           "status": "...", "verified_with": "4.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals"},
+    "5": {"name": "code-review",    "status": "...", "verified_with": "4.0.0", "iterations": 0, "loop_outcome": "..."},
+    "6": {"name": "quality-gate",   "status": "...", "verified_with": "4.0.0"},
+    "7": {"name": "runtime-verify", "status": "...", "verified_with": "4.0.0", "ac_verdicts": {}},
+    "8": {"name": "docs-sync",      "status": "...", "verified_with": "4.0.0"},
+    "9": {"name": "wrapup",         "status": "...", "verified_with": "4.0.0"}
   },
 
   "changelog": [
@@ -651,7 +711,14 @@ All state lives under `./.doer/` in the current working directory (scoped to the
 }
 ```
 
-**Field ownership:** `intake` (intake step), `mode` (intake's final sub-step, after a heuristic suggestion + dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7).
+**Field ownership:** `intake` (intake step), `mode` and `testing_strategy` (intake's final sub-step, after heuristic inference + a single combined dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7).
+
+**`testing_strategy` semantics.** Three modes determine how Stage 3 runs:
+- `direct`: Stage 3 is DEFERRED at first entry; Stage 4 runs first; Stage 3 then runs after Stage 4 with a regression test writer (tests expected to PASS, no red phase).
+- `tdd`: classic red/green; Stage 3 writes failing unit tests, Stage 4 makes them pass.
+- `bdd`: Stage 3 writes Given/When/Then scenario tests that fail because no implementation exists; Stage 4 implements code derived from the scenarios.
+
+`testing_strategy.mode` is set ONCE at intake and never changes mid-ticket. `mode` (lite/full) and `testing_strategy.mode` are independent axes; either can be overridden by the dev at the single combined confirmation prompt at intake.
 
 **`mode` semantics.** `full` runs the complete pipeline as documented in each stage. `lite` is for trivial tickets (small diff, no architecture work, single area) and skips the heaviest Stage 9 ceremony, skips Stage 8 entirely, and forces single-pass behavior on Stage 4 and Stage 5 (no iter 2+, no convergence loop). See each stage's "Lite branch" subsection for the exact divergence. **`mode` is set ONCE at intake and never changes mid-ticket** (no escalation; if a lite ticket grows beyond what lite can handle, the dev aborts and reruns under full).
 
@@ -696,7 +763,44 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
 
    Persist all answers under `metadata.intake.prior_work`. If question 6 was `N`, write `prior_work: { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }` and skip the follow-ups.
 
-2. **Compute lite signal score and ask the dev to pick `mode`.** After all six intake questions are answered (and the prior-work follow-ups if applicable), but BEFORE initializing `metadata.json`, compute a lite-suitability score from the captured intake data:
+2. **Infer testing strategy + pipeline mode, then ask ONE combined confirmation.** After all six intake questions are answered (and the prior-work follow-ups if applicable), but BEFORE initializing `metadata.json`, the orchestrator runs two independent inferences (no question, orchestrator decides) and then presents both in a single `AskUserQuestion`. The two axes (`testing_strategy` and `mode`) are independent: do NOT use one to influence the other.
+
+   **Step 2A. Infer `testing_strategy.mode` (no question).**
+
+   Read `metadata.intake.title`, `metadata.intake.description`, and `metadata.intake.raw_acs`. Apply the following signal rules; each matched signal contributes to its bucket. Persist the matched signal IDs into `signals[]`.
+
+   **Signals for `direct`:**
+   - Title contains an update-class verb (`update`, `change`, `edit`, `rename`, `fix`, `tweak`) AND a small-thing noun (`label`, `copy`, `string`, `constant`, `config`, `default`, `placeholder`, `typo`, `text`, `value`); both anywhere in the title (not contiguous). Signal ID: `direct.title.verb_noun`.
+   - Title contains any of the contiguous compounds: `rename`, `update label`, `change label`, `update copy`, `fix typo`, `update string`, `update constant`, `update config`, `update default`, `update placeholder`. Signal ID: `direct.title.compound`.
+   - Description has no ACs (`raw_acs == "derive"` or empty) AND no conditional-logic language (no `if`, no `when`, no `should`). Signal ID: `direct.no_acs_no_logic`.
+   - Description length < 300 chars AND no Given/When/Then language. Signal ID: `direct.short_description`.
+   - Description matches `change X to Y` or `update X from Y to Z` patterns. Signal ID: `direct.change_x_to_y`.
+
+   **Signals for `bdd`:**
+   - Title or description contains user-story language: `as a user`, `should see`, `should be able to`, `when user`, `given`, `when`, `then`. Signal ID: `bdd.user_story_language`.
+   - Raw ACs are written in Given/When/Then format (case-insensitive `GIVEN`/`WHEN`/`THEN` markers). Signal ID: `bdd.gwt_in_acs`.
+   - Description suggests an observable behavior change from a user or QA perspective. Signal ID: `bdd.observable_behavior`.
+   - Description suggests a bug reported by QA or a user (not a dev-internal issue). Signal ID: `bdd.bug_user_reported`.
+   - Description involves analytics instrumentation with AC (events, STag, GA4, SOT). Signal ID: `bdd.analytics_with_ac`.
+   - Description involves a flow with multiple states or actors. Signal ID: `bdd.flow_multi_state`.
+
+   **Signals for `tdd`:**
+   - Title contains: `mapper`, `transformer`, `util`, `utility`, `extension`, `helper`, `parser`, `calculator`, `converter`, `validator`. Signal ID: `tdd.technical_unit_title`.
+   - Description is purely technical with no user-facing behavior mentioned. Signal ID: `tdd.purely_technical`.
+   - No ACs OR ACs are purely technical (e.g. "function should return X given Y"). Signal ID: `tdd.technical_acs`.
+   - Ticket is a refactor with no behavior change. Signal ID: `tdd.refactor_no_behavior`.
+
+   **Decision logic:**
+   - Count signals per mode. Highest count wins.
+   - Tie between `bdd` and `tdd` → `bdd` wins (safer default for coverage).
+   - Tie between `direct` and any other mode → `direct` loses (prefer more coverage).
+   - If no signals match at all → default to `bdd`.
+
+   Persist a draft of `testing_strategy = { mode, rationale, signals }` to local memory (NOT to disk yet; the dev still has to confirm in step 2C).
+
+   **Step 2B. Infer `mode` (lite/full) (no question).**
+
+   Compute a lite-suitability score from the captured intake data, exactly as in prior versions (do NOT use `testing_strategy` to influence this score):
 
    | Signal | Score |
    |---|---|
@@ -706,25 +810,37 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
    | Description (case-insensitive) contains any of: `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `config flag`, `placeholder`, `hotfix`, `translation`, `locale string` | +1 per keyword, capped at +2 |
    | Description (case-insensitive) contains any of: `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic` | −2 (subtracted from total) |
 
-   **Total score ≥ 2 → suggest lite. Total score < 2 → suggest full.**
+   **Total score ≥ 2 → infer lite. Total score < 2 → infer full.**
 
-   Then ask via `AskUserQuestion`:
+   **Step 2C. Single combined confirmation.** Present BOTH inferences in ONE `AskUserQuestion` block:
 
    ```
-   Question: Doer detected this ticket as a candidate for [lite | full] mode. Which execution mode do you want?
+   Question: Doer inferred the following for this ticket. Confirm or override?
+
+   Testing strategy: <DIRECT | TDD | BDD> (<one-sentence rationale>)
+     Signals: <comma-separated list of matched signal IDs>
+
+   Pipeline mode: <LITE | FULL> (score <N>/5)
+     Signals: <comma-separated list of matched score keywords>
 
    Options:
-     - Lite: single-pass stages 2-5 (no iter 2+, no convergence loops on 4 and 5),
-             skip Stage 8 entirely, minimal Stage 9 wrapup, history cleanup runs
-             without confirmation. Best for trivial tickets (default-value changes,
-             copy edits, prefills). If Stage 4 or 5 does not converge in iter 1,
-             you choose: accept residuals, pause, or abort + restart in full mode.
-     - Full: complete pipeline with Stages 4 and 5 looping up to 3 iterations,
-             Stage 8 docs sync (with classify pre-check), full Stage 9 wrapup
-             (assumptions validation, lessons capture, confirmed history cleanup).
+     - Y: accept both
+     - change strategy:<direct|tdd|bdd>: override testing strategy, keep mode
+     - change mode:<lite|full>: override mode, keep testing strategy
+     - change strategy:<value> change mode:<value>: override both in one message
    ```
 
-   The recommended option (per the heuristic) is presented first in the option list. Persist the dev's answer to `metadata.mode`. **Once set, `mode` does NOT change for the remainder of the ticket** (no escalation; if the ticket grows past lite's capacity, the dev aborts and reruns under full).
+   Acceptance rules:
+   - `Y` → accept both; persist `testing_strategy` and `mode` as inferred; both `overridden_by_dev` flags = false.
+   - `change strategy:<value>` → override `testing_strategy.mode` to the given value; set `testing_strategy.overridden_by_dev = true`; keep `mode` as inferred. Re-narrate the final state for the dev (one short summary line) before proceeding.
+   - `change mode:<value>` → override `metadata.mode`; set `metadata.mode_overridden_by_dev = true`; keep `testing_strategy` as inferred. Re-narrate the final state.
+   - Combined (`change strategy:<value> change mode:<value>`) → apply both overrides at once; both flags = true; re-narrate.
+
+   After confirmation, persist BOTH:
+   - `metadata.testing_strategy = { mode, rationale, signals, overridden_by_dev }`
+   - `metadata.mode = "<lite|full>"` and `metadata.mode_overridden_by_dev = <true|false>`
+
+   **Once set, neither `mode` nor `testing_strategy.mode` change for the remainder of the ticket** (no mid-ticket escalation; if the ticket grows past its inferred capacity, the dev aborts and reruns).
 
 3. Initialize `metadata.json` (intake fields + chosen mode are embedded, see Knowledge & State Layout for the full schema):
 
@@ -735,8 +851,15 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
      "branch": "<branch-name>",
      "status": "in_progress",
      "current_stage": 1,
-     "skill_version": "<read from frontmatter at intake time, e.g. 3.0.0>",
+     "skill_version": "<read from frontmatter at intake time, e.g. 4.0.0>",
      "mode": "<lite | full chosen in step 2>",
+     "mode_overridden_by_dev": false,
+     "testing_strategy": {
+       "mode": "<direct | tdd | bdd chosen in step 2>",
+       "rationale": "<one-sentence rationale>",
+       "signals": ["<signal-id>", "..."],
+       "overridden_by_dev": false
+     },
      "created_at": "<ISO8601>",
      "completed_at": null,
      "intake": {
@@ -768,9 +891,9 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
 
    The remaining top-level fields (`ac`, `plan`, `assumptions_validation`, `lessons_captured`, `summary`, `performance`, etc.) are populated by their owning stages and start absent.
 
-   **Per-stage `verified_with` rule.** When a stage transitions to `status: "complete"` (or `"skipped"`, or `"imported"`), the orchestrator MUST also write `verified_with: "<current SKILL frontmatter version>"` on that stage. Example after Stage 2 finishes under SKILL 2.10.0:
+   **Per-stage `verified_with` rule.** When a stage transitions to `status: "complete"` (or `"skipped"`, or `"imported"`), the orchestrator MUST also write `verified_with: "<current SKILL frontmatter version>"` on that stage. Example after Stage 2 finishes under SKILL 4.0.0:
    ```json
-   "2": {"name": "plan", "status": "complete", "verified_with": "3.0.0", "completed_at": "...", ...}
+   "2": {"name": "plan", "status": "complete", "verified_with": "4.0.0", "completed_at": "...", ...}
    ```
    This is the only mechanism that lets the auto-reverify check (see Versioning & Migrations) know which stages to spot-check after a SKILL upgrade.
 
@@ -935,7 +1058,7 @@ Per-stage runtime fields (live under each `metadata.stages.<N>`):
 "<N>": {
   "name": "...",
   "status": "...",
-  "verified_with": "3.0.0",
+  "verified_with": "4.0.0",
   "started_at":   "<ISO8601>",
   "completed_at": "<ISO8601>",
   "iterations": <int>,                                  // for stages 4 and 5 only
@@ -1091,7 +1214,9 @@ Narrate: *"Stage {N} did not converge after 3 iterations. {N} BLOCKERs remain: {
 
 ## Stage Finalization Checklist (applies to every stage)
 
-Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `"imported"` / `"blocked"`), the orchestrator MUST run a deterministic checklist that validates the per-stage required fields are present in metadata. This is a no-LLM check (just JSON field presence). It catches the common post-compaction failure mode where the orchestrator forgets which fields the schema requires.
+Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `"imported"` / `"blocked"` / `"deferred"`), the orchestrator MUST run a deterministic checklist that validates the per-stage required fields are present in metadata. This is a no-LLM check (just JSON field presence). It catches the common post-compaction failure mode where the orchestrator forgets which fields the schema requires.
+
+**`deferred` status (Stage 3, `direct` mode only).** When Stage 3 sets `status = "deferred"` on first entry (because `metadata.testing_strategy.mode == "direct"`), the only required fields are `name`, `status`, `testing_strategy_mode`. `verified_with` is NOT required for `deferred` (the stage has not actually run yet); it is set when the stage transitions to `complete` after the second visit.
 
 **If any required field is missing, the orchestrator MUST write it before transitioning.** If it cannot be derived (e.g. `started_at` was never recorded), use the best available proxy (e.g. `git log` of the stage's commit timestamp, or current time, or `null` with an explanatory note). Narrate which fields were back-filled and why.
 
@@ -1101,7 +1226,7 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 |---|---|---|---|
 | 1 ac-confirm | `name`, `status`, `verified_with` | `completed_at` | `skipped_reason` |
 | 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
-| 3 tests | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
+| 3 tests | `name`, `status`, `verified_with`, `testing_strategy_mode` | `completed_at`, `retry_used` | `skipped_reason` |
 | 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a (Stage 4 is never skipped) |
 | 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a |
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
@@ -1217,18 +1342,30 @@ If a plan was imported but isn't written down, prompt the user to paste/summariz
 
 Build the full draft (ACs + Out of Scope + Open Questions) BEFORE asking anything. Present everything as one block, ask ONE question, iterate.
 
-1. Build the AC list:
-   - **Raw ACs from intake:** restate each in Given/When/Then form.
-   - **ACs to derive:** propose 3 to 7 Given/When/Then items based on description + context (and any imported code/tests).
+**Branch on `metadata.testing_strategy.mode` before building the AC list:**
+
+- **`direct`**: skip Given/When/Then restatement entirely. ACs are optional. If raw ACs from intake are empty (`raw_acs == "derive"` or empty), write a single placeholder into the draft list:
+  ```
+  - AC-1: DIRECT: verify <change description from intake.description, truncated to ~80 chars> renders correctly
+  ```
+  The `AC-N: ` prefix is mandatory so Stage 2's deterministic Check B (AC-coverage by tests) keeps working. If raw ACs DO exist, restate them as plain bullets without forcing Given/When/Then.
+
+- **`tdd`**: restate ACs as Given/When/Then but framed technically. Example: `GIVEN input X WHEN mapTo() is called THEN returns Y`. Dervived ACs (when raw is `derive`) follow the same technical framing. Propose 3 to 7 items.
+
+- **`bdd`**: restate ACs as Given/When/Then with a user or system actor (`GIVEN the user has ... WHEN they ... THEN the app ...`). Derived ACs follow the same user-centric framing. Propose 3 to 7 items.
+
+Then in all three branches:
+
+1. Build the AC list per the branch above.
 2. Build the **Out of Scope** list (items the dev should NOT confuse for in-scope).
 3. Build the **Open Questions** list with proposed resolutions for each.
 4. Present the entire draft as one block:
 
    ```
-   Draft for Stage 1:
+   Draft for Stage 1 (testing strategy: <DIRECT | TDD | BDD>):
 
    ## Acceptance Criteria
-   - AC-1: GIVEN ... WHEN ... THEN ...
+   - AC-1: <branch-appropriate format>
    - AC-2: ...
 
    ## Out of Scope
@@ -1236,7 +1373,7 @@ Build the full draft (ACs + Out of Scope + Open Questions) BEFORE asking anythin
    - <item 2>
 
    ## Open Questions (proposed resolutions)
-   - Q: <question> → A: <proposed answer>
+   - Q: <question> -> A: <proposed answer>
 
    Approve the whole block, or tell me what to edit. [Y / edit <section>:<change> / redo]
    ```
@@ -1400,17 +1537,115 @@ If checks pass (first try or after retry):
 
 ---
 
-## Stage 3. Tests (Single-Pass + Deterministic Checks, TDD Red)
+## Stage 3. Tests (Direct | TDD | BDD)
 
-**Goal:** write failing tests that encode the ACs. No implementation yet.
+**Goal:** write tests appropriate to the ticket's `testing_strategy`. Mode is determined at intake and stored in `metadata.testing_strategy.mode`.
 
-**No loop. No reviewer LLM.** A single test-writer agent produces the tests, then deterministic checks validate. If checks fail, the writer is invoked **once more** (single retry) with the BLOCKERs inline. Second failure aborts the stage.
+**No loop. No reviewer LLM.** A single test-writer agent produces the tests (when applicable for the branch), then deterministic checks validate. If checks fail, the writer is invoked **once more** (single retry) with the BLOCKERs inline. Second failure aborts the stage.
 
-**Why no loop:** the test reviewer asked questions like "are all ACs covered?" and "do the tests actually fail?", both of which are mechanical. The semantic critique (brittle assertions, over-mocking) is moved into the Stage 4 reviewer where the diff makes it obvious.
+**Why no loop:** "are all ACs covered?" and "do the tests actually fail (or pass, in `direct` mode)?" are mechanical questions. The semantic critique (brittle assertions, over-mocking) is moved into the Stage 4 reviewer where the diff makes it obvious.
 
-**Doer agent:** general-purpose, prompted as "test writer".
+### Mode check (entry)
 
-### Test writer prompt (skeleton)
+On every entry to Stage 3, the orchestrator MUST:
+
+1. Read `metadata.testing_strategy.mode`.
+2. Set `metadata.stages.3.testing_strategy_mode = <mode>` (always, even on re-entry; idempotent write).
+3. Branch to one of the three sections below.
+
+The three branches use different writer prompts, different deterministic checks, different commit messages, and (in the `direct` case) a different position in the pipeline (Stage 3 runs AFTER Stage 4 instead of before).
+
+### Branch: `direct` (deferred path)
+
+The `direct` branch DEFERS Stage 3 at first entry, lets Stage 4 commit the change, then comes back to Stage 3 to write regression tests against the implemented code. There is no red phase.
+
+**First entry to Stage 3 (status = `pending`):**
+
+1. Set `metadata.stages.3.status = "deferred"`.
+2. Set `metadata.stages.3.testing_strategy_mode = "direct"`.
+3. Set `metadata.current_stage = 4`.
+4. Narrate: *"Stage 3 deferred (direct mode). Writing the change first, regression tests after Stage 4. Continuing to Stage 4."*
+5. END TURN. Do NOT invoke any agent.
+
+**Second entry to Stage 3 (status = `deferred`, returning from Stage 4):**
+
+The orchestrator advances to this entry from Stage 4 (see Stage 4's "Direct return" subsection). On entry, set `metadata.stages.3.status = "in_progress"` and invoke the regression test writer:
+
+```
+You are the regression test writer for ticket <TICKET-ID>. The change is
+already implemented (Stage 4 is done). Your job is to add MINIMAL regression
+tests that verify the FINAL state. Do NOT write tests before the change exists;
+the change exists. These tests are about future-proofing.
+
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump of metadata.ac>
+
+== metadata.plan ==
+<JSON dump of metadata.plan>
+
+== Last 2 metadata.changelog entries ==
+<JSON dump of metadata.changelog[-2:]>
+
+== Diff so far ==
+<output of `git diff <base>..HEAD`>
+
+Read 2-3 existing test files in the repo to learn local conventions (framework,
+file layout, naming). Read budget: 5 source files for convention discovery, plus
+any source file in the diff that you need to understand the surface you are testing.
+
+Write tests that:
+- Verify the changed value/label/string/constant is present where the ticket
+  said it should be.
+- Cover at most one or two paths per AC placeholder. Minimal coverage is the goal.
+- Are EXPECTED to PASS now (no red phase).
+
+DO NOT add explanatory comments like `// REGRESSION:` or `// regression test`.
+The test name and assertion are self-documenting.
+
+Output a single JSON object:
+
+{
+  "tests_added": [
+    {"name": "<test name>", "file": "<repo-relative path>", "covers": ["AC-N"]}
+  ],
+  "changelog_appendix": {
+    "stage": 3, "iteration": 1, "kind": "initial",
+    "items": [
+      {"type": "step", "text": "Added <test name> in <file> covering <AC-N>"},
+      ...
+    ]
+  }
+}
+
+Em-dashes are forbidden. Use commas, periods, or parentheses instead.
+All artifacts you write (tests, code comments, JSON values) MUST be in English.
+```
+
+**Deterministic checks (`direct` branch, post-writer):**
+
+- **Check A. Tests parse and run.** Same as the `tdd`/`bdd` branches: invoke the repo's test command. Compile/import/syntax errors are BLOCKERs.
+- **Check B. Regression coverage per AC.** For each entry in `metadata.ac.in_scope`, verify at least one entry in the writer's `tests_added[]` lists the entry's `AC-N` ID under `covers[]`. Missing → BLOCKER.
+- **Skip Check C entirely.** Tests in `direct` mode are EXPECTED to PASS, not fail. If any regression test FAILS, that is a real BLOCKER (regression caught), classify it as `B-X (regression failed): <test name> failed unexpectedly. Stage 4 may have an issue.` and abort with `status = "blocked"` so the dev can decide.
+
+**On checks pass:**
+
+1. Append the writer's `changelog_appendix` into `metadata.changelog`.
+2. Set `metadata.stages.3.status = "complete"`, write `verified_with`, `completed_at`, `retry_used`, `testing_strategy_mode = "direct"`.
+3. Commit:
+   ```bash
+   git add -A
+   git commit --no-verify -m "doer(<TICKET-ID>): regression tests (direct)"
+   ```
+4. Set `metadata.current_stage = 5` (Stage 4 already complete; jump straight to Stage 5).
+5. Narrate `"Stage 3 complete (direct): N regression tests added, all passing. Continuing to Stage 5."` Auto-proceed.
+
+### Branch: `tdd`
+
+Classic red/green: failing unit tests first, Stage 4 makes them pass.
+
+**Test writer prompt (skeleton):**
 
 ```
 You are the test writer for ticket <TICKET-ID>. TDD red phase: write tests
@@ -1455,45 +1690,115 @@ Output a single JSON object describing what you did:
     ]
   }
 }
+
+Em-dashes are forbidden. Use commas, periods, or parentheses instead.
+All artifacts you write (tests, code comments, JSON values) MUST be in English.
 ```
 
-### Deterministic checks (post-writer)
+**Deterministic checks (`tdd` branch):**
 
-Run all three. They cover what a test reviewer LLM would have asked.
+- **Check A. Tests parse and run.** Compile/import/syntax errors are BLOCKERs.
+- **Check B. Plan-driven test presence.** For each `metadata.plan.tests[i]`, verify a test with that name was added.
+- **Check C. TDD red verified by execution.** Every test from the plan MUST currently FAIL. A test that passes is a BLOCKER (`B-X (TDD red): <name> passed unexpectedly. Either the assertion is too weak, or unrelated code already satisfies it.`).
 
-**Check A. Tests parse and run.**
-```bash
-<repo's test command>   # e.g. npm test, pytest, ./gradlew test, go test ./...
+**On checks pass:**
+
+1. Append the writer's `changelog_appendix` into `metadata.changelog`.
+2. Set `metadata.stages.3.status = "complete"`, `verified_with`, `completed_at`, `retry_used`, `testing_strategy_mode = "tdd"`.
+3. Commit:
+   ```bash
+   git add -A
+   git commit --no-verify -m "doer(<TICKET-ID>): failing tests (TDD red)"
+   ```
+4. Narrate `"Stage 3 complete (TDD): N tests added, all failing as expected. Continuing to Stage 4."` Auto-proceed.
+
+### Branch: `bdd`
+
+Given/When/Then scenarios derived from each AC, expressed as failing executable tests. Stage 4 implements code derived from the scenarios.
+
+**BDD scenario + test writer prompt (skeleton):**
+
 ```
-If the output shows syntax errors, import errors, missing references, or compile errors (the tests do not RUN at all), classify each as a BLOCKER:
-```
-- B-1 (syntax): <file>:<line>: <error>
-- B-2 (import): <file>: <error>
+You are the BDD scenario + test writer for ticket <TICKET-ID>.
+
+For each AC in metadata.ac.in_scope, derive one or more Given/When/Then
+scenarios. Write each scenario as an executable test using the repo's test
+framework (JUnit, Espresso, XCTest, Jest, etc.) following existing conventions.
+If the repo uses a BDD-style DSL (Cucumber, Kotest BDD, etc.), use it.
+Otherwise, express Given/When/Then as comments + structured test body.
+
+Tests MUST currently FAIL because no implementation exists yet (red phase
+derived from scenarios, not technical units).
+
+Each test function name MUST reference the scenario, e.g.
+given_user_has_cart_when_bap_loads_then_promos_shown.
+
+DO NOT add explanatory comments like `// RED:` or `// BDD red:` or
+`// fails because X` on test bodies. The test name and the failing assertion
+are self-documenting.
+
+The orchestrator has inlined these below:
+
+== metadata.ac ==
+<JSON dump of metadata.ac>
+
+== metadata.plan ==
+<JSON dump of metadata.plan>
+
+== Last 2 metadata.changelog entries ==
+<JSON dump of metadata.changelog[-2:]>
+
+Read 2-3 existing test files for conventions. Read budget: 5 source files for
+convention discovery, plus any source file referenced in metadata.plan.files.
+
+Output a single JSON object:
+
+{
+  "tests_added": [
+    {"name": "<scenario test function name>", "file": "<repo-relative path>", "covers": ["AC-N"]}
+  ],
+  "changelog_appendix": {
+    "stage": 3, "iteration": 1, "kind": "initial",
+    "items": [
+      {"type": "step", "text": "Added scenario <name> in <file> covering <AC-N>"},
+      ...
+    ]
+  }
+}
+
+Em-dashes are forbidden. Use commas, periods, or parentheses instead.
+All artifacts you write (tests, code comments, JSON values) MUST be in English.
 ```
 
-**Check B. Plan-driven test presence.**
-For each `metadata.plan.tests[i]`, verify a test with that name was added (use the writer's reported `tests_added[]` plus a grep for the test name in repo test files for confirmation). For each missing → BLOCKER:
-```
-- B-3 (presence): plan called for `testLoginRetryAfterTimeout` (covers AC-3), not found.
-```
+**Deterministic checks (`bdd` branch):**
 
-**Check C. TDD red verified by execution.**
-Parse the test runner output from Check A. For each test in `metadata.plan.tests`, verify it FAILED (assertion failure). If any test PASSED, that is wrong (no implementation should exist yet) → BLOCKER:
-```
-- B-4 (TDD red): testLoginSuccess passed unexpectedly. Either the assertion is too weak, or unrelated code already satisfies it.
-```
+- **Check A. Tests parse and run.** Compile/import/syntax errors are BLOCKERs.
+- **Check B. Scenario per AC.** Every entry in `metadata.ac.in_scope` MUST have at least one scenario test (cross-reference `tests_added[i].covers[]` to AC IDs).
+- **Check C. Scenario tests currently FAIL.** Same red-phase requirement as TDD; a passing scenario test is a BLOCKER.
 
-### Single retry policy
+**On checks pass:**
 
-If Checks A/B/C produce any BLOCKERs:
-1. Re-invoke the test writer ONCE with the BLOCKERs inline. Same prompt body, prepended with:
+1. Append the writer's `changelog_appendix` into `metadata.changelog`.
+2. Set `metadata.stages.3.status = "complete"`, `verified_with`, `completed_at`, `retry_used`, `testing_strategy_mode = "bdd"`.
+3. Commit:
+   ```bash
+   git add -A
+   git commit --no-verify -m "doer(<TICKET-ID>): BDD scenarios + failing tests"
+   ```
+4. Narrate `"Stage 3 complete (BDD): N scenario tests added, all failing as expected. Continuing to Stage 4."` Auto-proceed.
+
+### Single retry policy (all branches)
+
+If the deterministic checks for the active branch produce any BLOCKERs:
+
+1. Re-invoke the active branch's writer ONCE with the BLOCKERs inline. Same prompt body, prepended with:
    ```
    Your prior tests failed validation:
    <list BLOCKERs>
 
    Address every BLOCKER. Output the same JSON shape.
    ```
-2. Re-run the three checks.
+2. Re-run the deterministic checks for the active branch (A/B for `direct`, A/B/C for `tdd` and `bdd`).
 3. Set `metadata.stages.3.retry_used = true`.
 4. If still failing → ABORT. Narrate:
    ```
@@ -1502,30 +1807,26 @@ If Checks A/B/C produce any BLOCKERs:
    ```
    Set `metadata.stages.3.status = "blocked"`. Do not proceed.
 
-   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing the tests by hand, the orchestrator detects `metadata.stages.3.status == "blocked"` and re-runs ONLY the three deterministic checks (parse/run, plan-driven presence, TDD red verified). No new test-writer agent invocation. If checks pass → mark stage complete, proceed to Stage 4. If checks still fail → re-narrate and stay `blocked`.
-
-If checks pass:
-1. Append the writer's `changelog_appendix` into `metadata.changelog`.
-2. Set `metadata.stages.3.status = "complete"`, `verified_with`, `completed_at`, `retry_used`.
-3. Commit the failing tests:
-   ```bash
-   git add -A
-   git commit --no-verify -m "doer(<TICKET-ID>): failing tests (TDD red)"
-   ```
-4. Narrate `"Stage 3 complete: N tests added, all failing as expected. Continuing to Stage 4."` Auto-proceed.
+   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing the tests by hand, the orchestrator detects `metadata.stages.3.status == "blocked"` and re-runs ONLY the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode`. No new test-writer agent invocation. If checks pass → mark stage complete, advance to the appropriate next stage (Stage 4 for `tdd`/`bdd`, Stage 5 for `direct`). If checks still fail → re-narrate and stay `blocked`.
 
 ---
 
-## Stage 4. Code (Doer/Reviewer Loop, TDD Green)
+## Stage 4. Code (Doer/Reviewer Loop)
 
-**Goal:** make the failing tests pass. Implement per `metadata.plan`. Loop with **max 3 iterations** in `full` mode (see Doer/Reviewer Loop Pattern). In `lite` mode, single-pass only (see "Lite branch" subsection at the end).
+**Goal:** implement the change per `metadata.plan`. The exact contract depends on `metadata.testing_strategy.mode`:
 
-**Mode check.** At entry, read `metadata.mode`. If `lite`, follow the "Lite branch" rules at the end of this section. If `full`, run the full doer/reviewer loop documented below.
+- `tdd`: make the failing unit tests from Stage 3 pass (TDD green).
+- `bdd`: implement code so the BDD scenario tests from Stage 3 pass; scenario names are the implementation contract.
+- `direct`: implement the change directly. Tests do not exist yet; Stage 3 writes regression tests AFTER this stage commits.
+
+Loop with **max 3 iterations** in `full` mode (see Doer/Reviewer Loop Pattern). In `lite` mode, single-pass only (see "Lite branch" subsection at the end).
+
+**Mode check.** At entry, read both `metadata.mode` and `metadata.testing_strategy.mode`. If `mode == lite`, follow the "Lite branch" rules at the end of this section. If `mode == full`, run the full doer/reviewer loop documented below. The `testing_strategy.mode` value is inlined into the writer prompt and influences pre-reviewer Check A (see "Pre-reviewer deterministic checks"). After commit, the orchestrator decides where to advance based on `testing_strategy.mode` (see "Direct return" at the end).
 
 ### Code writer prompt (skeleton)
 
 ```
-You are the code writer for ticket <TICKET-ID>. TDD green phase.
+You are the code writer for ticket <TICKET-ID>.
 
 The orchestrator has inlined these below:
 
@@ -1537,17 +1838,29 @@ The orchestrator has inlined these below:
 
 == Tests added in Stage 3 ==
 <list of test file paths from metadata.changelog Stage 3 entries; the agent
-reads them as part of its source budget>
+reads them as part of its source budget. EMPTY if testing_strategy.mode is
+"direct" (Stage 3 has not run yet).>
 
 == Last changelog entries ==
 <JSON dump of metadata.changelog[-2:]>
+
+== Testing strategy ==
+<JSON dump of metadata.testing_strategy>
+
+If strategy.mode is "bdd": implement the code such that the BDD scenario tests
+pass. Trace each scenario to the AC it covers. The scenario names in the test
+files are your implementation contract.
+If strategy.mode is "tdd": make the failing unit tests pass. Standard TDD green.
+If strategy.mode is "direct": implement the change directly. Tests do not exist
+yet (they will be written in Stage 3 after this stage). Do not over-engineer.
 
 Implement the plan. Follow existing codebase conventions. Do not add new
 dependencies unless metadata.plan specifies them (if you must, return a
 changelog item flagging it).
 
-After implementation, run the full test suite. All tests (new and pre-existing)
-MUST pass.
+After implementation:
+- For "tdd" or "bdd": run the full test suite. All tests (new and pre-existing) MUST pass.
+- For "direct": no new tests exist yet. Run the pre-existing test suite to confirm no regression. If the repo has no test command or running it is too expensive, note that in the changelog and skip.
 
 Output JSON:
 {
@@ -1561,21 +1874,26 @@ Output JSON:
 }
 
 Read budget: 15 source files (iter 1, `full` mode) or 8 source files (iter 1, `lite` mode) or 3 source files beyond the diff (iter 2+, `full` mode only; lite has no iter 2+).
+
+Em-dashes are forbidden. Use commas, periods, or parentheses instead.
+All artifacts you write (code comments, JSON values, commit messages) MUST be in English.
 ```
 
 ### Pre-reviewer deterministic checks
 
 Run these BEFORE invoking the code-reviewer. Each catches a class of obvious failures without burning an LLM call.
 
-**Check A. Tests pass (TDD green achieved):**
-```bash
-<repo's test command>
-```
-If ANY test fails (new or pre-existing regression), classify as BLOCKER per failure and skip the reviewer this iteration:
-```
-- B-1 (test fail): tests/login_test.kt::testLoginSuccess expected "ok", got "null"
-- B-2 (regression): tests/auth_test.kt::testTokenRefresh now fails (was passing pre-Stage 4)
-```
+**Check A. Tests pass.** Behavior depends on `metadata.testing_strategy.mode`:
+
+- **`tdd` / `bdd`**: run the repo's test command. ALL tests (the new failing ones added in Stage 3 plus all pre-existing tests) MUST now pass. Any failure is a BLOCKER:
+  ```bash
+  <repo's test command>
+  ```
+  ```
+  - B-1 (test fail): tests/login_test.kt::testLoginSuccess expected "ok", got "null"
+  - B-2 (regression): tests/auth_test.kt::testTokenRefresh now fails (was passing pre-Stage 4)
+  ```
+- **`direct`**: no Stage 3 tests exist yet (deferred). Run the PRE-EXISTING test suite ONLY to catch regressions. If a pre-existing test fails, that is a BLOCKER (`B-X (regression): <test name> now fails`). If the repo has no test command or running it is too expensive for a trivial cosmetic change, narrate the skip explicitly (`"Check A skipped: direct mode and no cheap test command available."`) and rely on Checks B and C.
 
 **Check B. Lint / typecheck:**
 ```bash
@@ -1621,14 +1939,19 @@ The orchestrator has inlined these below:
 == Implementation diff ==
 <output of `git diff <base>..HEAD`>
 
-The deterministic checks already passed: all tests green, lint clean,
-typecheck clean, every file in metadata.plan.files was touched. Focus on what
-those checks cannot catch:
+== Testing strategy ==
+<JSON dump of metadata.testing_strategy>
+
+The deterministic checks already passed: tests green (or skipped in `direct`
+mode), lint clean, typecheck clean, every file in metadata.plan.files was
+touched. Focus on what those checks cannot catch:
 
 1. AC match: does the behavior implement every AC? Trace each AC to test + code.
+   In `direct` mode, tests do not exist yet; trace ACs to the diff alone.
 2. Correctness: edge cases, error paths, concurrency, off-by-one, null handling.
 3. Security: input validation, injection, secrets, auth, authz.
-4. Test integrity: were tests weakened to make them pass?
+4. Test integrity (`tdd` / `bdd` only): were tests weakened to make them pass?
+   In `direct` mode, this check does not apply.
 5. Scope (semantic): any out-of-plan files touched (see INFO from Check C)?
    Are they justified, or should they be reverted?
 
@@ -1638,17 +1961,30 @@ Output findings as JSON code_review_entry per the Loop Pattern. Read budget:
 5 source files (iter 1) or 3 source files (iter 2+) beyond the diff.
 ```
 
-Run loop until convergence (max 3 iterations). On every loop iteration the orchestrator persists the writer's `changelog_appendix` to `metadata.changelog` and the reviewer's findings to `metadata.code_review`. Commit on convergence:
+Run loop until convergence (max 3 iterations). On every loop iteration the orchestrator persists the writer's `changelog_appendix` to `metadata.changelog` and the reviewer's findings to `metadata.code_review`. Commit on convergence with a message tied to the testing strategy:
+
 ```bash
 git add -A
+# tdd:
 git commit --no-verify -m "doer(<TICKET-ID>): implementation (TDD green)"
+# bdd:
+git commit --no-verify -m "doer(<TICKET-ID>): implementation (BDD green)"
+# direct:
+git commit --no-verify -m "doer(<TICKET-ID>): implementation (direct)"
 ```
 
-After the commit, persist the green-test marker so Stage 6 can skip re-running an unchanged tree:
+After the commit, persist the green-test marker so Stage 6 can skip re-running an unchanged tree (only when the test suite actually ran and passed in this stage; in `direct` mode where Check A may be skipped, leave `last_green_sha` unchanged):
 ```json
 metadata.last_green_sha = <git rev-parse HEAD>   # MUST be the full 40-char SHA. NEVER abbreviated. The skip-safe check in Stage 6 compares this string-equal to `git rev-parse HEAD` of the new HEAD; an abbreviated SHA breaks the comparison.
 metadata.last_green_test_command = <the test command that ran>
 ```
+
+### Direct return (advance after commit)
+
+After Stage 4 commits and updates the green-test marker, decide where to advance based on `metadata.testing_strategy.mode`:
+
+- **`tdd` / `bdd`**: set `metadata.current_stage = 5`, narrate *"Stage 4 complete. Continuing to Stage 5..."*, END TURN.
+- **`direct`**: set `metadata.current_stage = 3`, narrate *"Stage 4 complete. Returning to Stage 3 to write regression tests against the implemented change."*, END TURN. The next non-halt message resumes at Stage 3's `direct` second-visit branch.
 
 ### Lite branch (`metadata.mode == "lite"`)
 
@@ -2279,6 +2615,32 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
 
 **Mode-dependent steps.** Steps 1 and 2 run only in `full` mode. In `lite` mode, skip them and jump to step 3 (the orchestrator still produces `metadata.summary` and `metadata.performance`, but auto-generates without dev interaction). Step 5 (history cleanup) skips its confirmation prompt in `lite` mode and runs the cleanup directly after creating the backup ref. All other steps run identically in both modes.
 
+### MUST-RUN steps (forcing rule, NEVER skip)
+
+Stage 9 is a sequence of NINE numbered sub-steps. Steps 7 (commit message) and 8 (PR description) are the two most-skipped sub-steps in the wild because they fall after the visible "ticket complete" actions (history cleanup, final commit). Skipping them violates the dev's contract; they are mandatory output of every wrapup. To prevent the skip:
+
+1. Before narrating any "Ticket complete" or "Stage 9 complete" message in step 9, the orchestrator MUST self-verify BOTH flags:
+   - `metadata.stages.9.commit_message_presented` is `true` (or `"skipped"` if the dev explicitly said skip during step 7).
+   - `metadata.stages.9.pr_description_presented` is `true` (or `"skipped"` if the dev replied `skip` in step 8).
+2. If either flag is missing or `false`, STOP. Do NOT narrate the closing summary. Run the missing step now (jump back to step 7 or step 8 as appropriate) and ONLY THEN write the closing summary.
+3. The Stage Finalization Checklist (see "Stage Finalization Checklist") already enforces both flags as required-when-complete fields. The forcing rule above is the runtime double-check that catches the failure mode where the orchestrator advances `metadata.stages.9.status = "complete"` without having presented either artifact.
+
+**Order of sub-steps (MUST run in this order):**
+
+| Sub-step | What | Mode |
+|---|---|---|
+| 1 | Validate assumptions | full only |
+| 2 | Capture lessons | full only |
+| 3 | Persist summary + performance into metadata | both |
+| 4 | Set `metadata.status = "complete"` and `stages.9` baseline fields | both |
+| 5 | History cleanup (filter-branch) | both (full asks for confirmation; lite runs directly) |
+| 6 | Final commit (only if uncommitted real changes) | both |
+| 7 | **Recommend final commit message** (write `commit_message_presented`) | both |
+| 8 | **Help with PR description** (write `pr_description_presented`) | both |
+| 9 | Final closing narration | both |
+
+Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by replying `skip`, in which case the flag is set to the literal string `"skipped"`; the step itself still runs to capture that decision. There is no auto-skip path for either step.
+
 1. **Validate assumptions.** *(`full` mode only; skipped in `lite`.)* Read `metadata.plan.assumptions`. For each assumption, decide VALIDATED, INVALIDATED (with reason), or UNVERIFIED based on what actually happened during Stages 4-7. Persist as `metadata.assumptions_validation`:
    ```json
    "assumptions_validation": [
@@ -2486,7 +2848,9 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
 
    After presenting, write `metadata.stages.9.pr_description_presented = true` into `metadata.json`.
 
-9. Narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended message, paste the PR description, then push and open the PR manually."*
+9. **Forcing rule before final narration.** Re-read `metadata.stages.9.commit_message_presented` and `metadata.stages.9.pr_description_presented` from disk. If either is absent or literal `false`, STOP. Do NOT proceed to the closing narration. Jump back to step 7 (if `commit_message_presented` is missing) or step 8 (if `pr_description_presented` is missing) and run them now. Only after BOTH flags read `true` (or the literal `"skipped"` for `pr_description_presented`) may the orchestrator continue to the closing narration below.
+
+   Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
 
 ---
 
@@ -2551,6 +2915,7 @@ This is the path that runs when `/doer <TICKET-ID>` detects `./.doer/tickets/<TI
    - `pending` → start the stage normally.
    - `in_progress` → resume at the same iteration (read loop state if any).
    - `blocked` (Stages 2 and 3 only) → re-run ONLY the deterministic checks for that stage (no new agent invocation). See "Resuming from `blocked`" subsection in the stage's docs. If checks pass, mark complete and proceed.
+   - `deferred` (Stage 3 only, `direct` testing strategy) → enter the Stage 3 `direct` second-visit branch (regression test writer). See "Branch: `direct` (deferred path)" in the Stage 3 docs.
    - `complete | skipped | imported` → unexpected here (current_stage should not point at one of these). Treat as data drift: advance current_stage to the next pending stage and continue.
 7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}{, status: {status}} in {mode} mode." (Read `metadata.mode` for the mode label.) Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent, do NOT ask for further confirmation).
 8. Proceed.
