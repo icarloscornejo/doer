@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 4.0.0
+version: 4.0.1
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -987,62 +987,71 @@ For deep cleanup of historical `.doer/` content from earlier commits on the feat
 
 **Per-stage narration:**
 - Before: `"Starting Stage {N}, {name}. {one-sentence goal}."` + write `stages.<N>.started_at`.
-- After: write `stages.<N>.completed_at` + `"Stage {N} complete{, committed as {sha}}. Continuing to Stage {N+1}..."` then END TURN. (The `committed as {sha}` clause is included only when the stage actually produced a real-code commit. Stages 1, 2, and 9 typically do not commit — they only update `metadata.json` which is gitignored — so they omit the clause.)
+- After: write `stages.<N>.completed_at` + `"Stage {N} complete{, committed as {sha}}. Continuing to Stage {N+1}..."` then **auto-proceed** to Stage {N+1} in the same turn. (The `committed as {sha}` clause is included only when the stage actually produced a real-code commit. Stages 1, 2, and 9 typically do not commit; they only update `metadata.json` which is gitignored, so they omit the clause.)
 - Inside loop: `"Iteration {i}/{max}: invoking {agent}... agent returned {status}, {findings} findings ({blockers} blockers)."` (`{max}` is `3` for Stage 4 and Stage 5.)
 
-### Turn boundaries, granularity is the WHOLE iteration
+### Turn boundaries: auto-proceed by default, end-turn ONLY at user-input gates
 
-A single doer/reviewer **iteration** is the atomic unit of work. The orchestrator MAY chain multiple Agent calls within ONE turn as long as they belong to the same iteration of the same loop:
+The orchestrator's default is to chain work in a single turn. The ONLY events that end a turn are:
+
+1. The orchestrator is about to call `AskUserQuestion` (a real, scripted gate where the dev's input changes the next action).
+2. An Agent call returned an error and the orchestrator wants to surface it before retrying.
+3. The user typed a halt signal (`stop`, `wait`, `hold on`).
+
+Everything else, including stage transitions and loop iteration boundaries, auto-proceeds in the same turn.
 
 ```
-Iteration N (single turn allowed):
-  Agent(doer) → narrate result
-  → Agent(reviewer) → narrate result
-  → (if AUTO_FIXes) Agent(fixer) → narrate result
-  → END TURN
+Iteration N (single turn):
+  Agent(doer) -> narrate result
+  -> Agent(reviewer) -> narrate result
+  -> (if AUTO_FIXes) Agent(fixer) -> narrate result
+  -> if BLOCKERs > 0 and iter < max: Agent(combined fixer-reviewer) for iter N+1
+  -> if converged: continue to next stage in the same turn
 ```
 
-Then **MUST END TURN before the next iteration or the next stage.** The next user message resumes automatically.
-
-| Boundary | Same turn OK? |
-|----------|---------------|
-| Within one loop iteration (doer → reviewer → fixer) | YES |
-| Between iteration N and N+1 | **NO. END TURN** |
-| Between stages | **NO. END TURN** |
+| Boundary | Same turn? |
+|----------|------------|
+| Within one loop iteration (doer -> reviewer -> fixer) | YES |
+| Between iteration N and N+1 of the same loop | **YES** (auto-proceed) |
+| Between stages | **YES** (auto-proceed) |
 | Between subagent and a major file write that informs the next subagent | YES |
+| Right before any `AskUserQuestion` call | NO. The tool itself ends the turn. |
+| After an Agent error | NO. Surface the error first, then end the turn. |
 
 **MUST rules:**
 
-1. End the turn at every stage boundary. Narrate "Stage N complete. Continuing to Stage N+1..." then STOP.
-2. End the turn between iterations of the same loop. Narrate iteration result, then STOP.
-3. **Never bundle multiple stages or multiple loop iterations in one turn.** One stage = one or more turns. One iteration = one turn. Never collapse iterations.
-4. **If an Agent call inside an iteration returns an error**, end the turn before invoking anything else. Surface the error to the user; do not silently retry the next subagent.
+1. **Auto-proceed at every stage boundary.** Narrate `"Stage N complete. Continuing to Stage N+1..."` and KEEP GOING in the same turn. Do NOT stop. Do NOT wait for a non-halt message; just start Stage N+1.
+2. **Auto-proceed between loop iterations** of the same loop (Stage 4 / Stage 5). Narrate the iteration result, then start the next iteration in the same turn (subject to the max-iteration cap and to the AUTO_FIX/fixer rules).
+3. The ONLY non-error reason to end a turn is calling `AskUserQuestion`. The tool itself ends the turn; do not preemptively narrate "ending turn" before invoking it.
+4. **If an Agent call returns an error**, narrate the error and end the turn before invoking anything else. The user decides what to do next.
 
-**Self-check before every response:** *"Am I about to start a new iteration or a new stage?"* If yes. STOP, narrate where you ended, do not start the new unit.
+**Self-check before every response:** *"Am I about to call `AskUserQuestion`, surface an Agent error, or respond to a halt? If no to all three, I MUST keep going in this same turn."*
 
 ### SUGGESTIONs never pause
 
-Zero BLOCKERs = converged. SUGGESTIONs are persisted as part of the stage's `metadata.code_review[<iteration>]` entry. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds (next stage, in a new turn).
+Zero BLOCKERs = converged. SUGGESTIONs are persisted as part of the stage's `metadata.code_review[<iteration>]` entry. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds to the next stage in the same turn.
 
 ### Interrupt detection, and the auto-resume rule
 
-At any turn boundary, the user's next message is interpreted as:
+If the orchestrator DID end a turn (because it just called `AskUserQuestion` or an Agent errored), the user's next message is interpreted as:
 
 | User message contains... | Interpretation |
 |--------------------------|----------------|
 | `stop`, `wait`, `hold on`, or a clear halt signal | **HALT**: narrate "Stopping. Run `/doer continue <TICKET-ID>` to resume." Stop. State already persisted in metadata. |
+| A direct answer to the `AskUserQuestion` that just ran | Use the answer to drive the next action. |
 | **Anything else** (including empty, `ok`, `yes`, `continue`, `go`, `y`, an unrelated comment, a question about the work) | **RESUME**: read `metadata.json`, do the next pending action without further prompting |
 
-**MUST NOT** ask the user "Continue? [Y/n]" / "Shall I proceed?" / "Ready for the next stage?" between iterations OR between stages. Continuation is implicit. The narration template is informative, not inquisitive:
+**MUST NOT** ask the user "Continue? [Y/n]" / "Shall I proceed?" / "Ready for the next stage?" between iterations OR between stages. Continuation is implicit AND in-turn. The narration template is informative, not inquisitive:
 
-- ✅ Right: *"Stage 2 complete. Continuing to Stage 3..."* + END TURN.
-- ❌ Wrong: *"Stage 2 complete. Continue to Stage 3? [Y/n]"*
-- ❌ Wrong: *"Stage 2 complete. Shall I move on to Stage 3?"*
-- ❌ Wrong: *"Stage 2 complete. Ready to start Stage 3?"*
+- Right: *"Stage 2 complete. Continuing to Stage 3..."* and immediately starts Stage 3.
+- Wrong: *"Stage 2 complete. Continuing to Stage 3..."* then ends the turn waiting for the user.
+- Wrong: *"Stage 2 complete. Continue to Stage 3? [Y/n]"*
+- Wrong: *"Stage 2 complete. Shall I move on to Stage 3?"*
+- Wrong: *"Stage 2 complete. Ready to start Stage 3?"*
 
-The user already opted in by starting the ticket. Asking again on every stage boundary makes the orchestrator feel like it's babysitting. Stages are auto-chained; the only stop is a halt signal in the next message.
+The user already opted in by starting the ticket. Asking again on every stage boundary makes the orchestrator feel like it's babysitting. Stages auto-chain in the same turn until a real user-input gate (an `AskUserQuestion`) or an error.
 
-**MUST NOT** require the user to type `/doer continue <TICKET-ID>` to advance work in flight. `/doer continue` is for resuming **across sessions**, not for nudging the next step. Within a session, any non-halt message advances.
+**MUST NOT** require the user to type `/doer continue <TICKET-ID>` or any other nudge to advance work in flight. `/doer continue` is for resuming **across sessions**, not for nudging the next step.
 
 **State persistence:** all progress (current iteration, BLOCKERs found, files written, etc.) is persisted to `metadata.json` after every Agent return. Closing the session at any point preserves state, the next `/doer continue <TICKET-ID>` resumes intact. There is no separate "pause" command needed; abandoning the session = pausing.
 
@@ -1405,7 +1414,7 @@ No sidecar `ac.md` file. No separate assumptions file (assumptions surface in St
 
 Update `metadata.json`: stage 1 complete, advance `current_stage` to the entry point decided in Step 5.
 
-Narrate: *"Stage 1 complete. Imported stages: {list}. Continuing to Stage {N}..."* then END TURN. Auto-resume on next non-halt message.
+Narrate: *"Stage 1 complete. Imported stages: {list}. Continuing to Stage {N}..."* and immediately auto-proceed to Stage {N} in the same turn. Do NOT end the turn here.
 
 ---
 
@@ -1565,7 +1574,7 @@ The `direct` branch DEFERS Stage 3 at first entry, lets Stage 4 commit the chang
 2. Set `metadata.stages.3.testing_strategy_mode = "direct"`.
 3. Set `metadata.current_stage = 4`.
 4. Narrate: *"Stage 3 deferred (direct mode). Writing the change first, regression tests after Stage 4. Continuing to Stage 4."*
-5. END TURN. Do NOT invoke any agent.
+5. Auto-proceed to Stage 4 in the same turn. Do NOT invoke any Stage 3 agent on this entry.
 
 **Second entry to Stage 3 (status = `deferred`, returning from Stage 4):**
 
@@ -1983,8 +1992,8 @@ metadata.last_green_test_command = <the test command that ran>
 
 After Stage 4 commits and updates the green-test marker, decide where to advance based on `metadata.testing_strategy.mode`:
 
-- **`tdd` / `bdd`**: set `metadata.current_stage = 5`, narrate *"Stage 4 complete. Continuing to Stage 5..."*, END TURN.
-- **`direct`**: set `metadata.current_stage = 3`, narrate *"Stage 4 complete. Returning to Stage 3 to write regression tests against the implemented change."*, END TURN. The next non-halt message resumes at Stage 3's `direct` second-visit branch.
+- **`tdd` / `bdd`**: set `metadata.current_stage = 5`, narrate *"Stage 4 complete. Continuing to Stage 5..."*, auto-proceed to Stage 5 in the same turn.
+- **`direct`**: set `metadata.current_stage = 3`, narrate *"Stage 4 complete. Returning to Stage 3 to write regression tests against the implemented change."*, auto-proceed to Stage 3's `direct` second-visit branch in the same turn.
 
 ### Lite branch (`metadata.mode == "lite"`)
 

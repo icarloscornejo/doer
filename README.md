@@ -1,6 +1,6 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 4.0.0.
+**Ticket execution orchestrator for Claude Code.** Version 4.0.1.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, two execution modes (lite for trivial tickets, full for everything else), delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -384,7 +384,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 4.0.0** (see SKILL.md frontmatter).
+**Current version: 4.0.1** (see SKILL.md frontmatter).
 
 ---
 
