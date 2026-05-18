@@ -88,7 +88,7 @@ When the heartbeat is missing, perform these reads BEFORE the next stage logic. 
 3. Read `./.doer/tickets/<TICKET-ID>/metadata.json` → re-establish ticket state, mode, current_stage, prior changelog/code_review entries.
 4. Read the relevant section of `SKILL.md` for `metadata.current_stage` (e.g. if current_stage is 4, re-read the "Stage 4. Code" section). One section, not the whole file.
 5. Read this Context Continuity section + the Versioning & Migrations section (Migration Check Phase 1 must run after re-hydration if `metadata.skill_version` is behind the SKILL frontmatter version).
-6. Narrate in the locale language: *"Re-hydration complete. Resuming at Stage <N> (<name>) in <mode> mode, locale <locale>."* (If locale is `es`, this line MUST be in Spanish, not English.)
+6. Narrate in the locale language: *"Re-hydration complete. Resuming at Stage <N> (<name>) in <mode> mode, locale <locale>."* (This line MUST be in the locale language, not English.)
 7. Run Migration Check Phase 1 + Phase 2 explicitly (see Versioning & Migrations).
 8. Continue with the original stage logic.
 
