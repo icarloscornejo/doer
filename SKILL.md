@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 3.0.4
+version: 3.0.5
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -84,15 +84,17 @@ The cost of the self-check itself is zero (pure reasoning, no tool call). The co
 When the heartbeat is missing, perform these reads BEFORE the next stage logic. Narrate each step (per Core Principle 1):
 
 1. *"Compaction detected: heartbeat anchor missing from context. Re-hydrating."*
-2. Read `<doer-skill-dir>/preferences.md` → re-establish operating locale.
+2. Read `<doer-skill-dir>/preferences.md` → re-establish operating locale. After reading, the orchestrator MUST immediately switch ALL output to the locale language. This is not a hint; it is a binding commitment for the rest of the session. Narrate the locale confirmation IN the target language as the very next sentence (e.g. if `locale: es`, write: `"Locale: es. Todo el output de ahora en adelante sera en espanol."`). If the next output line is in the wrong language, that is a VIOLATION of this rule. Locale drift after re-hydration is prohibited.
 3. Read `./.doer/tickets/<TICKET-ID>/metadata.json` → re-establish ticket state, mode, current_stage, prior changelog/code_review entries.
 4. Read the relevant section of `SKILL.md` for `metadata.current_stage` (e.g. if current_stage is 4, re-read the "Stage 4. Code" section). One section, not the whole file.
 5. Read this Context Continuity section + the Versioning & Migrations section (Migration Check Phase 1 must run after re-hydration if `metadata.skill_version` is behind the SKILL frontmatter version).
-6. Narrate: *"Re-hydration complete. Resuming at Stage <N> (<name>) in <mode> mode, locale <locale>."*
+6. Narrate in the locale language: *"Re-hydration complete. Resuming at Stage <N> (<name>) in <mode> mode, locale <locale>."* (If locale is `es`, this line MUST be in Spanish, not English.)
 7. Run Migration Check Phase 1 + Phase 2 explicitly (see Versioning & Migrations).
 8. Continue with the original stage logic.
 
 This treats every detected compaction as if the dev had just typed `/doer continue <TICKET-ID>` from a fresh session. The goal is uniform behavior regardless of whether compaction happened.
+
+**Locale self-check after re-hydration:** At the next stage transition after re-hydration, the orchestrator MUST ask itself: "Is my current output in the locale from preferences.md?" If not, stop, re-apply the locale, and continue. Locale is never optional once established.
 
 ### What re-hydration is NOT
 
