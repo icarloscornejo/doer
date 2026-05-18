@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 3.0.5
+version: 3.0.6
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -1107,7 +1107,7 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
 | 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
 | 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at` | `skipped_reason` (and `skipped_acknowledged_by = "lite_mode"` if mode is lite) |
-| 9 wrapup | `name`, `status`, `verified_with` | `completed_at` | n/a |
+| 9 wrapup | `name`, `status`, `verified_with` | `completed_at`, `commit_message_presented`, `pr_description_presented` | n/a |
 
 ### Top-level required fields when transitioning ticket to `status: "complete"`
 
@@ -2409,6 +2409,8 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    You can use this as-is or adjust it before squashing your branch commits.
    ````
 
+   After presenting, write `metadata.stages.9.commit_message_presented = true` into `metadata.json`.
+
 8. **Help with the PR description.**
 
    First, auto-detect a template in the repo. Standard locations (in priority order):
@@ -2465,7 +2467,7 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    <relevant entries from metadata.lessons_captured or metadata.assumptions_validation (INVALIDATED items), if any. Otherwise omit this section.>
    ```
 
-   **c. User replies `skip`:** Skip the PR description step entirely. Continue to step 9.
+   **c. User replies `skip`:** Skip the PR description step entirely. Write `metadata.stages.9.pr_description_presented = "skipped"` into `metadata.json`. Continue to step 9.
 
    **Formatting rules for whatever is generated (a or b):**
    - Apply Core Principle 9 (no em-dashes anywhere).
@@ -2481,6 +2483,8 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
    <generated description>
    ```
    ````
+
+   After presenting, write `metadata.stages.9.pr_description_presented = true` into `metadata.json`.
 
 9. Narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended message, paste the PR description, then push and open the PR manually."*
 
