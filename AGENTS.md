@@ -54,10 +54,10 @@ doer/
 |  |- memory-paths.md             # canonical paths + metadata.json schema
 |  |- lock.md                     # operational (WK-1, shipped in 6.0.0)
 |  |- inbox.md                    # operational (WK-2, shipped in 6.0.0)
-|  |- cost.md                     # stub (WK-3)
-|  |- cost-rates.json             # stub (WK-3)
-|  |- helpers/                    # executable scripts (lock.sh, inbox.sh shipped in 6.0.0)
-|- scripts/refresh-rates.sh       # stub (WK-3)
+|  |- cost.md                     # operational (WK-3, shipped in 6.0.0)
+|  |- cost-rates.json             # seeded rates (WK-3, shipped in 6.0.0)
+|  |- helpers/                    # executable scripts (lock.sh, inbox.sh, cost.sh in 6.0.0)
+|- scripts/refresh-rates.sh       # operational (WK-3, shipped in 6.0.0)
 |- lessons/                       # global, cross-project (5 files)
 |- preferences.md                 # personal config
 |- ROADMAP.md                     # design decisions + roadmap

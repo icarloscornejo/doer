@@ -40,6 +40,15 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Narration Protocol: every stage entry drains its unacked inbox after `started_at`. `blocker` messages call `AskUserQuestion` before continuing; `advisory` and `fyi` are narrated and auto-acked in the same turn. Empty inbox is silent.
 - Stage 9 wrapup: new step 11 verifies the inbox has no pending messages (anomaly path), then `clear --acked` keeps `metadata.inbox` from growing across reverify cycles.
 
+### WK-3: per-ticket cost tracking
+
+- `lib/cost.md` operational: spec for `metadata.cost` (totals, by_model, by_stage, unknown_models). Currency USD; rates measured per million tokens.
+- `lib/cost-rates.json` seeded with current Claude rates (Opus 4.7, Sonnet 4.6, Haiku 4.5) plus a `lazy_fallback` for unknown model ids. Source: `https://claude.com/pricing#api`. TTL 7 days.
+- `lib/helpers/cost.sh` executable: subcommands `record`, `total`, `status`. Lazy fallback warns to stderr and never blocks.
+- `scripts/refresh-rates.sh` executable: interactive (editor) or non-interactive (`--from-stdin`); validates numeric `input_per_mtok` / `output_per_mtok`, bumps `fetched_at`.
+- Narration Protocol: every Agent return that exposes token counts records to `metadata.cost`. Best-effort; missing rates or counts skip silently.
+- Stage 9 wrapup: new step 12 narrates `cost.sh status`. Final narration mentions `metadata.cost` alongside `summary` / `performance`.
+
 ### Runtime
 
 - No change in 9-stage pipeline behavior.

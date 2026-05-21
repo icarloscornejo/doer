@@ -60,7 +60,7 @@ Each one is executed as `/wk:doer WK-N`. Full 9-stage pipeline, lessons captured
 |---|---|---|---|
 | ~~WK-1~~ | ~~implement lib/lock.md + helper~~ | LIB | **Done in 6.0.0**: per-ticket lock with 30 min TTL, steal-if-stale, abort-if-fresh. PID + host + heartbeat for diagnostics |
 | ~~WK-2~~ | ~~implement lib/inbox.md + helper~~ | LIB | **Done in 6.0.0**: per-ticket inbox in `metadata.inbox`. Three kinds (`blocker`, `advisory`, `fyi`); drained on stage entry; acked clear at wrapup |
-| WK-3 | implement lib/cost.md + cost-rates.json + scripts/refresh-rates.sh | LIB | Cost tracking, weekly TTL, lazy fallback |
+| ~~WK-3~~ | ~~implement lib/cost.md + cost-rates.json + scripts/refresh-rates.sh~~ | LIB | **Done in 6.0.0**: token-cost tracking in `metadata.cost`. Curated rates with TTL 7 days, lazy fallback for unknown model ids, refreshable via `scripts/refresh-rates.sh` |
 | WK-4 | integrate pre-flight assumptions into Stage 2 | CORE | Table of executable checks in spec before dispatching plan |
 | WK-5 | integrate per-task review gate into Stage 4 | CORE | Human gate `[a]ccept / [e]dit / [r]eject / [s]kip / [v]iew-full-diff` with git reset |
 | WK-6 | integrate parallel subagents into Stage 4 | CORE | Subagents in parallel for independent tasks |

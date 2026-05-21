@@ -1914,7 +1914,13 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     ```
     Pending messages at wrapup are an anomaly; the orchestrator MUST surface them via `AskUserQuestion` and ack them out of band before continuing. Acked messages are cleared so `metadata.inbox` does not grow unbounded across reverify cycles.
 
-    Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
+12. **Surface ticket cost.** Run:
+    ```bash
+    ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh status "<TICKET-ID>"
+    ```
+    Narrate the one-paragraph summary inline. Best-effort: if cost was never recorded (e.g. `WK_COST_DISABLED=1` or rates missing) the helper prints `"No cost recorded for this ticket yet."` and the orchestrator continues. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+
+    Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
 
 ---
 

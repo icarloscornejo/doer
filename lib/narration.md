@@ -138,6 +138,8 @@ Top-level runtime counter for agent invocations (lives at `metadata.performance.
 
 Increment `metadata.performance.agents[<name>]` on every Agent call. Set `metadata.stages.<N>.started_at` when the stage begins and `completed_at` on transition to `complete | skipped | imported`. Set `iterations`/`loop_outcome`/`blockers_resolved_total` on loop exit (stages 4 and 5 only).
 
+After every Agent return, if the call exposes input/output token counts, also record cost via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" --model <model-id> --input <in_tokens> --output <out_tokens> --stage <N> [--agent <name>]`. Best-effort: if rates are missing or the call did not expose tokens, skip silently. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+
 There is no `pauses` array and no `active_duration_seconds` field. There is no `/doer pause` command; state persists after every Agent return, so closing the session IS pausing. Wall-clock duration in `metadata.performance.wall_clock` is computed from `metadata.created_at` to `metadata.completed_at`; "active" duration is the same value (no paused intervals to subtract).
 
 

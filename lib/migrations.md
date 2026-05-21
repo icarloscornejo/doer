@@ -546,7 +546,8 @@ MAJOR bump. Restructures the install from a single skill (`doer`) into a formal 
 - Path resolution for shared protocols moves from inline definitions in SKILL.md to `${CLAUDE_PLUGIN_ROOT}/lib/<file>.md` references.
 - Per-ticket lock protocol shipped (WK-1). Workspace Guard now acquires `.doer/tickets/<ID>/lock.json` on every entry point, every stage transition refreshes the heartbeat via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh touch`, and Stage 9 wrapup releases the lock. Concurrent sessions on the same ticket fail fast.
 - Inter-stage inbox protocol shipped (WK-2). New top-level `metadata.inbox` array (created lazily on first post). Each stage drains its unacked messages on entry; Stage 9 wrapup clears acked messages.
-- `metadata.json` schema gains an optional top-level `inbox: []` array (lazy: absent until first post). No other fields added, removed, or renamed.
+- Per-ticket cost tracking shipped (WK-3). New top-level `metadata.cost` object (created lazily on first record). Token usage from each Agent return is multiplied by rates from `lib/cost-rates.json` (lazy fallback for unknown models). Stage 9 wrapup surfaces the summary.
+- `metadata.json` schema gains two optional top-level fields: `inbox: []` (array) and `cost: {}` (object). Both lazy (absent until first write). No other fields added, removed, or renamed.
 - `metadata.skill_version` bumps to `"6.0.0"`.
 
 **Per-ticket changes:**
