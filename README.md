@@ -335,6 +335,30 @@ This file is gitignored; never reaches GitHub. The orchestrator reads it as the 
 
 ---
 
+## Opt-in features (preferences.md)
+
+All three toggles below live in `preferences.md` (gitignored, local). Defaults are off; nothing changes for existing tickets unless the dev opts in.
+
+| Key | Default | Effect when enabled |
+|---|---|---|
+| `stage4_per_task_gate` | `false` | Stage 4 implements one `metadata.plan.steps[]` entry at a time and pauses for a human gate (`[a]ccept / [e]dit / [r]eject / [s]kip / [v]iew-full-diff`) after each step. Reject aborts Stage 4 with `git reset` to the pre-step SHA; skip resets and advances; edit supports manual or via-writer. The reviewer LLM still runs once at the end against the full Stage 4 diff. |
+| `stage4_parallel_subagents` | `false` | Stage 4 groups steps by `metadata.plan.steps[].parallel_group` and dispatches each group as parallel Agent calls in a single tool block when files are disjoint; serializes the group when files overlap. Mutually exclusive with `stage4_per_task_gate` (the gate wins on collision and parallelism is silently disabled with a narrated warning). The reviewer LLM still runs once at the end against the full Stage 4 diff. |
+| `stage5_advisor_personas` | `[]` | When non-empty (e.g. `["security", "performance"]`), Stage 5 dispatches the listed advisor personas via `/wk:advise` ONCE at the start of iteration 1 (before the deterministic Pre-reviewer Checks A/B/C and the reviewer LLM). Findings ingested from `.doer/tickets/<ID>/advisor-findings/<persona-id>.json`: `severity: blocker` to blockers, `high`/`medium`/`low` to suggestions, `info` to info. Each promoted entry carries `source: "advisor:<persona-id>"`. Personas do NOT re-run in iter 2/3; advisor blockers flow through the standard `prior_blockers_resolved` / `still_open` machinery. Personas live as JSON under `${CLAUDE_PLUGIN_ROOT}/lib/advisor-personas/` (5 shipped: `security`, `performance`, `mobile`, `accessibility`, `api`). |
+
+Example `preferences.md`:
+
+```yaml
+locale: es
+
+stage4_per_task_gate: false
+stage4_parallel_subagents: true        # parallel dispatch when steps share parallel_group
+stage5_advisor_personas: ["security"]  # security review before the reviewer LLM
+```
+
+The orchestrator reads `preferences.md` at every entry point and respects the toggles for the rest of the session. See `skills/doer/SKILL.md` for the per-stage protocols.
+
+---
+
 ## Versioning & Auto-Migration
 
 The skill follows SemVer (MAJOR.MINOR.PATCH). Every ticket persists `skill_version` in its metadata. On every entry point (`continue`, `verify`, any stage execution), the **Migration Check** auto-applies any pending migration silently:
