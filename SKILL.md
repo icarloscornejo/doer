@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 4.0.1
+version: 5.0.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -59,50 +59,33 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 ## Context Continuity (Anti-Compaction)
 
-The Claude Code harness compacts long conversations to fit in context. When that happens mid-pipeline, the orchestrator can lose: locale (drifts to English), narration discipline, schema knowledge (forgets which `metadata.stages.<N>` fields are required), full-SHA convention, Migration Check timing, and other rules baked into SKILL.md. Symptoms observed in prior tickets: abbreviated SHAs, missing `loop_outcome` / `iterations` / `started_at` fields, silent skips of Stage 7 ask-rule, locale flip from `es` to English, `metadata.skill_version` not bumped on PATCH upgrades.
+The Claude Code harness compacts long conversations to fit in context. When that happens mid-pipeline, the orchestrator loses everything that wasn't in the last assistant turn or the summary: locale, narration discipline, schema field requirements, full-SHA convention, Migration Check timing, and other rules baked into SKILL.md. Symptoms observed in prior tickets: abbreviated SHAs, missing `loop_outcome` / `iterations` / `started_at` fields, silent skips of Stage 7 ask-rule, locale flip from `es` to English, `metadata.skill_version` not bumped on PATCH upgrades, and — critically — the orchestrator claiming "context is fresh" immediately after compaction because the heartbeat string survived in the summary.
 
-### Heartbeat anchor
+### Why the old conditional self-check failed
 
-This SKILL contains a known anchor string the orchestrator must be able to quote verbatim from context:
+The previous design asked the orchestrator to self-assess whether its context was fresh by trying to recall a known anchor string. This is unreliable: after compaction the anchor string appears verbatim in the conversation summary, so the model always answers "yes, I can recall it" and skips re-hydration even when SKILL.md rules are gone from context. A self-referential freshness test cannot detect its own staleness.
+
+### Transition Sync (unconditional)
+
+**At every stage transition AND at every `/doer continue` invocation (including implicit resumes after natural-language messages), the orchestrator MUST perform a Transition Sync as its FIRST action, before any stage logic. No exceptions. No skip path.**
+
+The sync is three Read calls. Total cost: ~3 tool calls per transition, which the orchestrator already makes to read metadata anyway.
+
+**Transition Sync steps:**
+
+1. Narrate: *"Transition Sync."* (one line; signals to the dev that the sync ran)
+2. Read `<doer-skill-dir>/preferences.md` → re-establish operating locale. Immediately commit ALL output to that locale for the rest of the session. Narrate the locale confirmation IN that language as the very next sentence (e.g. `"Locale: es. Todo el output de ahora en adelante en español."`). If the next output line is in the wrong language, that is a VIOLATION.
+3. Read `./.doer/tickets/<TICKET-ID>/metadata.json` → re-establish ticket state, `current_stage`, prior `changelog` / `code_review` entries.
+4. Read the relevant section of `SKILL.md` for `metadata.current_stage` (e.g. if `current_stage` is 4, re-read the "Stage 4. Code" section). One section, not the whole file.
+5. Narrate in the locale language: *"Sync complete. Stage <N> (<name>), locale <locale>."*
+6. Run Migration Check Phase 1 + Phase 2 (see Versioning & Migrations). If `metadata.skill_version` is behind the SKILL frontmatter, apply migrations now.
+7. Continue with the stage logic.
 
 > **DOER-HEARTBEAT-v3: every action narrated, every field validated, every SHA full-length, every Migration Check explicit.**
 
-(That exact line. 18 words. Treat it as a checksum for context freshness.)
+(This anchor line is kept for historical reference in lesson notes. It is no longer used as a freshness test — the Transition Sync is unconditional.)
 
-### Self-check protocol
-
-At every **stage transition** AND at the start of every **`/doer continue` invocation** (which includes implicit resumes after natural-language messages), the orchestrator MUST perform a heartbeat self-check BEFORE doing anything else:
-
-1. Self-question: *"Can I quote the DOER-HEARTBEAT anchor from my current context, verbatim?"*
-2. If **YES** → context is fresh. Skip re-hydration. Continue normally.
-3. If **NO** → context was compacted. Trigger **forced re-hydration** (next subsection) before doing anything else. Do NOT proceed to the stage logic until re-hydration completes.
-
-The cost of the self-check itself is zero (pure reasoning, no tool call). The cost of re-hydration is paid only when compaction is detected, which is rare in normal operation.
-
-### Forced re-hydration steps
-
-When the heartbeat is missing, perform these reads BEFORE the next stage logic. Narrate each step (per Core Principle 1):
-
-1. *"Compaction detected: heartbeat anchor missing from context. Re-hydrating."*
-2. Read `<doer-skill-dir>/preferences.md` → re-establish operating locale. After reading, the orchestrator MUST immediately switch ALL output to the locale language. This is not a hint; it is a binding commitment for the rest of the session. Narrate the locale confirmation IN the target language as the very next sentence (e.g. if `locale: es`, write: `"Locale: es. Todo el output de ahora en adelante sera en espanol."`). If the next output line is in the wrong language, that is a VIOLATION of this rule. Locale drift after re-hydration is prohibited.
-3. Read `./.doer/tickets/<TICKET-ID>/metadata.json` → re-establish ticket state, mode, current_stage, prior changelog/code_review entries.
-4. Read the relevant section of `SKILL.md` for `metadata.current_stage` (e.g. if current_stage is 4, re-read the "Stage 4. Code" section). One section, not the whole file.
-5. Read this Context Continuity section + the Versioning & Migrations section (Migration Check Phase 1 must run after re-hydration if `metadata.skill_version` is behind the SKILL frontmatter version).
-6. Narrate in the locale language: *"Re-hydration complete. Resuming at Stage <N> (<name>) in <mode> mode, locale <locale>."* (This line MUST be in the locale language, not English.)
-7. Run Migration Check Phase 1 + Phase 2 explicitly (see Versioning & Migrations).
-8. Continue with the original stage logic.
-
-This treats every detected compaction as if the dev had just typed `/doer continue <TICKET-ID>` from a fresh session. The goal is uniform behavior regardless of whether compaction happened.
-
-**Locale self-check after re-hydration:** At the next stage transition after re-hydration, the orchestrator MUST ask itself: "Is my current output in the locale from preferences.md?" If not, stop, re-apply the locale, and continue. Locale is never optional once established.
-
-### What re-hydration is NOT
-
-- Not "re-read the entire SKILL on every turn" (too expensive).
-- Not "re-read on every tool call" (too expensive).
-- Not "always run on stage transition unconditionally" (wastes tokens when context is fresh).
-
-The trigger is the heartbeat self-check at stage boundaries. That is all.
+**Locale re-check:** At the next stage transition after any sync, the orchestrator MUST verify its output language matches `preferences.md`. Locale drift after a sync is prohibited.
 
 ---
 
@@ -123,7 +106,7 @@ Each ticket persists `skill_version` in `metadata.json` at intake. The orchestra
 1. Start of every `/doer <TICKET-ID>` invocation, after the Workspace Guard finishes.
 2. Start of every `/doer continue <TICKET-ID>` (same path; `/doer continue` is just an alias).
 3. Start of every `/doer verify <TICKET-ID>`.
-4. After every successful **forced re-hydration** (see Context Continuity section). Compaction can land mid-pipeline; the heartbeat-triggered re-hydration must re-run the Migration Check because the orchestrator may have lost track of `skill_version` mismatches.
+4. As part of every **Transition Sync** (see Context Continuity section). Because the Transition Sync is unconditional at every stage transition, this subsumes the old "after re-hydration" trigger.
 5. Before every stage transition where `metadata.skill_version` does not match the SKILL frontmatter version (cheap deterministic comparison; if equal, skip).
 
 The "every entry point" phrasing is too vague and gets dropped from context after compaction. The five explicit triggers above are non-negotiable.
@@ -191,7 +174,7 @@ Every migration block declares `affected_stages: [<stage names>]` listing the st
 |-------|------------|
 | 1 ac-confirm | Re-run a lightweight AC validation: read `metadata.ac` and `metadata.intake`, confirm the AC list still aligns. No subagent unless validation fails. |
 | 2 plan | Re-run the three deterministic checks (file existence, AC coverage, assumptions present) on `metadata.plan`. No LLM. If a check fails, reopen Stage 2 with that BLOCKER. |
-| 3 tests | Re-run the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode` (parse/run + presence + red-phase for `tdd`/`bdd`; parse/run + regression coverage for `direct`). No LLM. |
+| 3 tests | Re-run the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode` (parse/run + presence + red-phase for `bdd`; parse/run + regression coverage for `direct`). No LLM. |
 | 4 code | Re-run pre-checks (test pass + lint + typecheck + plan-driven scope). Skip LLM reviewer unless pre-checks find new issues. |
 | 5 code-review | Re-run pre-checks (RED grep, secrets, smoke, bare except). Skip LLM reviewer unless pre-checks find new issues. |
 | 6 quality-gate | Re-run test suite via the skip-safe check (`last_green_sha` lookup; usually no-op). |
@@ -584,6 +567,59 @@ jq '.skill_version = "4.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
 The behavioral changes apply on the next `/doer <ID>` invocation.
 
+### Migration: From 4.0.1 -> 5.0.0
+
+`affected_stages: [1, 3, 4, 5, 8, 9]`
+
+MAJOR bump. Removes `metadata.mode` (lite/full pipeline mode) and `metadata.mode_overridden_by_dev`; collapses the testing_strategy enum from {direct, tdd, bdd} to {direct, bdd}. Pipeline always runs in what was previously called 'full'. Tickets with `testing_strategy.mode == "tdd"` are auto-rewritten to `"bdd"` with narration; bdd's red-phase contract has the same shape (failing tests first, deterministic parse/run + presence + red-phase check), so in-flight Stage 3 keeps its operational semantics.
+
+Why MAJOR: schema-breaking. Top-level `mode` and `mode_overridden_by_dev` fields are removed; `testing_strategy.mode` enum is reduced; `stages.3.testing_strategy_mode` enum is reduced.
+
+This block also covers any 4.0.x source via silent patch bump first (Phase 1 case 5), then matches `from: 4.0.1` to apply the changes below.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# Narrate before each step (per Core Principle 1).
+
+# 1. Rewrite testing_strategy.mode "tdd" -> "bdd" if present.
+#    Narrate: "Migration 4.0.1 -> 5.0.0, step 1/4: rewriting testing_strategy.mode from tdd to bdd."
+jq '
+  if .testing_strategy.mode == "tdd"
+  then .testing_strategy.mode = "bdd"
+     | .testing_strategy.rationale = "auto-rewritten from tdd during 5.0.0 migration; bdd red-phase contract is equivalent"
+  else . end
+' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 2. Rewrite stages.3.testing_strategy_mode "tdd" -> "bdd" if present.
+#    Narrate: "Migration 4.0.1 -> 5.0.0, step 2/4: rewriting stages.3.testing_strategy_mode from tdd to bdd."
+jq '
+  if (.stages."3"?.testing_strategy_mode // null) == "tdd"
+  then .stages."3".testing_strategy_mode = "bdd"
+  else . end
+' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 3. Remove top-level mode and mode_overridden_by_dev fields.
+#    Narrate: "Migration 4.0.1 -> 5.0.0, step 3/4: removing obsolete top-level fields mode and mode_overridden_by_dev."
+jq 'del(.mode, .mode_overridden_by_dev)' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 4. Bump skill_version to 5.0.0.
+#    Narrate: "Migration 4.0.1 -> 5.0.0, step 4/4: bumping skill_version to 5.0.0."
+jq '.skill_version = "5.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- Tickets mid-Stage 3 with `testing_strategy.mode == "tdd"` end up as `"bdd"`. The Stage 3 deterministic check (parse/run + plan-driven presence + red-phase verified) is the same shape; nothing changes operationally.
+- Tickets that already completed Stage 3 with `testing_strategy_mode == "tdd"` are also rewritten to `"bdd"` for metadata consistency. The tests are already written and committed; only the metadata label changes.
+- Tickets with `mode == "lite"` mid-pipeline lose the field and continue as the unified pipeline. No prior stages are mutated. If they were inside a Lite branch of Stage 4 or 5 and had not committed yet, the next turn places them on the standard convergence loop (max 3 iterations), which is strictly more permissive.
+- `deferred` as a Stage 3 status value remains valid (used by `direct`).
+
+The behavioral changes apply on the next `/doer <ID>` invocation.
+
 ---
 
 ## Commands
@@ -628,7 +664,7 @@ All state lives under `./.doer/` in the current working directory (scoped to the
 
 **Per ticket: 1 file (`metadata.json`).** Everything (ac, plan, changelog, code review history, assumptions, lessons captured, summary, performance) lives as structured fields inside `metadata.json`. One source of truth, no drift, no file-coordination cost. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
 
-### `metadata.json` schema (v4.0.0)
+### `metadata.json` schema (v5.0.0)
 
 ```json
 {
@@ -637,11 +673,9 @@ All state lives under `./.doer/` in the current working directory (scoped to the
   "branch": "<branch>",
   "status": "in_progress | complete",
   "current_stage": 1,
-  "skill_version": "4.0.0",
-  "mode": "lite | full",
-  "mode_overridden_by_dev": false,
+  "skill_version": "5.0.0",
   "testing_strategy": {
-    "mode": "direct | tdd | bdd",
+    "mode": "direct | bdd",
     "rationale": "<one sentence explaining why this mode was chosen>",
     "signals": ["<signal-id>", "..."],
     "overridden_by_dev": false
@@ -672,15 +706,15 @@ All state lives under `./.doer/` in the current working directory (scoped to the
   },
 
   "stages": {
-    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "4.0.0", "completed_at": "<ISO8601>"},
-    "2": {"name": "plan",           "status": "...", "verified_with": "4.0.0", "retry_used": false},
-    "3": {"name": "tests",          "status": "pending | in_progress | complete | deferred | skipped | imported | blocked", "verified_with": "4.0.0", "retry_used": false, "testing_strategy_mode": "direct | tdd | bdd"},
-    "4": {"name": "code",           "status": "...", "verified_with": "4.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals"},
-    "5": {"name": "code-review",    "status": "...", "verified_with": "4.0.0", "iterations": 0, "loop_outcome": "..."},
-    "6": {"name": "quality-gate",   "status": "...", "verified_with": "4.0.0"},
-    "7": {"name": "runtime-verify", "status": "...", "verified_with": "4.0.0", "ac_verdicts": {}},
-    "8": {"name": "docs-sync",      "status": "...", "verified_with": "4.0.0"},
-    "9": {"name": "wrapup",         "status": "...", "verified_with": "4.0.0"}
+    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "5.0.0", "completed_at": "<ISO8601>"},
+    "2": {"name": "plan",           "status": "...", "verified_with": "5.0.0", "retry_used": false},
+    "3": {"name": "tests",          "status": "pending | in_progress | complete | deferred | skipped | imported | blocked", "verified_with": "5.0.0", "retry_used": false, "testing_strategy_mode": "direct | bdd"},
+    "4": {"name": "code",           "status": "...", "verified_with": "5.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals"},
+    "5": {"name": "code-review",    "status": "...", "verified_with": "5.0.0", "iterations": 0, "loop_outcome": "..."},
+    "6": {"name": "quality-gate",   "status": "...", "verified_with": "5.0.0"},
+    "7": {"name": "runtime-verify", "status": "...", "verified_with": "5.0.0", "ac_verdicts": {}},
+    "8": {"name": "docs-sync",      "status": "...", "verified_with": "5.0.0"},
+    "9": {"name": "wrapup",         "status": "...", "verified_with": "5.0.0"}
   },
 
   "changelog": [
@@ -711,16 +745,13 @@ All state lives under `./.doer/` in the current working directory (scoped to the
 }
 ```
 
-**Field ownership:** `intake` (intake step), `mode` and `testing_strategy` (intake's final sub-step, after heuristic inference + a single combined dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7).
+**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7).
 
-**`testing_strategy` semantics.** Three modes determine how Stage 3 runs:
+**`testing_strategy` semantics.** Two modes determine how Stage 3 runs:
 - `direct`: Stage 3 is DEFERRED at first entry; Stage 4 runs first; Stage 3 then runs after Stage 4 with a regression test writer (tests expected to PASS, no red phase).
-- `tdd`: classic red/green; Stage 3 writes failing unit tests, Stage 4 makes them pass.
 - `bdd`: Stage 3 writes Given/When/Then scenario tests that fail because no implementation exists; Stage 4 implements code derived from the scenarios.
 
-`testing_strategy.mode` is set ONCE at intake and never changes mid-ticket. `mode` (lite/full) and `testing_strategy.mode` are independent axes; either can be overridden by the dev at the single combined confirmation prompt at intake.
-
-**`mode` semantics.** `full` runs the complete pipeline as documented in each stage. `lite` is for trivial tickets (small diff, no architecture work, single area) and skips the heaviest Stage 9 ceremony, skips Stage 8 entirely, and forces single-pass behavior on Stage 4 and Stage 5 (no iter 2+, no convergence loop). See each stage's "Lite branch" subsection for the exact divergence. **`mode` is set ONCE at intake and never changes mid-ticket** (no escalation; if a lite ticket grows beyond what lite can handle, the dev aborts and reruns under full).
+`testing_strategy.mode` is set ONCE at intake and never changes mid-ticket. The dev can override the inferred mode at the confirmation prompt at intake.
 
 **Path resolution for `lessons/`:** the orchestrator MUST resolve the directory of the running `SKILL.md` (following symlinks, most installs put it under `~/.claude*/skills/doer/SKILL.md` symlinked to `~/src/doer/SKILL.md`) and treat `<resolved-dir>/lessons/` as the canonical lessons directory. Use `readlink` or `realpath` if needed.
 
@@ -763,7 +794,7 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
 
    Persist all answers under `metadata.intake.prior_work`. If question 6 was `N`, write `prior_work: { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }` and skip the follow-ups.
 
-2. **Infer testing strategy + pipeline mode, then ask ONE combined confirmation.** After all six intake questions are answered (and the prior-work follow-ups if applicable), but BEFORE initializing `metadata.json`, the orchestrator runs two independent inferences (no question, orchestrator decides) and then presents both in a single `AskUserQuestion`. The two axes (`testing_strategy` and `mode`) are independent: do NOT use one to influence the other.
+2. **Infer testing strategy, then ask ONE confirmation.** After all six intake questions are answered (and the prior-work follow-ups if applicable), but BEFORE initializing `metadata.json`, the orchestrator infers `testing_strategy.mode` (no question, orchestrator decides) and presents the inference in a single `AskUserQuestion` for confirmation.
 
    **Step 2A. Infer `testing_strategy.mode` (no question).**
 
@@ -775,6 +806,8 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
    - Description has no ACs (`raw_acs == "derive"` or empty) AND no conditional-logic language (no `if`, no `when`, no `should`). Signal ID: `direct.no_acs_no_logic`.
    - Description length < 300 chars AND no Given/When/Then language. Signal ID: `direct.short_description`.
    - Description matches `change X to Y` or `update X from Y to Z` patterns. Signal ID: `direct.change_x_to_y`.
+   - Title contains: `mapper`, `transformer`, `util`, `utility`, `extension`, `helper`, `parser`, `calculator`, `converter`, `validator`. Signal ID: `direct.technical_unit_title`.
+   - Ticket is a refactor with no behavior change. Signal ID: `direct.refactor_no_behavior`.
 
    **Signals for `bdd`:**
    - Title or description contains user-story language: `as a user`, `should see`, `should be able to`, `when user`, `given`, `when`, `then`. Signal ID: `bdd.user_story_language`.
@@ -784,63 +817,34 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
    - Description involves analytics instrumentation with AC (events, STag, GA4, SOT). Signal ID: `bdd.analytics_with_ac`.
    - Description involves a flow with multiple states or actors. Signal ID: `bdd.flow_multi_state`.
 
-   **Signals for `tdd`:**
-   - Title contains: `mapper`, `transformer`, `util`, `utility`, `extension`, `helper`, `parser`, `calculator`, `converter`, `validator`. Signal ID: `tdd.technical_unit_title`.
-   - Description is purely technical with no user-facing behavior mentioned. Signal ID: `tdd.purely_technical`.
-   - No ACs OR ACs are purely technical (e.g. "function should return X given Y"). Signal ID: `tdd.technical_acs`.
-   - Ticket is a refactor with no behavior change. Signal ID: `tdd.refactor_no_behavior`.
-
    **Decision logic:**
    - Count signals per mode. Highest count wins.
-   - Tie between `bdd` and `tdd` → `bdd` wins (safer default for coverage).
-   - Tie between `direct` and any other mode → `direct` loses (prefer more coverage).
+   - Tie between `direct` and `bdd` → `bdd` wins (safer default for coverage).
    - If no signals match at all → default to `bdd`.
 
-   Persist a draft of `testing_strategy = { mode, rationale, signals }` to local memory (NOT to disk yet; the dev still has to confirm in step 2C).
+   Persist a draft of `testing_strategy = { mode, rationale, signals }` to local memory (NOT to disk yet; the dev still has to confirm in step 2B).
 
-   **Step 2B. Infer `mode` (lite/full) (no question).**
-
-   Compute a lite-suitability score from the captured intake data, exactly as in prior versions (do NOT use `testing_strategy` to influence this score):
-
-   | Signal | Score |
-   |---|---|
-   | `description.length < 500` chars | +1 |
-   | `raw_acs` has ≤ 3 enumerated items OR `raw_acs.length < 300` chars | +1 |
-   | `prior_work.exists == false` | +1 |
-   | Description (case-insensitive) contains any of: `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `config flag`, `placeholder`, `hotfix`, `translation`, `locale string` | +1 per keyword, capped at +2 |
-   | Description (case-insensitive) contains any of: `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic` | −2 (subtracted from total) |
-
-   **Total score ≥ 2 → infer lite. Total score < 2 → infer full.**
-
-   **Step 2C. Single combined confirmation.** Present BOTH inferences in ONE `AskUserQuestion` block:
+   **Step 2B. Confirmation.** Present the inference in ONE `AskUserQuestion` block:
 
    ```
    Question: Doer inferred the following for this ticket. Confirm or override?
 
-   Testing strategy: <DIRECT | TDD | BDD> (<one-sentence rationale>)
+   Testing strategy: <DIRECT | BDD> (<one-sentence rationale>)
      Signals: <comma-separated list of matched signal IDs>
 
-   Pipeline mode: <LITE | FULL> (score <N>/5)
-     Signals: <comma-separated list of matched score keywords>
-
    Options:
-     - Y: accept both
-     - change strategy:<direct|tdd|bdd>: override testing strategy, keep mode
-     - change mode:<lite|full>: override mode, keep testing strategy
-     - change strategy:<value> change mode:<value>: override both in one message
+     - Y: accept
+     - change strategy:<direct|bdd>: override testing strategy
    ```
 
    Acceptance rules:
-   - `Y` → accept both; persist `testing_strategy` and `mode` as inferred; both `overridden_by_dev` flags = false.
-   - `change strategy:<value>` → override `testing_strategy.mode` to the given value; set `testing_strategy.overridden_by_dev = true`; keep `mode` as inferred. Re-narrate the final state for the dev (one short summary line) before proceeding.
-   - `change mode:<value>` → override `metadata.mode`; set `metadata.mode_overridden_by_dev = true`; keep `testing_strategy` as inferred. Re-narrate the final state.
-   - Combined (`change strategy:<value> change mode:<value>`) → apply both overrides at once; both flags = true; re-narrate.
+   - `Y` → accept; persist `testing_strategy` as inferred; `overridden_by_dev = false`.
+   - `change strategy:<value>` → override `testing_strategy.mode` to the given value; set `testing_strategy.overridden_by_dev = true`. Re-narrate the final state for the dev (one short summary line) before proceeding.
 
-   After confirmation, persist BOTH:
+   After confirmation, persist:
    - `metadata.testing_strategy = { mode, rationale, signals, overridden_by_dev }`
-   - `metadata.mode = "<lite|full>"` and `metadata.mode_overridden_by_dev = <true|false>`
 
-   **Once set, neither `mode` nor `testing_strategy.mode` change for the remainder of the ticket** (no mid-ticket escalation; if the ticket grows past its inferred capacity, the dev aborts and reruns).
+   **Once set, `testing_strategy.mode` does not change for the remainder of the ticket.**
 
 3. Initialize `metadata.json` (intake fields + chosen mode are embedded, see Knowledge & State Layout for the full schema):
 
@@ -851,11 +855,9 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
      "branch": "<branch-name>",
      "status": "in_progress",
      "current_stage": 1,
-     "skill_version": "<read from frontmatter at intake time, e.g. 4.0.0>",
-     "mode": "<lite | full chosen in step 2>",
-     "mode_overridden_by_dev": false,
+     "skill_version": "<read from frontmatter at intake time, e.g. 5.0.0>",
      "testing_strategy": {
-       "mode": "<direct | tdd | bdd chosen in step 2>",
+       "mode": "<direct | bdd chosen in step 2>",
        "rationale": "<one-sentence rationale>",
        "signals": ["<signal-id>", "..."],
        "overridden_by_dev": false
@@ -891,9 +893,9 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
 
    The remaining top-level fields (`ac`, `plan`, `assumptions_validation`, `lessons_captured`, `summary`, `performance`, etc.) are populated by their owning stages and start absent.
 
-   **Per-stage `verified_with` rule.** When a stage transitions to `status: "complete"` (or `"skipped"`, or `"imported"`), the orchestrator MUST also write `verified_with: "<current SKILL frontmatter version>"` on that stage. Example after Stage 2 finishes under SKILL 4.0.0:
+   **Per-stage `verified_with` rule.** When a stage transitions to `status: "complete"` (or `"skipped"`, or `"imported"`), the orchestrator MUST also write `verified_with: "<current SKILL frontmatter version>"` on that stage. Example after Stage 2 finishes under SKILL 5.0.0:
    ```json
-   "2": {"name": "plan", "status": "complete", "verified_with": "4.0.0", "completed_at": "...", ...}
+   "2": {"name": "plan", "status": "complete", "verified_with": "5.0.0", "completed_at": "...", ...}
    ```
    This is the only mechanism that lets the auto-reverify check (see Versioning & Migrations) know which stages to spot-check after a SKILL upgrade.
 
@@ -1240,7 +1242,7 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a |
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
 | 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
-| 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at` | `skipped_reason` (and `skipped_acknowledged_by = "lite_mode"` if mode is lite) |
+| 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at` | `skipped_reason` |
 | 9 wrapup | `name`, `status`, `verified_with` | `completed_at`, `commit_message_presented`, `pr_description_presented` | n/a |
 
 ### Top-level required fields when transitioning ticket to `status: "complete"`
@@ -1301,7 +1303,7 @@ For each commit ahead of base: `git show --stat <sha>` then read key files. Clas
 - `.md`, `docs/` → user has documentation
 - `PLAN.md` or `.doer/` → user has plan
 
-If tests detected, run them via repo's test command, note pass/fail to identify TDD red/green/broken state.
+If tests detected, run them via repo's test command, note pass/fail to identify red/green/broken state.
 
 Narrate the analysis (no question, just summary, then proceed to Step 4):
 ```
@@ -1359,11 +1361,9 @@ Build the full draft (ACs + Out of Scope + Open Questions) BEFORE asking anythin
   ```
   The `AC-N: ` prefix is mandatory so Stage 2's deterministic Check B (AC-coverage by tests) keeps working. If raw ACs DO exist, restate them as plain bullets without forcing Given/When/Then.
 
-- **`tdd`**: restate ACs as Given/When/Then but framed technically. Example: `GIVEN input X WHEN mapTo() is called THEN returns Y`. Dervived ACs (when raw is `derive`) follow the same technical framing. Propose 3 to 7 items.
-
 - **`bdd`**: restate ACs as Given/When/Then with a user or system actor (`GIVEN the user has ... WHEN they ... THEN the app ...`). Derived ACs follow the same user-centric framing. Propose 3 to 7 items.
 
-Then in all three branches:
+Then in both branches:
 
 1. Build the AC list per the branch above.
 2. Build the **Out of Scope** list (items the dev should NOT confuse for in-scope).
@@ -1371,7 +1371,7 @@ Then in all three branches:
 4. Present the entire draft as one block:
 
    ```
-   Draft for Stage 1 (testing strategy: <DIRECT | TDD | BDD>):
+   Draft for Stage 1 (testing strategy: <DIRECT | BDD>):
 
    ## Acceptance Criteria
    - AC-1: <branch-appropriate format>
@@ -1446,7 +1446,7 @@ The orchestrator has already loaded these and inlined them below:
 under <doer-skill-dir>/lessons/{slug}.md>
 
 Explore the codebase to understand the structure relevant to this ticket.
-Read budget: up to 10 source files in `full` mode, up to 5 in `lite` mode (the orchestrator inlines the chosen mode in the prompt). Free to grep within the budget.
+Read budget: up to 10 source files. Free to grep within the budget.
 
 Produce the plan as a JSON object matching this exact shape:
 
@@ -1483,7 +1483,7 @@ Constraints:
 - Every file path in `files[]` MUST be relative to the repo root (no leading `./` or absolute paths).
 - Use `change: "new"` only if the file does NOT currently exist; `change: "edit"` only if it does.
 - Be terse, no prose, one-line items.
-- Read budget: 10 source files in `full` mode, 5 in `lite` mode. Stay within it. If a BLOCKER from the deterministic checks needs more, add it on retry.
+- Read budget: 10 source files. Stay within it. If a BLOCKER from the deterministic checks needs more, add it on retry.
 
 Do NOT write code. Do NOT run tests. Plan only.
 ```
@@ -1546,7 +1546,7 @@ If checks pass (first try or after retry):
 
 ---
 
-## Stage 3. Tests (Direct | TDD | BDD)
+## Stage 3. Tests (Direct | BDD)
 
 **Goal:** write tests appropriate to the ticket's `testing_strategy`. Mode is determined at intake and stored in `metadata.testing_strategy.mode`.
 
@@ -1560,9 +1560,9 @@ On every entry to Stage 3, the orchestrator MUST:
 
 1. Read `metadata.testing_strategy.mode`.
 2. Set `metadata.stages.3.testing_strategy_mode = <mode>` (always, even on re-entry; idempotent write).
-3. Branch to one of the three sections below.
+3. Branch to one of the two sections below.
 
-The three branches use different writer prompts, different deterministic checks, different commit messages, and (in the `direct` case) a different position in the pipeline (Stage 3 runs AFTER Stage 4 instead of before).
+The two branches use different writer prompts, different deterministic checks, different commit messages, and (in the `direct` case) a different position in the pipeline (Stage 3 runs AFTER Stage 4 instead of before).
 
 ### Branch: `direct` (deferred path)
 
@@ -1634,7 +1634,7 @@ All artifacts you write (tests, code comments, JSON values) MUST be in English.
 
 **Deterministic checks (`direct` branch, post-writer):**
 
-- **Check A. Tests parse and run.** Same as the `tdd`/`bdd` branches: invoke the repo's test command. Compile/import/syntax errors are BLOCKERs.
+- **Check A. Tests parse and run.** Same as the `bdd` branch: invoke the repo's test command. Compile/import/syntax errors are BLOCKERs.
 - **Check B. Regression coverage per AC.** For each entry in `metadata.ac.in_scope`, verify at least one entry in the writer's `tests_added[]` lists the entry's `AC-N` ID under `covers[]`. Missing → BLOCKER.
 - **Skip Check C entirely.** Tests in `direct` mode are EXPECTED to PASS, not fail. If any regression test FAILS, that is a real BLOCKER (regression caught), classify it as `B-X (regression failed): <test name> failed unexpectedly. Stage 4 may have an issue.` and abort with `status = "blocked"` so the dev can decide.
 
@@ -1649,77 +1649,6 @@ All artifacts you write (tests, code comments, JSON values) MUST be in English.
    ```
 4. Set `metadata.current_stage = 5` (Stage 4 already complete; jump straight to Stage 5).
 5. Narrate `"Stage 3 complete (direct): N regression tests added, all passing. Continuing to Stage 5."` Auto-proceed.
-
-### Branch: `tdd`
-
-Classic red/green: failing unit tests first, Stage 4 makes them pass.
-
-**Test writer prompt (skeleton):**
-
-```
-You are the test writer for ticket <TICKET-ID>. TDD red phase: write tests
-that currently FAIL because no implementation exists yet.
-
-The orchestrator has inlined these below:
-
-== metadata.ac ==
-<JSON dump of metadata.ac>
-
-== metadata.plan ==
-<JSON dump of metadata.plan>
-
-== Last changelog entries ==
-<JSON dump of metadata.changelog[-2:] for context>
-
-Read 2-3 existing test files in the repo to learn local conventions (framework,
-file layout, naming). Read budget: 5 source files for convention discovery, plus
-any source file referenced in metadata.plan.files that you need to understand
-the surface you are testing.
-
-Write every test listed in metadata.plan.tests. Each test MUST currently fail
-with a MEANINGFUL assertion failure (the expected behavior is missing), NOT an
-import error, NOT a typo, NOT a setup crash.
-
-DO NOT add explanatory comments like `// RED:` / `// TDD red:` / `// fails because X`
-on test bodies or KDoc/JSDoc blocks. The test name and the failing assertion
-are self-documenting. Those comments become stale the moment Stage 4 makes them
-pass and confuse PR reviewers.
-
-Output a single JSON object describing what you did:
-
-{
-  "tests_added": [
-    {"name": "<test name>", "file": "<repo-relative path>", "covers": ["AC-N"]}
-  ],
-  "changelog_appendix": {
-    "stage": 3, "iteration": 1, "kind": "initial",
-    "items": [
-      {"type": "step", "text": "Added <test name> in <file> covering <AC-N>"},
-      ...
-    ]
-  }
-}
-
-Em-dashes are forbidden. Use commas, periods, or parentheses instead.
-All artifacts you write (tests, code comments, JSON values) MUST be in English.
-```
-
-**Deterministic checks (`tdd` branch):**
-
-- **Check A. Tests parse and run.** Compile/import/syntax errors are BLOCKERs.
-- **Check B. Plan-driven test presence.** For each `metadata.plan.tests[i]`, verify a test with that name was added.
-- **Check C. TDD red verified by execution.** Every test from the plan MUST currently FAIL. A test that passes is a BLOCKER (`B-X (TDD red): <name> passed unexpectedly. Either the assertion is too weak, or unrelated code already satisfies it.`).
-
-**On checks pass:**
-
-1. Append the writer's `changelog_appendix` into `metadata.changelog`.
-2. Set `metadata.stages.3.status = "complete"`, `verified_with`, `completed_at`, `retry_used`, `testing_strategy_mode = "tdd"`.
-3. Commit:
-   ```bash
-   git add -A
-   git commit --no-verify -m "doer(<TICKET-ID>): failing tests (TDD red)"
-   ```
-4. Narrate `"Stage 3 complete (TDD): N tests added, all failing as expected. Continuing to Stage 4."` Auto-proceed.
 
 ### Branch: `bdd`
 
@@ -1783,7 +1712,7 @@ All artifacts you write (tests, code comments, JSON values) MUST be in English.
 
 - **Check A. Tests parse and run.** Compile/import/syntax errors are BLOCKERs.
 - **Check B. Scenario per AC.** Every entry in `metadata.ac.in_scope` MUST have at least one scenario test (cross-reference `tests_added[i].covers[]` to AC IDs).
-- **Check C. Scenario tests currently FAIL.** Same red-phase requirement as TDD; a passing scenario test is a BLOCKER.
+- **Check C. Scenario tests currently FAIL.** Red-phase requirement: a passing scenario test is a BLOCKER.
 
 **On checks pass:**
 
@@ -1807,7 +1736,7 @@ If the deterministic checks for the active branch produce any BLOCKERs:
 
    Address every BLOCKER. Output the same JSON shape.
    ```
-2. Re-run the deterministic checks for the active branch (A/B for `direct`, A/B/C for `tdd` and `bdd`).
+2. Re-run the deterministic checks for the active branch (A/B for `direct`, A/B/C for `bdd`).
 3. Set `metadata.stages.3.retry_used = true`.
 4. If still failing → ABORT. Narrate:
    ```
@@ -1816,7 +1745,7 @@ If the deterministic checks for the active branch produce any BLOCKERs:
    ```
    Set `metadata.stages.3.status = "blocked"`. Do not proceed.
 
-   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing the tests by hand, the orchestrator detects `metadata.stages.3.status == "blocked"` and re-runs ONLY the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode`. No new test-writer agent invocation. If checks pass → mark stage complete, advance to the appropriate next stage (Stage 4 for `tdd`/`bdd`, Stage 5 for `direct`). If checks still fail → re-narrate and stay `blocked`.
+   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing the tests by hand, the orchestrator detects `metadata.stages.3.status == "blocked"` and re-runs ONLY the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode`. No new test-writer agent invocation. If checks pass → mark stage complete, advance to the appropriate next stage (Stage 4 for `bdd`, Stage 5 for `direct`). If checks still fail → re-narrate and stay `blocked`.
 
 ---
 
@@ -1824,13 +1753,12 @@ If the deterministic checks for the active branch produce any BLOCKERs:
 
 **Goal:** implement the change per `metadata.plan`. The exact contract depends on `metadata.testing_strategy.mode`:
 
-- `tdd`: make the failing unit tests from Stage 3 pass (TDD green).
 - `bdd`: implement code so the BDD scenario tests from Stage 3 pass; scenario names are the implementation contract.
 - `direct`: implement the change directly. Tests do not exist yet; Stage 3 writes regression tests AFTER this stage commits.
 
-Loop with **max 3 iterations** in `full` mode (see Doer/Reviewer Loop Pattern). In `lite` mode, single-pass only (see "Lite branch" subsection at the end).
+Loop with **max 3 iterations** (see Doer/Reviewer Loop Pattern).
 
-**Mode check.** At entry, read both `metadata.mode` and `metadata.testing_strategy.mode`. If `mode == lite`, follow the "Lite branch" rules at the end of this section. If `mode == full`, run the full doer/reviewer loop documented below. The `testing_strategy.mode` value is inlined into the writer prompt and influences pre-reviewer Check A (see "Pre-reviewer deterministic checks"). After commit, the orchestrator decides where to advance based on `testing_strategy.mode` (see "Direct return" at the end).
+**Mode check.** At entry, read `metadata.testing_strategy.mode`. The value is inlined into the writer prompt and influences pre-reviewer Check A (see "Pre-reviewer deterministic checks"). After commit, the orchestrator decides where to advance based on `testing_strategy.mode` (see "Direct return" at the end).
 
 ### Code writer prompt (skeleton)
 
@@ -1859,7 +1787,6 @@ reads them as part of its source budget. EMPTY if testing_strategy.mode is
 If strategy.mode is "bdd": implement the code such that the BDD scenario tests
 pass. Trace each scenario to the AC it covers. The scenario names in the test
 files are your implementation contract.
-If strategy.mode is "tdd": make the failing unit tests pass. Standard TDD green.
 If strategy.mode is "direct": implement the change directly. Tests do not exist
 yet (they will be written in Stage 3 after this stage). Do not over-engineer.
 
@@ -1868,7 +1795,7 @@ dependencies unless metadata.plan specifies them (if you must, return a
 changelog item flagging it).
 
 After implementation:
-- For "tdd" or "bdd": run the full test suite. All tests (new and pre-existing) MUST pass.
+- For "bdd": run the full test suite. All tests (new and pre-existing) MUST pass.
 - For "direct": no new tests exist yet. Run the pre-existing test suite to confirm no regression. If the repo has no test command or running it is too expensive, note that in the changelog and skip.
 
 Output JSON:
@@ -1882,7 +1809,7 @@ Output JSON:
   }
 }
 
-Read budget: 15 source files (iter 1, `full` mode) or 8 source files (iter 1, `lite` mode) or 3 source files beyond the diff (iter 2+, `full` mode only; lite has no iter 2+).
+Read budget: 15 source files (iter 1) or 3 source files beyond the diff (iter 2+).
 
 Em-dashes are forbidden. Use commas, periods, or parentheses instead.
 All artifacts you write (code comments, JSON values, commit messages) MUST be in English.
@@ -1894,7 +1821,7 @@ Run these BEFORE invoking the code-reviewer. Each catches a class of obvious fai
 
 **Check A. Tests pass.** Behavior depends on `metadata.testing_strategy.mode`:
 
-- **`tdd` / `bdd`**: run the repo's test command. ALL tests (the new failing ones added in Stage 3 plus all pre-existing tests) MUST now pass. Any failure is a BLOCKER:
+- **`bdd`**: run the repo's test command. ALL tests (the new failing ones added in Stage 3 plus all pre-existing tests) MUST now pass. Any failure is a BLOCKER:
   ```bash
   <repo's test command>
   ```
@@ -1959,7 +1886,7 @@ touched. Focus on what those checks cannot catch:
    In `direct` mode, tests do not exist yet; trace ACs to the diff alone.
 2. Correctness: edge cases, error paths, concurrency, off-by-one, null handling.
 3. Security: input validation, injection, secrets, auth, authz.
-4. Test integrity (`tdd` / `bdd` only): were tests weakened to make them pass?
+4. Test integrity (`bdd` only): were tests weakened to make them pass?
    In `direct` mode, this check does not apply.
 5. Scope (semantic): any out-of-plan files touched (see INFO from Check C)?
    Are they justified, or should they be reverted?
@@ -1974,8 +1901,6 @@ Run loop until convergence (max 3 iterations). On every loop iteration the orche
 
 ```bash
 git add -A
-# tdd:
-git commit --no-verify -m "doer(<TICKET-ID>): implementation (TDD green)"
 # bdd:
 git commit --no-verify -m "doer(<TICKET-ID>): implementation (BDD green)"
 # direct:
@@ -1992,29 +1917,8 @@ metadata.last_green_test_command = <the test command that ran>
 
 After Stage 4 commits and updates the green-test marker, decide where to advance based on `metadata.testing_strategy.mode`:
 
-- **`tdd` / `bdd`**: set `metadata.current_stage = 5`, narrate *"Stage 4 complete. Continuing to Stage 5..."*, auto-proceed to Stage 5 in the same turn.
+- **`bdd`**: set `metadata.current_stage = 5`, narrate *"Stage 4 complete. Continuing to Stage 5..."*, auto-proceed to Stage 5 in the same turn.
 - **`direct`**: set `metadata.current_stage = 3`, narrate *"Stage 4 complete. Returning to Stage 3 to write regression tests against the implemented change."*, auto-proceed to Stage 3's `direct` second-visit branch in the same turn.
-
-### Lite branch (`metadata.mode == "lite"`)
-
-Single-pass only. No iter 2+. No convergence loop.
-
-1. Invoke the **code writer** ONCE (iter 1). Persist its `changelog_appendix` to `metadata.changelog`.
-2. Run the deterministic pre-checks (A: tests pass, B: lint/typecheck, C: plan-driven file scope) exactly as in the full branch.
-3. If any pre-check produces BLOCKERs, narrate to the dev:
-   ```
-   Stage 4 lite: iter 1 deterministic checks failed. BLOCKERs: <list>.
-   Lite mode does not iterate. Options:
-     1) Accept residuals (mark stage complete with metadata.stages.4.loop_outcome = "accepted_with_residuals").
-     2) Pause (status stays in_progress; rerun /doer continue after fixing manually).
-     3) Abort and restart in full mode. Once-lite-always-lite: we do NOT mutate metadata.mode mid-ticket. To restart cleanly: (a) `git reset --hard <base>` if you want to discard code/test commits made under lite, (b) `rm .doer/tickets/<ID>/metadata.json`, (c) `/doer <ID>` to re-enter intake and pick full mode.
-   ```
-   Persist the dev's choice in `metadata.stages.4`. Option 1 → status complete with residuals. Option 2 → leave status in_progress, no `loop_outcome`. Option 3 → narrate the cleanup steps; do NOT modify `metadata.mode`.
-4. If pre-checks are clean, invoke the **code reviewer** ONCE (iter 1). Persist its findings to `metadata.code_review`.
-5. If reviewer finds zero BLOCKERs → converged. Apply any AUTO_FIXes. Commit. Persist `metadata.stages.4.loop_outcome = "converged"` and `metadata.stages.4.iterations = 1`.
-6. If reviewer finds BLOCKERs → narrate the same 3-option prompt as step 3, and persist the dev's choice with the same semantics (option 1 → complete with residuals, option 2 → in_progress, option 3 → abort instructions).
-
-After commit (whichever path), persist the green-test marker the same as the full branch.
 
 ---
 
@@ -2022,35 +1926,25 @@ After commit (whichever path), persist the green-test marker the same as the ful
 
 **Goal:** PR-readiness check. Catch the mechanical "should never reach a PR" issues with deterministic greps, then invoke the reviewer LLM only for the semantic judgements that require it.
 
-**Mode check.** At entry, read `metadata.mode`. If `lite`, follow the "Lite branch" rules at the end of this section. If `full`, run the full hybrid loop documented below.
-
 ### Pre-reviewer deterministic checks
 
-Run all four. Each catches a class of PR-readiness issues without an LLM call.
+Run all three. Each catches a class of PR-readiness issues without an LLM call.
 
-**Check A. Stale TDD-red markers in test files.**
-```bash
-git diff --name-only <base>..HEAD | grep -E '(test|spec)' | while read f; do
-  grep -nE '(// |# |/\* +)?(RED:|TDD red:|fails because)' "$f" || true
-done
-```
-Each match → AUTO_FIX (delete the comment line; the test now passes so the marker is wrong).
-
-**Check B. Secrets in the diff.**
+**Check A. Secrets in the diff.**
 Use `gitleaks` if available; otherwise a regex sweep:
 ```bash
 git diff <base>..HEAD | grep -nEi '(api[_-]?key|secret|token|password|bearer|aws_)[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}'
 ```
 Any match → BLOCKER. Do not auto-fix; the dev must rotate credentials and amend.
 
-**Check C. Smoke / end-to-end test exists.**
+**Check B. Smoke / end-to-end test exists.**
 Inspect `metadata.plan.tests` + the actual tests added in Stage 3 (paths in `metadata.changelog` Stage 3 entries). Look for at least one test that exercises the full flow described in the ACs (not just unit isolation). If none → SUGGESTION (not BLOCKER, since some tickets legitimately have only unit-level tests):
 ```
 - S-1 (smoke): no end-to-end test detected. Consider adding one if the
   ticket touches a user-facing flow.
 ```
 
-**Check D. Swallow-all error handlers in the diff.**
+**Check C. Swallow-all error handlers in the diff.**
 ```bash
 git diff <base>..HEAD | grep -nE '(except\s*:|except\s+Exception\s*:|catch\s*\(\s*\w*\s*\)\s*\{?\s*\}?)' | grep -v test
 ```
@@ -2062,7 +1956,7 @@ Any match → SUGGESTION (the dev may have intentional reasons; do not auto-fix)
 
 ### Reviewer LLM (only if pre-checks did not produce BLOCKERs)
 
-If Check B (secrets) produced any BLOCKERs, end the iteration and hand them to the iter-N+1 fixer (the dev cannot proceed with secrets in the diff). Skip the reviewer LLM for that iteration.
+If Check A (secrets) produced any BLOCKERs, end the iteration and hand them to the iter-N+1 fixer (the dev cannot proceed with secrets in the diff). Skip the reviewer LLM for that iteration.
 
 Otherwise, invoke the reviewer LLM with a TIGHT scope. Stage 4's reviewer already validated correctness; do not duplicate that work here:
 
@@ -2083,7 +1977,7 @@ The orchestrator has inlined these below:
 == Diff ==
 <output of `git diff <base>..HEAD`>
 
-The deterministic checks already ran (RED markers, secrets, swallow-all
+The deterministic checks already ran (secrets, smoke test, swallow-all
 handlers). Stage 4's reviewer already validated correctness and AC behavior.
 
 Your scope is narrow. Judge ONLY:
@@ -2097,9 +1991,9 @@ Your scope is narrow. Judge ONLY:
    Meaningful recovery or fallback? Logging? Or silently swallowing in
    a way that will hide bugs in production?
 
-3. Stale or misleading comments in the diff (other than RED markers
-   which Check A catches): TODO that should have been done, comments
-   that contradict what the code now does, dead code commented out.
+3. Stale or misleading comments in the diff: TODO that should have
+   been done, comments that contradict what the code now does, dead
+   code commented out.
 
 Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. See Doer/Reviewer
 Loop Pattern for classification rules.
@@ -2125,28 +2019,6 @@ metadata.last_green_sha = <git rev-parse HEAD>   # MUST be the full 40-char SHA.
 metadata.last_green_test_command = <the test command that ran>
 ```
 If the post-commit test run fails, that is a regression: surface as a BLOCKER and re-enter the iter loop. Do not advance.
-
-### Lite branch (`metadata.mode == "lite"`)
-
-Single-pass only. No iter 2+. No convergence loop.
-
-1. Run all four deterministic pre-checks (A: stale TDD-red markers, B: secrets, C: smoke, D: swallow-all handlers) exactly as in the full branch.
-2. Apply any AUTO_FIXes that came out of pre-checks.
-3. If Check B (secrets) produced BLOCKERs → narrate and abort the stage. Lite does not loop. The dev must rotate credentials and rerun manually.
-4. If pre-checks are clean of BLOCKERs (SUGGESTIONs are OK), invoke the **PR-readiness reviewer LLM ONCE** with the full scope (one logical unit, semantic error handling, stale comments). Same prompt as the full branch.
-5. If reviewer returns zero BLOCKERs → converged. Persist findings to `metadata.code_review` (one entry, iteration 1). Apply any AUTO_FIXes. Commit if there was anything to fix.
-6. If reviewer returns BLOCKERs → narrate to the dev:
-   ```
-   Stage 5 lite: reviewer found N BLOCKERs in iter 1. Lite mode does not iterate.
-   BLOCKERs: <list>
-   Options:
-     1) Accept residuals (mark stage complete with metadata.stages.5.loop_outcome = "accepted_with_residuals").
-     2) Pause (status stays in_progress; rerun /doer continue after fixing manually).
-     3) Abort and restart in full mode (same procedure as Stage 4 lite: git reset, rm metadata.json, rerun /doer <ID>).
-   ```
-   Persist the dev's choice in `metadata.stages.5`. Same semantics as Stage 4 lite: option 1 completes with residuals, option 2 stays in_progress, option 3 narrates abort steps.
-
-Persist `metadata.stages.5.iterations = 1` always. `metadata.stages.5.loop_outcome` is set ONLY when the stage actually completes (option 1 → `accepted_with_residuals`, or step 5 path → `converged`). Option 2 (pause) leaves status in_progress without `loop_outcome`.
 
 ---
 
@@ -2475,15 +2347,6 @@ No SHAs persisted (git history IS the source of truth). No commit needed (`.doer
 
 **Goal:** update user-facing documentation when the change actually affects it. Skip aggressively when it doesn't. The doc updater never freelances; it gets an exact list of what to update.
 
-**Mode check.** At entry, read `metadata.mode`. If `lite`, skip Stage 8 ENTIRELY without running any pre-check:
-```
-metadata.stages.8.status = "skipped"
-metadata.stages.8.skipped_reason = "lite mode"
-metadata.stages.8.skipped_acknowledged_by = "lite_mode"
-narrate: "Stage 8 skipped: lite mode. Continuing to Stage 9."
-```
-Continue to Stage 9. The pre-checks below only run in `full` mode.
-
 ### Pre-check A: classify ticket (should docs even run?)
 
 Auto-skip Stage 8 entirely when the ticket clearly does NOT affect user-facing docs. Heuristics:
@@ -2622,8 +2485,6 @@ If the docs-updater produced no diff (rare; the list was non-empty but the agent
 
 **Goal:** validate assumptions, capture lessons, persist a one-paragraph summary plus performance stats into `metadata.json`, clean `.doer/` from branch history. No `wrapup.md` sidecar (everything goes into `metadata.summary`, `metadata.performance`, `metadata.assumptions_validation`, `metadata.lessons_captured`).
 
-**Mode-dependent steps.** Steps 1 and 2 run only in `full` mode. In `lite` mode, skip them and jump to step 3 (the orchestrator still produces `metadata.summary` and `metadata.performance`, but auto-generates without dev interaction). Step 5 (history cleanup) skips its confirmation prompt in `lite` mode and runs the cleanup directly after creating the backup ref. All other steps run identically in both modes.
-
 ### MUST-RUN steps (forcing rule, NEVER skip)
 
 Stage 9 is a sequence of NINE numbered sub-steps. Steps 7 (commit message) and 8 (PR description) are the two most-skipped sub-steps in the wild because they fall after the visible "ticket complete" actions (history cleanup, final commit). Skipping them violates the dev's contract; they are mandatory output of every wrapup. To prevent the skip:
@@ -2636,28 +2497,28 @@ Stage 9 is a sequence of NINE numbered sub-steps. Steps 7 (commit message) and 8
 
 **Order of sub-steps (MUST run in this order):**
 
-| Sub-step | What | Mode |
-|---|---|---|
-| 1 | Validate assumptions | full only |
-| 2 | Capture lessons | full only |
-| 3 | Persist summary + performance into metadata | both |
-| 4 | Set `metadata.status = "complete"` and `stages.9` baseline fields | both |
-| 5 | History cleanup (filter-branch) | both (full asks for confirmation; lite runs directly) |
-| 6 | Final commit (only if uncommitted real changes) | both |
-| 7 | **Recommend final commit message** (write `commit_message_presented`) | both |
-| 8 | **Help with PR description** (write `pr_description_presented`) | both |
-| 9 | Final closing narration | both |
+| Sub-step | What |
+|---|---|
+| 1 | Validate assumptions |
+| 2 | Capture lessons |
+| 3 | Persist summary + performance into metadata |
+| 4 | Set `metadata.status = "complete"` and `stages.9` baseline fields |
+| 5 | History cleanup (filter-branch) — asks for confirmation |
+| 6 | Final commit (only if uncommitted real changes) |
+| 7 | **Recommend final commit message** (write `commit_message_presented`) |
+| 8 | **Help with PR description** (write `pr_description_presented`) |
+| 9 | Final closing narration |
 
 Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by replying `skip`, in which case the flag is set to the literal string `"skipped"`; the step itself still runs to capture that decision. There is no auto-skip path for either step.
 
-1. **Validate assumptions.** *(`full` mode only; skipped in `lite`.)* Read `metadata.plan.assumptions`. For each assumption, decide VALIDATED, INVALIDATED (with reason), or UNVERIFIED based on what actually happened during Stages 4-7. Persist as `metadata.assumptions_validation`:
+1. **Validate assumptions.** Read `metadata.plan.assumptions`. For each assumption, decide VALIDATED, INVALIDATED (with reason), or UNVERIFIED based on what actually happened during Stages 4-7. Persist as `metadata.assumptions_validation`:
    ```json
    "assumptions_validation": [
      {"text": "<assumption from metadata.plan.assumptions>", "status": "VALIDATED | INVALIDATED | UNVERIFIED", "reason": "<one-line, only if INVALIDATED>"}
    ]
    ```
 
-2. **Capture lessons (with auto-detected candidates).** *(`full` mode only; skipped in `lite`.)*
+2. **Capture lessons (with auto-detected candidates).**
 
    Before asking the user, scan `metadata.json` for signals that often produce a lesson worth keeping. Build a candidate list:
 
@@ -2736,17 +2597,15 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    ```
    If empty → skip to step 6. Otherwise:
 
-   **`full` mode:** confirm with user (destructive, changes SHAs). On approval, proceed with the cleanup commands below. On decline, narrate *"Skipping history cleanup. Run /doer cleanup-history later."*
+   Confirm with the user (destructive, changes SHAs). On approval, proceed with the cleanup commands below. On decline, narrate *"Skipping history cleanup. Run /doer cleanup-history later."*
 
-   **`lite` mode:** skip the confirmation prompt and run the cleanup commands directly (the backup ref is still created so rollback remains possible). Narrate *"Stage 9 lite: history cleanup ran without confirmation. Backup ref: refs/doer-backup/<TICKET-ID>-pre-cleanup-<ts>."*
-
-   Cleanup commands (both modes):
+   Cleanup commands:
    ```bash
    git update-ref "refs/doer-backup/<TICKET-ID>-pre-cleanup-$(date +%s)" HEAD
    git filter-branch -f --index-filter 'git rm -r --cached --ignore-unmatch .doer/' --prune-empty "<base>..HEAD"
    git update-ref -d refs/original/refs/heads/<branch-name> 2>/dev/null || true
    ```
-   Verify `git log --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"` is empty. In `full` mode, tell the user the backup ref (rollback: `git reset --hard <ref>`).
+   Verify `git log --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"` is empty. Tell the user the backup ref (rollback: `git reset --hard <ref>`).
 
 6. **Final commit** (only if uncommitted real changes, wrapup itself has none since it only writes to `.doer/`):
    ```bash
@@ -2926,7 +2785,7 @@ This is the path that runs when `/doer <TICKET-ID>` detects `./.doer/tickets/<TI
    - `blocked` (Stages 2 and 3 only) → re-run ONLY the deterministic checks for that stage (no new agent invocation). See "Resuming from `blocked`" subsection in the stage's docs. If checks pass, mark complete and proceed.
    - `deferred` (Stage 3 only, `direct` testing strategy) → enter the Stage 3 `direct` second-visit branch (regression test writer). See "Branch: `direct` (deferred path)" in the Stage 3 docs.
    - `complete | skipped | imported` → unexpected here (current_stage should not point at one of these). Treat as data drift: advance current_stage to the next pending stage and continue.
-7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}{, status: {status}} in {mode} mode." (Read `metadata.mode` for the mode label.) Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent, do NOT ask for further confirmation).
+7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}{, status: {status}}." Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent, do NOT ask for further confirmation).
 8. Proceed.
 
 ---
@@ -2937,7 +2796,7 @@ Render:
 
 ```
 Ticket: <TICKET-ID>, <title>
-Mode: <lite | full>  Branch: <branch>  Status: <status>
+Branch: <branch>  Status: <status>
 Current Stage: {N} ({name})
 
 Progress:
@@ -3053,7 +2912,7 @@ Standalone version of the wrapup's history cleanup step. Use it when:
 1. Read `./.doer/tickets/<TICKET-ID>/metadata.json`. Resolve `branch-name` and `base-branch` (default `main`, fall back to `master`).
 2. Verify the user is currently on `branch-name`. If not, ask before checking it out.
 3. Run the **Workspace Guard** (idempotent, ensures `.doer/` is excluded going forward).
-4. Run the same logic as Stage 9 step 5 (PR-ready history cleanup): detect dirty commits via `git log --diff-filter=ACMR -- '.doer/*'`, confirm with user (always, even if `metadata.mode == "lite"`; this command is invoked manually so the dev should explicitly approve), create backup ref, `git filter-branch` to strip `.doer/` from history, verify the strip succeeded, reset housekeeping refs, narrate the backup ref name.
+4. Run the same logic as Stage 9 step 5 (PR-ready history cleanup): detect dirty commits via `git log --diff-filter=ACMR -- '.doer/*'`, confirm with user (this command is invoked manually so the dev should explicitly approve), create backup ref, `git filter-branch` to strip `.doer/` from history, verify the strip succeeded, reset housekeeping refs, narrate the backup ref name.
 5. Narrate the result. Do NOT commit anything new, this command is purely a history rewrite.
 
 ### Safety

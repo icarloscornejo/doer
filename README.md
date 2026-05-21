@@ -1,8 +1,8 @@
 # doer
 
-**Ticket execution orchestrator for Claude Code.** Version 4.0.1.
+**Ticket execution orchestrator for Claude Code.** Version 5.0.0.
 
-Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, two execution modes (lite for trivial tickets, full for everything else), delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
+Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
 Scope stops before PR and deploy. Anything upstream (PRD, architecture, ticket creation) or downstream (PR assembly, CI, deploy) is out of scope by design.
 
@@ -47,9 +47,9 @@ One pull refreshes every symlinked Claude. The Migration Check auto-applies any 
 
 | Command | Description |
 |---------|-------------|
-| `/doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, ACs, context, branch name, prior-work flags, then runs a lite-suitability heuristic and asks you to confirm `mode: lite` or `mode: full`. |
-| `/doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). Resume narration mentions the mode. |
-| `/doer status <TICKET-ID>` | Show current stage, mode, loop state, blockers. |
+| `/doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, ACs, context, branch name, prior-work flags, then asks you to confirm the inferred testing strategy (`direct` or `bdd`). |
+| `/doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). |
+| `/doer status <TICKET-ID>` | Show current stage, loop state, blockers. |
 | `/doer list` | List all tickets under `./.doer/tickets/`. |
 
 ### Escape-hatch commands (rarely needed; flows below run automatically)
@@ -85,57 +85,24 @@ You don't need to type `/doer continue` to nudge the next iteration. That comman
 
 ---
 
-## Modes (lite vs full)
+## Testing strategy (Direct / BDD)
 
-At the end of intake, the orchestrator computes a lite-suitability score from four inputs:
-
-- Length of the description
-- Number of acceptance criteria
-- Whether prior work exists
-- Keyword signals in the description:
-  - **Pushes toward lite**: `default`, `preselect`, `prefill`, `rename`, `typo`, `copy`, `placeholder`, `hotfix`, `translation`, `locale string`
-  - **Pushes toward full**: `architecture`, `system`, `refactor`, `migration`, `pipeline`, `framework`, `epic`
-
-It then asks you to pick a mode:
-
-| Aspect | Lite | Full |
-|---|---|---|
-| Stage 1 (AC Confirm) | Same | Same |
-| Stage 2 (Plan) | Single-pass + 3 deterministic checks + 1 retry | Same (no difference) |
-| Stage 3 (Tests: Direct / TDD / BDD) | Single-pass + deterministic checks + 1 retry; branch chosen at intake | Same (no difference) |
-| Stage 4 (Code, strategy-aware) | Iter 1 only. Non-convergence prompts: accept residuals, pause, or abort + restart in full | Doer/reviewer loop, max 3 iterations |
-| Stage 5 (Code Review) | Deterministic checks + 1 LLM reviewer single-shot | Deterministic + LLM reviewer in loop, max 3 iterations |
-| Stage 6 (Quality Gate) | Same | Same |
-| Stage 7 (Runtime Verify) | Same. Always asks the dev | Same |
-| Stage 8 (Docs Sync) | Skipped entirely | Runs with classify pre-check |
-| Stage 9 (Wrapup) | Minimal: auto-summary + performance only. Skip assumptions validation, skip lessons capture, history cleanup runs without confirmation | Full: validate assumptions, capture lessons (interactive), confirmed history cleanup |
-
-**Once-lite-always-lite.** Once `metadata.mode` is set at intake, it does NOT change mid-ticket. If a lite ticket grows beyond what lite can handle, you can: accept residuals at the prompt, pause, or abort + restart in full mode (`git reset --hard <base>`, `rm .doer/tickets/<ID>/metadata.json`, then `/doer <ID>` to re-enter intake).
-
-The heuristic only **suggests** a mode; you confirm. Override freely.
-
----
-
-## Testing strategy (Direct / TDD / BDD)
-
-Independently of lite vs full, the orchestrator also infers a testing strategy at intake. The two axes are independent: any combination of mode + testing strategy is valid.
+The orchestrator infers a testing strategy at intake from signals in the title, description, and raw ACs.
 
 | Strategy | When | Stage 3 behavior |
 |---|---|---|
 | Direct | Cosmetic/trivial change (label rename, copy fix, constant change, no AC) | DEFERRED: Stage 4 runs first, regression tests written after Stage 4. Tests expected to PASS. No red phase. |
-| TDD | Isolated technical unit (mapper, transformer, helper, parser, calculator) | Failing unit tests first; Stage 4 makes them pass. Standard red/green. |
 | BDD | User-facing behavior, observable bug, analytics with AC, flow with multiple states | Given/When/Then scenario tests first (failing); Stage 4 implements code derived from scenario names. |
 
-The orchestrator scans the title, description, and raw ACs at intake. Both `mode` (lite/full) and `testing_strategy` (direct/tdd/bdd) are inferred and presented in **ONE combined confirmation**. Either axis can be overridden in the same prompt:
+Intake presents the inferred strategy and asks you to confirm or override:
 
 ```
-Y                                          accept both as inferred
-change strategy:bdd                        keep mode, switch testing strategy
-change mode:full                           keep testing strategy, switch mode
-change strategy:tdd change mode:full       override both at once
+Y                              accept as inferred
+change strategy:bdd            override testing strategy to bdd
+change strategy:direct         override testing strategy to direct
 ```
 
-`testing_strategy` is set ONCE at intake and never changes mid-ticket (same rule as `mode`). Pre-existing tickets created before v4.0.0 are migrated to `testing_strategy.mode = "tdd"` for backward compatibility.
+`testing_strategy` is set ONCE at intake and never changes mid-ticket. Pre-existing tickets that were created with `testing_strategy.mode = "tdd"` are auto-rewritten to `"bdd"` under v5.0.0 (the red-phase contract has the same shape).
 
 ---
 
@@ -144,7 +111,7 @@ change strategy:tdd change mode:full       override both at once
 ```mermaid
 flowchart TD
     A[1 AC Confirm]:::single --> B[2 Plan]:::single
-    B --> C[3 Tests Direct or TDD or BDD]:::single
+    B --> C[3 Tests Direct or BDD]:::single
     C --> D[4 Code Implementation]:::loop
     D --> E[5 Code Review]:::loop
     E --> F[6 Quality Gate]:::gate
@@ -162,10 +129,10 @@ flowchart TD
 
 Color legend:
 
-- **Blue**: doer/reviewer loop (Stages 4 and 5; max 3 iterations in full mode, single-pass in lite)
+- **Blue**: doer/reviewer loop (Stages 4 and 5; max 3 iterations)
 - **Amber**: validation gate (test suite execution)
 - **Purple**: on-device runtime verification with temporary debug logs (always asks the dev; never silent skip)
-- **Green**: wrapup (lessons + performance in full mode; minimal in lite)
+- **Green**: wrapup (lessons + performance)
 - **Slate**: single-pass stage (Stages 1, 2, 3, 8). Stages 2 and 3 use deterministic checks plus one retry on check failure
 
 Stages with real-code commits (3, 4, 5, 7, 8) commit on the feature branch. Stages whose only output is `metadata.json` (1, 2, 9) skip the commit, since `metadata.json` is gitignored locally and never reaches the team.
@@ -205,7 +172,7 @@ flowchart TD
 
 ## Doer / Reviewer Loop
 
-**Stages 4 (Code) and 5 (Code Review) only.** Max 3 iterations in `full` mode, single-pass in `lite` mode. **One full iteration runs in a single turn** (doer + reviewer + AUTO_FIX pass if needed). Works identically in CLI and IDE plugins.
+**Stages 4 (Code) and 5 (Code Review) only.** Max 3 iterations. **One full iteration runs in a single turn** (doer + reviewer + AUTO_FIX pass if needed). Works identically in CLI and IDE plugins.
 
 Stages 2 (Plan) and 3 (Tests) do NOT loop. They run single-pass, then deterministic checks decide pass/fail. On check failure, the writer agent is invoked **once more** with the BLOCKERs inline. A second failure aborts the stage with `status: "blocked"`; the dev fixes manually and reruns `/doer continue` (the orchestrator re-runs only the deterministic checks, no new agent invocation).
 
@@ -233,13 +200,11 @@ flowchart TD
 **Iteration 1**: reviewer is clean-slate (gets `metadata.ac`, `metadata.plan`, the diff, the last `metadata.changelog` entries inline).
 **Iteration 2+**: ONE combined fixer-reviewer agent. Receives prior findings + last `metadata.code_review` entry + doer's last changelog appendices, all inline. Marks each prior BLOCKER as `RESOLVED` or `STILL_OPEN`. Scans only the areas the doer touched for new issues.
 
-**Lite mode collapses the loop**: a single iteration runs (doer + reviewer + AUTO_FIX). On non-convergence the dev picks: accept residuals, pause, or abort + restart in full mode. No iter 2+.
-
 ### Findings (4 buckets)
 
 | Bucket | Behavior | Examples |
 |--------|----------|----------|
-| `BLOCKER` | Loop continues until resolved (or single-shot in lite) | Failing test, missing AC coverage, security issue, broken build |
+| `BLOCKER` | Loop continues until resolved | Failing test, missing AC coverage, security issue, broken build |
 | `AUTO_FIX` | Applied automatically same iteration before convergence check | Reference to deleted function, unused import, test name stale after rename, typo |
 | `SUGGESTION` | Logged to `metadata.code_review`, never applied, never blocks | "Consider extracting", "could use map instead", design tweaks |
 | `INFO` | Observational only | "This file is 500 LOC", "pattern used in 3 places" |
@@ -270,14 +235,14 @@ The decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* N
 
 | Field | Owner | Notes |
 |---|---|---|
-| `mode` | Intake (heuristic + dev confirm) | `lite` or `full`. Set ONCE; never changes mid-ticket |
+| `testing_strategy` | Intake (heuristic + dev confirm) | `direct` or `bdd`. Set ONCE; never changes mid-ticket |
 | `intake` | Intake | Raw description, ACs as pasted, context, prior-work flags |
 | `ac` | Stage 1 | Structured: `in_scope[]`, `out_of_scope[]`, `open_questions_resolved[]`, `applicable_lessons[]` |
 | `plan` | Stage 2 | Structured: `files[]`, `steps[]`, `tests[]`, `risks[]`, `assumptions[]` |
 | `changelog` | Every doer stage appends | Append-only array of `{stage, iteration, kind, items[]}` |
 | `code_review` | Stage 5 appends | Append-only array of `{iteration, blockers, auto_fixes, suggestions, info, verdict}` |
-| `assumptions_validation` | Stage 9 (full only) | Each plan assumption marked VALIDATED / INVALIDATED / UNVERIFIED |
-| `lessons_captured` | Stage 9 (full only) | Refs to global lessons added during this ticket |
+| `assumptions_validation` | Stage 9 | Each plan assumption marked VALIDATED / INVALIDATED / UNVERIFIED |
+| `lessons_captured` | Stage 9 | Refs to global lessons added during this ticket |
 | `summary` | Stage 9 | One-paragraph wrapup |
 | `performance` | Stage 9 | Timing, agent invocation counts, convergence stats, reviewer ROI |
 | `stages.<N>.{status, verified_with, ...}` | State machine | Per-stage status + stage-specific runtime fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7) |
@@ -299,7 +264,6 @@ The consolidation eliminates drift between sidecar files, file-coordination cost
 
 - The first `/doer <ID>` after upgrade auto-runs the migration block.
 - LLM parser agents convert each old `.md` file into its corresponding metadata field, then delete the file.
-- Existing tickets default to `mode: "full"` to preserve their pipeline behavior.
 
 ---
 
@@ -384,7 +348,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 4.0.1** (see SKILL.md frontmatter).
+**Current version: 5.0.0** (see SKILL.md frontmatter). The latest migration (4.0.1 → 5.0.0) removes the `mode` (lite/full) axis and collapses `testing_strategy` from `{direct, tdd, bdd}` to `{direct, bdd}`. Also replaces the conditional heartbeat self-check with an unconditional Transition Sync at every stage boundary.
 
 ---
 
