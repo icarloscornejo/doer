@@ -2,7 +2,7 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
-## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer + WK-9 wk:review external PR review)
+## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer + WK-9 wk:review external PR review + WK-10 wk:publish MR creation)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).
 
@@ -114,6 +114,19 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Posting: without `--post`, the report goes to stdout only. With `--post` on GitHub, calls `gh pr review --request-changes` or `--comment` (NEVER `--approve`; approval requires human intent). With `--post` on GitLab, posts a comment via `glab mr note create` only (does NOT call `glab mr approve` or `glab mr merge`); the vote line still narrates the recommended manual action.
 - `--list-personas` lists every persona JSON in `lib/advisor-personas/` with id and one-line description, then exits without fetching.
 - Skill is a CONSUMER of `lib/advisor-personas/` (does not define or modify the schema). Persona ownership stays with WK-8.
+
+### WK-10: wk:publish MR creation
+
+- `skills/publish/SKILL.md` operational (replacing the placeholder). `/wk:publish <TICKET-ID>` is the explicit final hop the dev runs after `/wk:doer` reports `status: complete`. Pushes the feature branch and creates a PR on GitHub or an MR on GitLab. The doer pipeline still stops before push by design.
+- Platform detection: parses `git remote get-url origin` and matches against GitHub cloud, GitHub Enterprise (`ghe.` host or `GH_HOST` env var), GitLab cloud, and GitLab self-hosted patterns. Aborts with a clear message when the URL matches none. Verifies `gh` or `glab` is installed AND authenticated before proceeding.
+- Four pre-flight checks (run in order, abort on first failure with a named reason): (1) workspace guard (`.git/` present; cwd not `~` or `/`); (2) metadata invariants: `status == "complete"`, `branch` non-empty, `summary` non-empty, `last_green_sha` exactly 40 hex chars matching `git rev-parse <branch>`; (3) `git rev-parse HEAD` matches `last_green_sha` (catches drift after Stage 9); (4) `git ls-remote origin HEAD` reachable.
+- PR/MR body composed from `metadata` and written to a temp file (`/tmp/wk-publish-<TICKET-ID>.md`, cleaned up on exit). Sections: `## Summary` from `metadata.summary`, `## ACs` from `metadata.ac.in_scope`, `## Plan` from `metadata.plan.steps[].what` in order, `## Tests` from `metadata.plan.tests[].name`, `## Lessons captured` from `metadata.lessons_captured[]` (`(none)` when empty), `## Tracker` from `metadata.intake.tracker.source_url` when present.
+- Title format: `[<TICKET-ID>] <metadata.title>`. Issued via `gh pr create --base ... --head ... --title ... --body-file ... [--draft]` or `glab mr create --target-branch ... --source-branch ... --title ... --description-file ... [--draft]`.
+- Persists `metadata.publish` after success: `{platform, url, branch, base, draft, created_at, reused, last_updated_at?, jira_transition?}`. Without `--reuse`, the skill aborts when `metadata.publish` already exists or when the branch is already on remote, preventing duplicate PRs/MRs.
+- `--reuse` updates the existing PR/MR via `gh pr edit` or `glab mr update` (non-force push only; diverged history aborts and asks the dev to resolve manually). Sets `reused: true` and `last_updated_at`.
+- Optional Jira transition via `--transition <state>` requires `metadata.intake.tracker.kind == "jira"` (provenance from `/wk:load`) and env vars `WK_JIRA_EMAIL`, `WK_JIRA_TOKEN`, `WK_JIRA_BASE_URL`. Resolves transition id by case-insensitive name match against `GET /rest/api/3/issue/<id>/transitions`, then `POST` to the same endpoint. HTTP 204 = success. Failures (missing env, mismatched tracker kind, transition not found, non-204) are NEVER rolled back; the PR/MR stays live, the error is persisted to `metadata.publish.jira_transition.error`, and the dev is instructed to re-run with `--reuse --transition` after fixing.
+- Flags: `--draft`, `--base <branch>` (default `main`), `--dry-run` (prints would-do preview without any write or push), `--reuse`, `--transition <state>`. Combinations are allowed.
+- Edge cases handled with named aborts: detached HEAD, missing remote, missing CLI, auth failure, missing `metadata.json`, ticket not complete, drifted `last_green_sha`. Jira auth failures (HTTP 401/403) are recorded in `metadata.publish.jira_transition.error` and exit non-zero.
 
 ### Runtime
 

@@ -22,10 +22,10 @@ After installing, the 5 skills are available:
 /wk:load <ID>          # import a ticket from Jira / Linear / GitHub (operational)
 /wk:advise             # review specs/ACs/code with configurable personas (operational)
 /wk:review <pr-ref>    # review external PRs (operational)
-/wk:publish ABC-123    # create MR + transition Jira (opt-in)
+/wk:publish ABC-123    # create PR/MR + transition Jira (opt-in, operational)
 ```
 
-Satellite skills land progressively in 6.0.0 via tickets `WK-7` through `WK-10`. `/wk:load`, `/wk:advise`, and `/wk:review` are operational; `publish` is a placeholder until its ticket ships (see ROADMAP.md).
+All 4 satellite skills (`load`, `advise`, `review`, `publish`) shipped in 6.0.0 via tickets WK-7 through WK-10 and are operational. See ROADMAP.md and CHANGELOG.md for details.
 
 ## Initial setup
 
@@ -45,7 +45,7 @@ doer/
 |  |- load/                       # operational (WK-7, shipped in 6.0.0)
 |  |- advise/                     # operational (WK-8, shipped in 6.0.0)
 |  |- review/                     # operational (WK-9, shipped in 6.0.0)
-|  |- publish/                    # placeholder
+|  |- publish/                    # operational (WK-10, shipped in 6.0.0)
 |- lib/                           # shared protocols
 |  |- heartbeat.md                # anti-compaction
 |  |- migrations.md               # versioning + auto-migrate
