@@ -1,0 +1,21 @@
+{
+  "name": "wk",
+  "displayName": "Doer Work Kit",
+  "version": "6.0.0",
+  "description": "Ticket execution orchestrator. Takes a pre-defined ticket from acceptance criteria to implementation-ready code on a feature branch. Includes satellite skills for tracker import, advisor review, MR review, and publishing.",
+  "author": {
+    "name": "Carlos Cornejo"
+  },
+  "homepage": "https://github.com/icarloscornejo/doer",
+  "repository": "https://github.com/icarloscornejo/doer",
+  "license": "MIT",
+  "keywords": [
+    "ticket",
+    "orchestration",
+    "pipeline",
+    "tdd",
+    "bdd",
+    "code-review",
+    "claude-code"
+  ]
+}
