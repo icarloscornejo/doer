@@ -230,7 +230,6 @@ The decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* N
     └── {slug}.md
 
 ./.doer/                           # per-repo (in CWD), auto-added to .git/info/exclude
-├── knowledge/                     # reserved for future cross-ticket data; empty by default
 └── tickets/
     └── {TICKET-ID}/
         └── metadata.json          # SINGLE file: state + intake + ac + plan + changelog + code_review + assumptions_validation + lessons_captured + summary + performance

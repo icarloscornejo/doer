@@ -19,7 +19,6 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
     └── {slug}.md
 
 ./.doer/                           # per-repo (in CWD), gitignored via .git/info/exclude
-├── knowledge/                     # reserved for future cross-ticket data; empty by default
 └── tickets/
     └── {TICKET-ID}/
         └── metadata.json          # SINGLE file per ticket: state + intake + ac + plan + changelog + code_review + assumptions + wrapup
@@ -120,4 +119,4 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
 
 **Path resolution for `lessons/`:** use `${CLAUDE_PLUGIN_ROOT}` to resolve the plugin root, e.g. `${CLAUDE_PLUGIN_ROOT}/lessons/` for lessons or `${CLAUDE_PLUGIN_ROOT}/lib/<file>.md` for shared protocols. `${CLAUDE_PLUGIN_ROOT}` is the variable Claude Code substitutes automatically to the installed plugin path; do NOT use `readlink`/`realpath` heuristics on `SKILL.md`.
 
-The global `lessons/` directory ships with the plugin. The per-repo `./.doer/` directory and the `tickets/` subdir under it are created on first invocation if missing. The `knowledge/` subdir is reserved for future use and is created lazily when something writes to it.
+The global `lessons/` directory ships with the plugin. The per-repo `./.doer/` directory and the `tickets/` subdir under it are created on first invocation if missing.
