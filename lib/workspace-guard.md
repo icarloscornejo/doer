@@ -66,7 +66,15 @@ Idempotent check that prevents `.doer/` from ever being committed in this clone.
 
 6. **Migration Check.** If a ticket is active, run the **Migration Check** (see `${CLAUDE_PLUGIN_ROOT}/lib/migrations.md`). Auto-applies any pending migration silently. Idempotent, once at current version, no-op.
 
-7. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket, next ticket-scoped invocation sets it.)
+7. **Acquire per-ticket lock** (only when a ticket is active). Run:
+   ```bash
+   ${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh acquire "<TICKET-ID>"
+   ```
+   If exit is non-zero, the orchestrator MUST stop the run. Surface the helper's stderr message verbatim. Do NOT prompt the user, do NOT retry. The user resolves the conflict (close the other session) and re-invokes `/wk:doer`.
+
+   The protocol is documented in `${CLAUDE_PLUGIN_ROOT}/lib/lock.md`. The lock file lives at `./.doer/tickets/<TICKET-ID>/lock.json`.
+
+8. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket, next ticket-scoped invocation sets it.)
 
 For deep cleanup of historical `.doer/` content from earlier commits on the feature branch, use `/doer cleanup-history <TICKET-ID>`, out of scope for the Guard.
 

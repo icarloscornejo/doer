@@ -1,76 +1,76 @@
 # Doer Work Kit (`wk`)
 
-Plugin de Claude Code para ejecucion end-to-end de tickets de desarrollo. Toma un ticket pre-definido y lo lleva desde acceptance criteria hasta codigo listo en una rama feature, justo antes del PR.
+Claude Code plugin for end-to-end execution of development tickets. Takes a pre-defined ticket from acceptance criteria to implementation-ready code on a feature branch, just before the PR.
 
-## Instalacion
+## Install
 
 ```bash
-# 1. Registrar el marketplace
+# 1. Register the marketplace
 claude plugin marketplace add https://github.com/icarloscornejo/doer.git
 
-# 2. Instalar el plugin
+# 2. Install the plugin
 claude plugin install wk@wk
 
-# 3. Verificar
+# 3. Verify
 claude plugin list
 ```
 
-Tras instalar, las 5 skills estan disponibles:
+After installing, the 5 skills are available:
 
 ```
-/wk:doer ABC-123       # orquestador del pipeline 9 etapas (skill core)
-/wk:load PROJ-42       # importar ticket desde Jira / Linear / GitHub
-/wk:advise             # revisar specs/AC/codigo con personas configurables
-/wk:review             # revisar PRs ajenos
-/wk:publish ABC-123    # crear MR + transicion Jira (opt-in)
+/wk:doer ABC-123       # 9-stage pipeline orchestrator (core skill)
+/wk:load PROJ-42       # import a ticket from Jira / Linear / GitHub
+/wk:advise             # review specs/ACs/code with configurable personas
+/wk:review             # review external PRs
+/wk:publish ABC-123    # create MR + transition Jira (opt-in)
 ```
 
-Las 4 skills satelite (`load`, `advise`, `review`, `publish`) son placeholders en la version 6.0.0; sus implementaciones llegan en tickets `WK-7` a `WK-10` (ver ROADMAP.md).
+The 4 satellite skills (`load`, `advise`, `review`, `publish`) are placeholders in 6.0.0; their implementations land in tickets `WK-7` through `WK-10` (see ROADMAP.md).
 
-## Setup inicial
+## Initial setup
 
-Despues de instalar, edita estos archivos en `~/.claude/plugins/cache/wk/` (o donde Claude Code haya cacheado el plugin):
+After installing, edit these files in `~/.claude/plugins/cache/wk/` (or wherever Claude Code cached the plugin):
 
-- `preferences.md`: locale (`es` / `en`) y otras preferencias personales.
-- `lessons/`: las 5 lessons iniciales se incluyen. El plugin las acumula al cerrar tickets.
+- `preferences.md`: locale (`es` / `en`) and other personal preferences.
+- `lessons/`: the 5 initial lessons ship with the plugin. The plugin accumulates more as tickets close.
 
-## Estructura del repo
+## Repo structure
 
 ```
 doer/
-|- .claude-plugin/plugin.json     # manifest oficial
+|- .claude-plugin/plugin.json     # official manifest
 |- .claude-plugin/marketplace.json
 |- skills/                        # 5 skills
-|  |- doer/                       # orquestador (la unica operacional en 6.0.0)
+|  |- doer/                       # orchestrator (the only operational one in 6.0.0)
 |  |- load/                       # placeholder
 |  |- advise/                     # placeholder
 |  |- review/                     # placeholder
 |  |- publish/                    # placeholder
-|- lib/                           # protocolos compartidos
-|  |- heartbeat.md                # anti-compactacion
+|- lib/                           # shared protocols
+|  |- heartbeat.md                # anti-compaction
 |  |- migrations.md               # versioning + auto-migrate
 |  |- narration.md                # Core Principle 1, em-dash rule, locale
-|  |- workspace-guard.md          # check de instalacion + .doer/ exclude
-|  |- memory-paths.md             # paths canonicos + schema metadata.json
-|  |- lock.md                     # stub (WK-1)
+|  |- workspace-guard.md          # install check + .doer/ exclude
+|  |- memory-paths.md             # canonical paths + metadata.json schema
+|  |- lock.md                     # operational (WK-1, shipped in 6.0.0)
 |  |- inbox.md                    # stub (WK-2)
 |  |- cost.md                     # stub (WK-3)
 |  |- cost-rates.json             # stub (WK-3)
-|  |- helpers/                    # scripts ejecutables (vacio en 6.0.0)
+|  |- helpers/                    # executable scripts (lock.sh shipped in 6.0.0)
 |- scripts/refresh-rates.sh       # stub (WK-3)
-|- lessons/                       # global, cross-project (5 archivos)
-|- preferences.md                 # config personal
-|- ROADMAP.md                     # decisiones de diseno + roadmap Fase 1+
+|- lessons/                       # global, cross-project (5 files)
+|- preferences.md                 # personal config
+|- ROADMAP.md                     # design decisions + roadmap
 ```
 
-## Para Claude que recibe este repo
+## For a Claude session that received this repo
 
-Si el usuario te pega la URL de este repo y dice "instala esto", ejecuta el ritual de arriba.
+If the user pastes the URL of this repo and says "install this", run the ritual above.
 
-Si pide "ayudame a usarlo", lee `skills/doer/SKILL.md` (es el orquestador, contiene el flujo completo de 9 etapas).
+If they ask "help me use it", read `skills/doer/SKILL.md` (it is the orchestrator and contains the full 9-stage flow).
 
-Si pide "agrega una feature al plugin", revisa `ROADMAP.md` para ver el orden de tickets `WK-N` planeados.
+If they ask "add a feature to the plugin", check `ROADMAP.md` for the planned `WK-N` ticket order.
 
-## Licencia
+## License
 
-MIT. Ver `LICENSE`.
+MIT. See `LICENSE`.

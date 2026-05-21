@@ -1,77 +1,78 @@
 # WK Roadmap
 
-Documento vivo. Captura las decisiones de diseno congeladas y el orden de implementacion de features pendientes.
+Living document. Captures frozen design decisions and the implementation order of pending features.
 
-## Decisiones congeladas (no renegociar)
+## Frozen decisions (do not renegotiate)
 
 ```
 PLUGIN
   technical name:  wk
   display name:    Doer Work Kit
-  version:         6.0.0 (continua linaje desde doer 5.0.0)
+  version:         6.0.0 (continues lineage from doer 5.0.0)
   license:         MIT
-  repo remote:     github.com/icarloscornejo/doer (sin cambio)
-  dir local:       ~/src/doer (sin cambio)
+  repo remote:     github.com/icarloscornejo/doer (unchanged)
+  local dir:       ~/src/doer (unchanged)
 
 SKILLS (5)
-  /wk:doer ABC-123     core, orquestador 9 etapas (mantiene SKILL.md adelgazado)
-  /wk:load PROJ-42     importar de tracker externo (placeholder en Fase 0)
-  /wk:advise           review con personas configurables (placeholder)
-  /wk:review           review de PRs ajenos (placeholder)
-  /wk:publish ABC-123  MR + Jira transition opt-in (placeholder)
+  /wk:doer ABC-123     core, 9-stage orchestrator (keeps SKILL.md slim)
+  /wk:load PROJ-42     import from external tracker (placeholder in 6.0.0)
+  /wk:advise           review with configurable personas (placeholder)
+  /wk:review           review of external PRs (placeholder)
+  /wk:publish ABC-123  MR + opt-in Jira transition (placeholder)
 
-ESTRUCTURA OBJETIVO
+TARGET STRUCTURE
   .claude-plugin/{plugin,marketplace}.json
   skills/{doer,load,advise,review,publish}/SKILL.md
   lib/{heartbeat,migrations,narration,workspace-guard,memory-paths}.md
-  lib/{lock,inbox,cost}.md           stubs vacios en Fase 0, contenido en Fase 1+
-  lib/cost-rates.json                stub vacio en Fase 0
-  lib/helpers/                       carpeta creada vacia en Fase 0
-  scripts/refresh-rates.sh           stub en Fase 0
+  lib/lock.md                        operational from 6.0.0
+  lib/{inbox,cost}.md                stubs in 6.0.0, content in WK-2 / WK-3
+  lib/cost-rates.json                stub in 6.0.0
+  lib/helpers/                       contains lock.sh from 6.0.0
+  scripts/refresh-rates.sh           stub in 6.0.0
   lessons/*.md (global)
-  preferences.md (raiz, formato .md)
-  AGENTS.md (ritual install)
+  preferences.md (root, .md format)
+  AGENTS.md (install ritual)
   README.md, CHANGELOG.md, ROADMAP.md, LICENSE
 
-ACOPLAMIENTO ENTRE SKILLS
-  Hibrido pragmatico:
-    fuerte (lee/escribe metadata.json) para satelites internos al pipeline
-    debil (CLI propia + flags) para satelites con vida standalone
+COUPLING BETWEEN SKILLS
+  Pragmatic hybrid:
+    strong (read/write metadata.json) for satellites internal to the pipeline
+    weak (own CLI + flags) for satellites with standalone life
 
-CONVENCIONES
-  JSON para configs (manifests, presets, data) - NO YAML
-  Markdown para protocolos, prosa, lessons
-  Referencias lib/ con ${CLAUDE_PLUGIN_ROOT}/lib/<archivo>.md
-  Em-dashes prohibidos (regla heredada de Core Principle 9 de doer)
+CONVENTIONS
+  JSON for configs (manifests, presets, data) - NOT YAML
+  Markdown for protocols, prose, lessons
+  References to lib/ via ${CLAUDE_PLUGIN_ROOT}/lib/<file>.md
+  Em-dashes prohibited (rule inherited from doer Core Principle 9)
 ```
 
-## Fase 0: Reorganizacion estructural
+## 6.0.0: structural reorganization + WK-1
 
-Status: completada en version 6.0.0 (este commit).
+Status: complete in version 6.0.0. The plugin migration (Phase 0) and the WK-1 per-ticket lock protocol ship together as a single 6.0.0 release.
 
-Ver `CHANGELOG.md` para el detalle.
+See `CHANGELOG.md` for the detail.
 
-## Fase 1+: Tickets `WK-N` planeados
+## Pending `WK-N` tickets
 
-Cada uno se ejecuta como `/wk:doer WK-N` despues de Fase 0. Pipeline 9 etapas completo, lessons capturadas.
+Each one is executed as `/wk:doer WK-N`. Full 9-stage pipeline, lessons captured.
 
-| # | Ticket | Tipo | Descripcion |
+| # | Ticket | Type | Description |
 |---|---|---|---|
-| WK-1 | implement lib/lock.md + helper | LIB | Per-ticket exclusive lock con PID, auto-roba si proceso muerto |
-| WK-2 | implement lib/inbox.md + helper | LIB | Mensajeria entre etapas: advisory / blocker / fyi |
-| WK-3 | implement lib/cost.md + cost-rates.json + scripts/refresh-rates.sh | LIB | Tracking de costos, TTL semanal, fallback lazy |
-| WK-4 | integrate pre-flight assumptions into Stage 2 | CORE | Tabla de checks ejecutables en spec antes de despachar plan |
-| WK-5 | integrate per-task review gate into Stage 4 | CORE | Gate humano `[a]ccept / [e]dit / [r]eject / [s]kip / [v]iew-full-diff` con git reset |
-| WK-6 | integrate parallel subagents into Stage 4 | CORE | Subagents en paralelo para tareas independientes |
-| WK-7 | implement skills/load (Jira / Linear / GitHub import) | SATELITE | Carga de ticket desde tracker |
-| WK-8 | implement skills/advise (configurable personas) | SATELITE | Personas JSON. Security / perf / mobile / a11y |
-| WK-9 | implement skills/review (MR review with personas) | SATELITE | Review de PRs ajenos con advisors |
-| WK-10 | implement skills/publish (MR + Jira transition) | SATELITE | Opt-in: MR creation + Jira state change |
+| ~~WK-1~~ | ~~implement lib/lock.md + helper~~ | LIB | **Done in 6.0.0**: per-ticket lock with 30 min TTL, steal-if-stale, abort-if-fresh. PID + host + heartbeat for diagnostics |
+| WK-2 | implement lib/inbox.md + helper | LIB | Inter-stage messaging: advisory / blocker / fyi |
+| WK-3 | implement lib/cost.md + cost-rates.json + scripts/refresh-rates.sh | LIB | Cost tracking, weekly TTL, lazy fallback |
+| WK-4 | integrate pre-flight assumptions into Stage 2 | CORE | Table of executable checks in spec before dispatching plan |
+| WK-5 | integrate per-task review gate into Stage 4 | CORE | Human gate `[a]ccept / [e]dit / [r]eject / [s]kip / [v]iew-full-diff` with git reset |
+| WK-6 | integrate parallel subagents into Stage 4 | CORE | Subagents in parallel for independent tasks |
+| WK-7 | implement skills/load (Jira / Linear / GitHub import) | SATELLITE | Ticket import from tracker |
+| WK-8 | implement skills/advise (configurable personas) | SATELLITE | JSON personas. Security / perf / mobile / a11y |
+| WK-9 | implement skills/review (MR review with personas) | SATELLITE | External PR review with advisors |
+| WK-10 | implement skills/publish (MR + Jira transition) | SATELLITE | Opt-in: MR creation + Jira state change |
 
-## Convenciones del plugin
+## Plugin conventions
 
-- JSON para configs (manifests, presets, data files). NO YAML.
-- Markdown para protocolos, prosa, lessons.
-- Em-dashes prohibidos en cualquier output del orquestador o sus subagents.
-- Referencias entre archivos del plugin via `${CLAUDE_PLUGIN_ROOT}/lib/<archivo>.md`.
-- Acoplamiento entre skills: hibrido pragmatico (fuerte para satelites internos al pipeline, debil para satelites con vida standalone).
+- JSON for configs (manifests, presets, data files). NOT YAML.
+- Markdown for protocols, prose, lessons.
+- Em-dashes prohibited in any output of the orchestrator or its subagents.
+- References between plugin files via `${CLAUDE_PLUGIN_ROOT}/lib/<file>.md`.
+- Coupling between skills: pragmatic hybrid (strong for satellites internal to the pipeline, weak for satellites with standalone life).

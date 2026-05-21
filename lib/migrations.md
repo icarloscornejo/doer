@@ -544,6 +544,7 @@ MAJOR bump. Restructures the install from a single skill (`doer`) into a formal 
 - The skill `doer` is now part of plugin `wk`. Invocation moves from `/doer ABC-123` to `/wk:doer ABC-123`. Backward-compat: if the user types `/doer ABC-123`, the orchestrator detects this is the migrated skill and accepts it.
 - Path resolution for `lessons/` moves from the heuristic `<doer-skill-dir>/lessons/` to the canonical `${CLAUDE_PLUGIN_ROOT}/lessons/`. The lessons themselves did NOT move on disk (they always lived next to SKILL.md); only the resolver changed.
 - Path resolution for shared protocols moves from inline definitions in SKILL.md to `${CLAUDE_PLUGIN_ROOT}/lib/<file>.md` references.
+- Per-ticket lock protocol shipped (WK-1). Workspace Guard now acquires `.doer/tickets/<ID>/lock.json` on every entry point, every stage transition refreshes the heartbeat via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh touch`, and Stage 9 wrapup releases the lock. Concurrent sessions on the same ticket fail fast.
 - `metadata.json` schema is unchanged (no field added, removed, or renamed in this bump).
 - `metadata.skill_version` bumps to `"6.0.0"`.
 
@@ -565,6 +566,6 @@ jq '.skill_version = "6.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 - No file rewrites. No schema changes. The behavioral changes (path resolution, plugin namespacing) apply on the next `/wk:doer <ID>` invocation.
 - Stage 2 / Stage 3 / Stage 4 / Stage 5 retain their behavior. Phase 2 auto-reverify will spot-check completed stages because `affected_stages: [all]`, but in practice no spot-check should fail because runtime semantics are identical.
 - Tickets in flight at any stage continue from where they were. The orchestrator on the next `/wk:doer continue <ID>` reads `metadata.skill_version`, sees it is < 6.0.0, applies this block, and resumes.
-- After 6.0.0 ships, future Fase 1+ tickets (WK-1 through WK-10) will introduce more migrations as `lib/lock`, `lib/inbox`, `lib/cost`, satellite skills, and core enhancements land.
+- After 6.0.0 ships, future tickets (WK-2 through WK-10) will introduce more migrations as `lib/inbox`, `lib/cost`, satellite skills, and core enhancements land.
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
