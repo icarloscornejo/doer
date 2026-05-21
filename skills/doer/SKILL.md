@@ -642,8 +642,23 @@ Produce the plan as a JSON object matching this exact shape:
   "risks": [
     {"risk": "<one-line>", "mitigation": "<one-line>"}
   ],
-  "assumptions": ["<one-line>", "..."]
+  "assumptions": [
+    {
+      "id": "A-1",
+      "statement": "<one-line; what is being assumed about the codebase, environment, or contract>",
+      "check": "<bash one-liner; exit 0 = assumption holds, non-zero = fails. May be null when the assumption is not mechanically verifiable, in which case Check D treats the entry as statement-only.>",
+      "expected": "<one-line; what a passing check looks like (e.g. 'file present', 'function defined', 'flag enabled')>",
+      "risk": "low | medium | high"
+    }
+  ]
 }
+
+Pre-flight assumptions guidance (read carefully):
+- Every assumption MUST have `id` (`A-N`, contiguous), `statement`, `expected`, `risk`. `check` is optional but strongly preferred.
+- Prefer mechanically verifiable checks: `test -f path/to/file`, `grep -q pattern path`, `command -v tool`, `jq -e '.field' file > /dev/null`. The orchestrator executes each `check` from the repo root before dispatching the plan to Stage 3 / Stage 4.
+- If an assumption cannot be expressed as a bash one-liner (depends on runtime behavior or human judgment), set `check: null` and write a precise `statement` so it is captured but not enforced.
+- `risk: "high"` flags assumptions that, if wrong, would invalidate the whole plan. Stage 2 posts an inbox advisory to Stage 4 for every high-risk assumption that validated, so the code writer keeps it in mind.
+- Do NOT use the legacy string shape (`"<one-line>"`); always emit objects matching the schema above.
 
 Also produce a changelog appendix:
 
@@ -669,7 +684,7 @@ Do NOT write code. Do NOT run tests. Plan only.
 
 ### Deterministic checks (post-planner)
 
-Run all three. They are mechanical, free of LLM cost, and cover what the prior reviewer judged.
+Run all four. They are mechanical, free of LLM cost, and cover what the prior reviewer judged.
 
 **Check A. File existence matches `change`.**
 For each `metadata.plan.files[i]`:
@@ -687,15 +702,51 @@ For each entry in `metadata.ac.in_scope`, extract the `AC-N` ID prefix and verif
 - B-3 (coverage): AC-3 has no test in plan.tests
 ```
 
-**Check C. Assumptions field present.**
-`metadata.plan.assumptions` MUST exist as an array (may be empty `[]`). Missing or wrong type → BLOCKER:
+**Check C. Assumptions field shape.**
+`metadata.plan.assumptions` MUST exist as an array (may be empty `[]`). Each entry MUST be an object with `id`, `statement`, `expected`, `risk` (and optionally `check`). Legacy strings or missing fields → BLOCKER:
 ```
 - B-4 (assumptions): plan.assumptions field absent or not an array
+- B-5 (assumptions shape): A-2 missing required field `risk`
+- B-6 (assumptions shape): A-3 uses legacy string form (must be object with id/statement/expected/risk)
 ```
+
+**Check D. Pre-flight assumption execution.**
+For each `metadata.plan.assumptions[i]` whose `check` is non-null, run the command from the repo root via `bash -c "<check>"` (timeout 10s per check). Record results into `metadata.plan.assumptions[i].validation`:
+
+```json
+{
+  "validation": {
+    "ran_at": "<ISO8601>",
+    "exit_code": <int>,
+    "status": "pass | fail | skipped",
+    "stdout_excerpt": "<first 200 chars, single line>",
+    "stderr_excerpt": "<first 200 chars, single line>"
+  }
+}
+```
+
+Status mapping:
+- `exit_code == 0` → `status: "pass"`.
+- `exit_code != 0` → `status: "fail"`.
+- `check == null` → `status: "skipped"` (statement-only; recorded but never blocks).
+
+Any `status: "fail"` is a BLOCKER:
+```
+- B-7 (assumption fail): A-2 ('lib/helpers/lock.sh exists') exit 1; expected: 'file present'
+```
+
+After Check D completes (pass or after retry-fix), for every assumption with `status: "pass"` AND `risk: "high"`, post one inbox advisory to Stage 4:
+```bash
+${CLAUDE_PLUGIN_ROOT}/lib/helpers/inbox.sh post "<TICKET-ID>" \
+  --from 2 --to 4 --kind advisory \
+  --text "High-risk assumption validated at plan time: <A-N statement>" \
+  --details "Verified by: <check>. Expected: <expected>. Re-confirm during implementation."
+```
+Stage 4 narrates and auto-acks per the inbox protocol. See `${CLAUDE_PLUGIN_ROOT}/lib/inbox.md`. Skipped (statement-only) high-risk assumptions are NOT posted (no validation evidence to anchor the advisory); they remain in `metadata.plan.assumptions` for the dev to keep an eye on.
 
 ### Single retry policy
 
-If Checks A/B/C produce any BLOCKERs:
+If Checks A/B/C/D produce any BLOCKERs:
 1. Re-invoke the planner ONCE with the BLOCKERs inline:
    ```
    Your prior plan failed deterministic validation:
@@ -703,7 +754,7 @@ If Checks A/B/C produce any BLOCKERs:
 
    Produce a corrected plan as the same JSON shape. Address every BLOCKER. Do not introduce unrelated changes.
    ```
-2. Re-run the three checks on the new plan.
+2. Re-run the four checks on the new plan.
 3. Set `metadata.stages.2.retry_used = true`.
 4. If still failing → ABORT the stage. Narrate to the dev:
    ```
@@ -712,7 +763,7 @@ If Checks A/B/C produce any BLOCKERs:
    ```
    Set `metadata.stages.2.status = "blocked"`. Do not proceed to Stage 3.
 
-   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing `metadata.plan` by hand, the orchestrator detects `metadata.stages.2.status == "blocked"` and re-runs ONLY the three deterministic checks (file existence, AC coverage, assumptions present) on the corrected plan. No new planner agent invocation. If checks pass → mark stage complete, proceed to Stage 3. If checks still fail → re-narrate the BLOCKERs and stay `blocked`.
+   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing `metadata.plan` by hand, the orchestrator detects `metadata.stages.2.status == "blocked"` and re-runs ONLY the four deterministic checks (file existence, AC coverage, assumptions shape, assumptions execution) on the corrected plan. No new planner agent invocation. If checks pass → mark stage complete, proceed to Stage 3. If checks still fail → re-narrate the BLOCKERs and stay `blocked`.
 
 If checks pass (first try or after retry):
 1. Persist the planner's `plan` object into `metadata.plan` (overwriting any prior value).

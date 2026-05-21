@@ -49,6 +49,14 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Narration Protocol: every Agent return that exposes token counts records to `metadata.cost`. Best-effort; missing rates or counts skip silently.
 - Stage 9 wrapup: new step 12 narrates `cost.sh status`. Final narration mentions `metadata.cost` alongside `summary` / `performance`.
 
+### WK-4: pre-flight assumptions in Stage 2
+
+- Stage 2 planner prompt extends `metadata.plan.assumptions[]` from a string array to a structured object array. Each entry has `id`, `statement`, `check` (bash one-liner, may be `null`), `expected`, and `risk` (`low | medium | high`).
+- Stage 2 deterministic checks now run four checks (was three). Check C reshape: validates each assumption is an object with required fields (BLOCKERs `B-4` missing-array, `B-5` missing-field, `B-6` legacy-string). Check D added: executes each non-null `check` via `bash -c` with a 10s timeout and records `assumptions[i].validation = { ran_at, exit_code, status, stdout_excerpt, stderr_excerpt }`. Non-zero exit is a BLOCKER (`B-7`); `check: null` records `status: "skipped"` and never blocks.
+- After Check D, every assumption with `status: "pass"` AND `risk: "high"` posts one inbox advisory addressed to Stage 4 via `lib/helpers/inbox.sh post --from 2 --to 4 --kind advisory`. Skipped (null-check) high-risk assumptions are not posted.
+- Single-retry policy text updated: covers the four deterministic checks (file existence, AC coverage, assumptions shape, assumptions execution).
+- Automatic migration: legacy string-form assumptions in pre-WK-4 tickets convert to object form during 5.0.0 -> 6.0.0 migration. Defaults: `id: "A-<n>"`, `statement` preserved verbatim, `check: null`, `expected: "preserved from pre-WK-4 plan; verify manually"`, `risk: "low"`. Idempotent (objects pass through).
+
 ### Runtime
 
 - No change in 9-stage pipeline behavior.

@@ -87,7 +87,7 @@ Every migration block declares `affected_stages: [<stage names>]` listing the st
 | Stage | Spot-check |
 |-------|------------|
 | 1 ac-confirm | Re-run a lightweight AC validation: read `metadata.ac` and `metadata.intake`, confirm the AC list still aligns. No subagent unless validation fails. |
-| 2 plan | Re-run the three deterministic checks (file existence, AC coverage, assumptions present) on `metadata.plan`. No LLM. If a check fails, reopen Stage 2 with that BLOCKER. |
+| 2 plan | Re-run the four deterministic checks (file existence, AC coverage, assumptions shape, assumptions execution) on `metadata.plan`. No LLM. If a check fails, reopen Stage 2 with that BLOCKER. |
 | 3 tests | Re-run the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode` (parse/run + presence + red-phase for `bdd`; parse/run + regression coverage for `direct`). No LLM. |
 | 4 code | Re-run pre-checks (test pass + lint + typecheck + plan-driven scope). Skip LLM reviewer unless pre-checks find new issues. |
 | 5 code-review | Re-run pre-checks (RED grep, secrets, smoke, bare except). Skip LLM reviewer unless pre-checks find new issues. |
@@ -547,7 +547,8 @@ MAJOR bump. Restructures the install from a single skill (`doer`) into a formal 
 - Per-ticket lock protocol shipped (WK-1). Workspace Guard now acquires `.doer/tickets/<ID>/lock.json` on every entry point, every stage transition refreshes the heartbeat via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh touch`, and Stage 9 wrapup releases the lock. Concurrent sessions on the same ticket fail fast.
 - Inter-stage inbox protocol shipped (WK-2). New top-level `metadata.inbox` array (created lazily on first post). Each stage drains its unacked messages on entry; Stage 9 wrapup clears acked messages.
 - Per-ticket cost tracking shipped (WK-3). New top-level `metadata.cost` object (created lazily on first record). Token usage from each Agent return is multiplied by rates from `lib/cost-rates.json` (lazy fallback for unknown models). Stage 9 wrapup surfaces the summary.
-- `metadata.json` schema gains two optional top-level fields: `inbox: []` (array) and `cost: {}` (object). Both lazy (absent until first write). No other fields added, removed, or renamed.
+- Pre-flight assumptions integrated into Stage 2 (WK-4). `metadata.plan.assumptions[]` switches from a string array to an object array (`id`, `statement`, `check`, `expected`, `risk`). Stage 2 gains Check D, which executes each non-null `check` from the repo root and posts an inbox advisory to Stage 4 for every high-risk assumption that validated. Legacy string entries from pre-WK-4 tickets are preserved at the file-format layer; they are auto-rewritten on the next Stage 2 run.
+- `metadata.json` schema gains two optional top-level fields: `inbox: []` (array) and `cost: {}` (object). Both lazy (absent until first write). `metadata.plan.assumptions[]` element shape changes from string to object (additive: prior strings still parse; the planner emits objects from now on).
 - `metadata.skill_version` bumps to `"6.0.0"`.
 
 **Per-ticket changes:**
@@ -558,14 +559,39 @@ META=$TICKET_DIR/metadata.json
 
 # Narrate before each step (per Core Principle 1).
 
-# 1. Bump skill_version to 6.0.0.
-#    Narrate: "Migration 5.0.0 -> 6.0.0, step 1/1: bumping skill_version to 6.0.0."
+# 1. Convert legacy string-form assumptions to object form (WK-4 schema).
+#    Idempotent: skips entries already in object form. If metadata.plan
+#    is absent or assumptions is empty, no-op.
+#    Narrate: "Migration 5.0.0 -> 6.0.0, step 1/2: converting assumptions to object form."
+jq '
+  if (.plan?.assumptions // null) == null then .
+  else .plan.assumptions = (
+    [ .plan.assumptions
+      | range(0; length) as $i
+      | .[$i] as $a
+      | if ($a | type) == "string"
+        then {
+          id: ("A-" + (($i + 1) | tostring)),
+          statement: $a,
+          check: null,
+          expected: "preserved from pre-WK-4 plan; verify manually",
+          risk: "low"
+        }
+        else $a
+        end
+    ]
+  ) end
+' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 2. Bump skill_version to 6.0.0.
+#    Narrate: "Migration 5.0.0 -> 6.0.0, step 2/2: bumping skill_version to 6.0.0."
 jq '.skill_version = "6.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 ```
 
 **Important migration notes:**
 
-- No file rewrites. No schema changes. The behavioral changes (path resolution, plugin namespacing) apply on the next `/wk:doer <ID>` invocation.
+- The only schema rewrite is `metadata.plan.assumptions[]` (string → object). The conversion preserves the original statement verbatim, defaults `risk` to `"low"`, and leaves `check` as `null` (statement-only). Phase 2 auto-reverify on Stage 2 will re-run Check D, which is a no-op for `check: null` entries.
+- The behavioral changes (path resolution, plugin namespacing, lock/inbox/cost helpers, Stage 2 Check D) apply on the next `/wk:doer <ID>` invocation.
 - Stage 2 / Stage 3 / Stage 4 / Stage 5 retain their behavior. Phase 2 auto-reverify will spot-check completed stages because `affected_stages: [all]`, but in practice no spot-check should fail because runtime semantics are identical.
 - Tickets in flight at any stage continue from where they were. The orchestrator on the next `/wk:doer continue <ID>` reads `metadata.skill_version`, sees it is < 6.0.0, applies this block, and resumes.
 - After 6.0.0 ships, future tickets (WK-2 through WK-10) will introduce more migrations as `lib/inbox`, `lib/cost`, satellite skills, and core enhancements land.
