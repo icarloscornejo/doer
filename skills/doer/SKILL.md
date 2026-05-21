@@ -417,7 +417,7 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | 1 ac-confirm | `name`, `status`, `verified_with` | `completed_at` | `skipped_reason` |
 | 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
 | 3 tests | `name`, `status`, `verified_with`, `testing_strategy_mode` | `completed_at`, `retry_used` | `skipped_reason` |
-| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`. When `preferences.md` has `stage4_per_task_gate: true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `status = "blocked"` via reject: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
+| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`. When `preferences.md` has `stage4_per_task_gate: true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `preferences.md` has `stage4_parallel_subagents: true` (and `stage4_per_task_gate: false`): also `pre_stage4_sha` (40-char) and `parallel_subagents.groups` (non-empty; one entry per dispatched group with `id`, `step_orders`, `dispatched`, `started_at`, `completed_at`). When `status = "blocked"` via reject (per-task gate) or via parallel error: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
 | 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a |
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
 | 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
@@ -634,7 +634,7 @@ Produce the plan as a JSON object matching this exact shape:
     {"path": "<repo-relative path>", "change": "edit | new | delete", "reason": "<one-line>"}
   ],
   "steps": [
-    {"order": 1, "verb": "<add | modify | delete | rename | refactor>", "what": "<thing>", "where": "<file>:<line-range or 'new'>"}
+    {"order": 1, "verb": "<add | modify | delete | rename | refactor>", "what": "<thing>", "where": "<file>:<line-range or 'new'>", "parallel_group": "<optional string id; omit or set null when the step must run alone>"}
   ],
   "tests": [
     {"name": "<test function or describe block name>", "covers": ["AC-1", "AC-3"], "what": "<one-line of what the test asserts>"}
@@ -659,6 +659,13 @@ Pre-flight assumptions guidance (read carefully):
 - If an assumption cannot be expressed as a bash one-liner (depends on runtime behavior or human judgment), set `check: null` and write a precise `statement` so it is captured but not enforced.
 - `risk: "high"` flags assumptions that, if wrong, would invalidate the whole plan. Stage 2 posts an inbox advisory to Stage 4 for every high-risk assumption that validated, so the code writer keeps it in mind.
 - Do NOT use the legacy string shape (`"<one-line>"`); always emit objects matching the schema above.
+
+Parallel-group guidance (read carefully):
+- `parallel_group` is OPTIONAL on each step. Set it to a short string id (e.g. `"g1"`, `"backend-files"`) when two or more steps are independent and could run concurrently. Steps sharing the same `parallel_group` are independent of each other; steps with no `parallel_group` (or `null`) MUST run alone in their `order` slot.
+- Two steps are independent only when: (a) they touch DISJOINT files, AND (b) neither reads outputs the other writes, AND (c) their commits would compose cleanly in any order.
+- Prefer FEWER, larger groups over many small groups. A group of 1 is wasted bookkeeping; if you cannot find a safe peer, omit `parallel_group` entirely.
+- Do NOT mix steps that touch the same file in one group. The orchestrator detects file overlap pre-dispatch and serializes such groups, but planner intent should be correct upfront.
+- Assume `parallel_group` is ignored when the dev does not opt in (`stage4_parallel_subagents: false`). Always plan as if the steps may run sequentially in `order`.
 
 Also produce a changelog appendix:
 
@@ -744,9 +751,17 @@ ${CLAUDE_PLUGIN_ROOT}/lib/helpers/inbox.sh post "<TICKET-ID>" \
 ```
 Stage 4 narrates and auto-acks per the inbox protocol. See `${CLAUDE_PLUGIN_ROOT}/lib/inbox.md`. Skipped (statement-only) high-risk assumptions are NOT posted (no validation evidence to anchor the advisory); they remain in `metadata.plan.assumptions` for the dev to keep an eye on.
 
+**Check E. Parallel-group shape (only when present).**
+For each `metadata.plan.steps[i]`, if the entry has a `parallel_group` field, it MUST be either `null` or a non-empty string. Empty strings, integers, arrays, or objects are invalid. The field is optional; absent or `null` is fine and means the step runs alone in its `order` slot.
+```
+- B-8 (parallel_group shape): step 3 has parallel_group of type number; must be a non-empty string or null
+- B-9 (parallel_group shape): step 5 has parallel_group as empty string; use null or omit the field
+```
+This check costs zero LLM tokens and is independent of whether `preferences.md` enables `stage4_parallel_subagents`. Validating shape at plan time keeps Stage 4 simple.
+
 ### Single retry policy
 
-If Checks A/B/C/D produce any BLOCKERs:
+If Checks A/B/C/D/E produce any BLOCKERs:
 1. Re-invoke the planner ONCE with the BLOCKERs inline:
    ```
    Your prior plan failed deterministic validation:
@@ -763,7 +778,7 @@ If Checks A/B/C/D produce any BLOCKERs:
    ```
    Set `metadata.stages.2.status = "blocked"`. Do not proceed to Stage 3.
 
-   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing `metadata.plan` by hand, the orchestrator detects `metadata.stages.2.status == "blocked"` and re-runs ONLY the four deterministic checks (file existence, AC coverage, assumptions shape, assumptions execution) on the corrected plan. No new planner agent invocation. If checks pass → mark stage complete, proceed to Stage 3. If checks still fail → re-narrate the BLOCKERs and stay `blocked`.
+   **Resuming from `blocked`:** when the dev re-runs `/doer <ID>` after fixing `metadata.plan` by hand, the orchestrator detects `metadata.stages.2.status == "blocked"` and re-runs ONLY the five deterministic checks (file existence, AC coverage, assumptions shape, assumptions execution, parallel-group shape) on the corrected plan. No new planner agent invocation. If checks pass → mark stage complete, proceed to Stage 3. If checks still fail → re-narrate the BLOCKERs and stay `blocked`.
 
 If checks pass (first try or after retry):
 1. Persist the planner's `plan` object into `metadata.plan` (overwriting any prior value).
@@ -990,7 +1005,13 @@ Loop with **max 3 iterations** (see Doer/Reviewer Loop Pattern).
 
 **Mode check.** At entry, read `metadata.testing_strategy.mode`. The value is inlined into the writer prompt and influences pre-reviewer Check A (see "Pre-reviewer deterministic checks"). After commit, the orchestrator decides where to advance based on `testing_strategy.mode` (see "Direct return" at the end).
 
-**Gate check.** At entry, also read `${CLAUDE_PLUGIN_ROOT}/preferences.md` for `stage4_per_task_gate: true|false` (default `false`). If `true`, run the "Per-task gate (opt-in)" sub-loop below before falling through to the deterministic checks and reviewer. If `false`, skip directly to the writer prompt for the full plan, the deterministic checks, and the reviewer (legacy flow).
+**Gate check.** At entry, also read `${CLAUDE_PLUGIN_ROOT}/preferences.md` for `stage4_per_task_gate: true|false` (default `false`) and `stage4_parallel_subagents: true|false` (default `false`). The two flags are mutually exclusive: if both are `true`, the gate wins, parallelism is silently disabled, and the orchestrator narrates *"Both stage4_per_task_gate and stage4_parallel_subagents are true. Per-task gate takes precedence; parallelism disabled for this Stage 4."* before continuing. The decision tree:
+
+1. If `stage4_per_task_gate: true`: run the "Per-task gate (opt-in)" sub-loop below.
+2. Else if `stage4_parallel_subagents: true`: run the "Parallel subagents (opt-in)" sub-loop below.
+3. Else: skip directly to the writer prompt for the full plan, the deterministic checks, and the reviewer (legacy flow).
+
+In all three branches, the deterministic Check A/B/C and the reviewer LLM run ONCE at the end against the cumulative Stage 4 diff.
 
 ### Per-task gate (opt-in)
 
@@ -1034,6 +1055,44 @@ If the loop exited via a `reject`, Stage 4 is blocked and the turn already ended
 - The instruction is restricted: *"Implement ONLY the current step. Do not implement other entries of metadata.plan.steps. Do not refactor unrelated code. If the step says to edit a file you have not touched yet, edit ONLY the lines required by this step."*
 - For `via-writer` re-invocations, also include `== Dev edit instructions ==` with the dev's verbatim text and the instruction *"Apply the dev edit instructions. Do not revert prior decisions for other steps; the diff so far is already accepted."*
 - Read budget: 5 source files.
+
+### Parallel subagents (opt-in)
+
+Active ONLY when `preferences.md` has `stage4_parallel_subagents: true` AND `stage4_per_task_gate: false`. The orchestrator dispatches independent steps in parallel within each `parallel_group`. The deterministic checks and the reviewer LLM still run ONCE at the end against the cumulative Stage 4 diff (parallelism is PRE-reviewer, not POST).
+
+**Initialize at entry:**
+
+1. Capture `metadata.stages.4.pre_stage4_sha = <git rev-parse HEAD>` (full 40-char SHA). Diff base for the eventual reviewer.
+2. Initialize `metadata.stages.4.parallel_subagents = {"enabled": true, "groups": []}`.
+
+**Build the dispatch order.** Walk `metadata.plan.steps[]` in `order` and group entries:
+
+- Steps sharing the same non-null `parallel_group` join that group.
+- Steps with `parallel_group` absent or `null` form a singleton group with id `"serial-<order>"`.
+- Group dispatch order is determined by the FIRST step (lowest `order`) in each group. Once a group dispatches, the next group does not start until the previous group fully resolves.
+
+**Conflict detection (pre-dispatch, per group).** For every group with more than one step, compute the union of declared file paths across the group's steps:
+- Take each step's `where` (parsing the `<file>:<line-range>` form; the file part is everything before the first `:`).
+- Add files referenced in `metadata.plan.files[]` that the step's `verb` would touch (best-effort match by path; when the planner's `where` already names a file, this is redundant but cheap).
+- If two steps in the group declare the same file, narrate *"Group <id> has file overlap (<path>); serializing within the group."* and dispatch the group's steps SEQUENTIALLY in `order` (each step's writer ⇒ `git add -A` ⇒ next; no gate, no rollback). Record `dispatched: "serialized_due_to_overlap"`.
+- If files are disjoint, dispatch in parallel (below). Record `dispatched: "parallel"`.
+- Singleton groups (one step) record `dispatched: "serial_singleton"` and run as a single Agent call.
+
+**Parallel dispatch.** For a parallel group of N>=2 steps:
+
+1. Record `started_at = <ISO8601>` on the group entry.
+2. Issue N Agent invocations in a single tool block. Each Agent uses the single-step writer prompt (same as documented in the per-task gate section), with its own step inlined as `== Current step ==`. Each Agent writes directly to the working tree; the orchestrator does NOT pre-stash, isolate, or sandbox. Read budget: 5 source files per Agent.
+3. Wait for all N to return. The orchestrator does NOT cancel siblings if one errors.
+4. **Error handling.** For any Agent that returned a non-success result:
+   - Append the failed step's `order` to `metadata.stages.4.parallel_subagents.groups[g].errored_step_orders`.
+   - Persist the `changelog_appendix` of every Agent that DID succeed in the group as separate entries in `metadata.changelog`. Do NOT roll back successful work.
+   - Narrate the error *"Step <order> failed in group <id>: <agent error>. Other steps in the group completed. Stage 4 paused."*.
+   - End turn. The dev resumes via `/doer continue <ID>` after deciding (re-plan, retry, or accept partial).
+5. **All succeeded.** Run a single `git add -A`, persist each `changelog_appendix` as a separate `metadata.changelog` entry tagged with the step's `order`, narrate *"Group <id>: <N> steps completed in parallel."*, set `completed_at = <ISO8601>` on the group entry, advance to the next group.
+
+**After all groups complete:** narrate a one-line summary (e.g. *"Parallel dispatch: 3 groups, 7 steps, 2 groups parallel and 1 serialized due to overlap."*) and fall through to the deterministic Check A/B/C and the reviewer LLM exactly as in the legacy flow. The diff base for both is `metadata.stages.4.pre_stage4_sha`.
+
+**Why the "write directly to working tree" model.** Each parallel group is constructed so that its steps touch disjoint files (verified pre-dispatch). When that holds, concurrent writes do not race, and a single `git add -A` after the group resolves all of them. Worktree isolation would add complexity (per-step worktrees, merge passes, conflict resolution) without protecting against anything that the disjoint-files invariant does not already cover.
 
 ### Code writer prompt (skeleton)
 

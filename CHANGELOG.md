@@ -2,7 +2,7 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
-## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate)
+## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).
 
@@ -67,6 +67,18 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Decisions persisted at `metadata.stages.4.per_task_gate.decisions[]` with `step_order`, `decision`, `at`, and (only for `edited_via_writer`) `edit_instructions`.
 - Reviewer LLM and Pre-reviewer Check A/B/C run ONCE at the end of the per-step loop against the full Stage 4 diff (base = `pre_stage4_sha`). The gate is PRE-reviewer.
 - Stage Finalization Checklist for Stage 4 extended: when the flag is on, `pre_stage4_sha` and `per_task_gate.decisions` are required. When `status = "blocked"` via reject, `blocked_reason` is required instead of the loop counters.
+
+### WK-6: parallel subagents in Stage 4
+
+- New opt-in flag in `preferences.md`: `stage4_parallel_subagents: true|false` (default `false`). When `true`, Stage 4 dispatches independent steps as parallel Agent calls within a single tool block.
+- Mutually exclusive with `stage4_per_task_gate`. If both are `true`, the per-task gate wins, parallelism is silently disabled, and the orchestrator narrates the collision at Stage 4 entry.
+- Stage 2 planner schema extended: each `metadata.plan.steps[i]` may carry an optional `parallel_group: <string|null>`. Steps sharing the same id are independent and may dispatch concurrently. Steps without the field run alone in their `order` slot.
+- Stage 2 deterministic Check E added: validates `parallel_group` is `null` or a non-empty string when present (BLOCKERs `B-8`, `B-9`). Single-retry policy and resume-from-blocked path updated to cover five checks (was four).
+- Stage 4 dispatch loop: walks steps in `order`, groups them by `parallel_group` (singletons receive synthetic id `serial-<order>`), then for each group computes the union of declared file paths. Disjoint files = parallel Agent calls in one tool block (`dispatched: "parallel"`); overlap = sequential within the group (`dispatched: "serialized_due_to_overlap"`); singleton = single Agent call (`dispatched: "serial_singleton"`).
+- Each parallel writer uses the same single-step writer prompt as WK-5 (read budget 5 source files; payload restricted to the current step). Writers edit the working tree directly; the orchestrator runs a single `git add -A` after the group resolves.
+- Error handling: if any Agent in a group returns an error, sibling Agents are NOT cancelled. Successful changelog appendices are persisted; the failed step's `order` is recorded in `parallel_subagents.groups[g].errored_step_orders`; Stage 4 ends the turn with a `blocked` status. Successful work is preserved across the pause.
+- Pre-reviewer Check A/B/C and the reviewer LLM still run ONCE at the end of Stage 4 against the cumulative diff (base = `metadata.stages.4.pre_stage4_sha`).
+- Stage Finalization Checklist for Stage 4 extended: when `stage4_parallel_subagents` is on, `pre_stage4_sha` and a non-empty `parallel_subagents.groups[]` are required. When `status = "blocked"` via parallel error, `blocked_reason` is required instead of the loop counters.
 
 ### Runtime
 

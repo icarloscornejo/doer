@@ -62,7 +62,7 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
 
   "plan": {
     "files": [{"path": "...", "change": "edit | new | delete", "reason": "..."}],
-    "steps": [{"order": 1, "verb": "...", "what": "...", "where": "<file>:<line-range>"}],
+    "steps": [{"order": 1, "verb": "...", "what": "...", "where": "<file>:<line-range>", "parallel_group": "<optional string id; steps sharing the same id are independent and may dispatch in parallel when preferences.md has stage4_parallel_subagents: true>"}],
     "tests": [{"name": "...", "covers": ["AC-N"], "what": "..."}],
     "risks": [{"risk": "...", "mitigation": "..."}],
     "assumptions": ["..."]
@@ -72,7 +72,7 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
     "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "6.0.0", "completed_at": "<ISO8601>"},
     "2": {"name": "plan",           "status": "...", "verified_with": "6.0.0", "retry_used": false},
     "3": {"name": "tests",          "status": "pending | in_progress | complete | deferred | skipped | imported | blocked", "verified_with": "6.0.0", "retry_used": false, "testing_strategy_mode": "direct | bdd"},
-    "4": {"name": "code",           "status": "...", "verified_with": "6.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals", "pre_stage4_sha": "<full-40-char-SHA>", "per_task_gate": {"enabled": false, "decisions": [{"step_order": 1, "decision": "accepted | edited_manual | edited_via_writer | rejected | skipped | auto_accepted_empty", "at": "<ISO8601>", "edit_instructions": "<optional, only for edited_via_writer>"}]}},
+    "4": {"name": "code",           "status": "...", "verified_with": "6.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals", "pre_stage4_sha": "<full-40-char-SHA>", "per_task_gate": {"enabled": false, "decisions": [{"step_order": 1, "decision": "accepted | edited_manual | edited_via_writer | rejected | skipped | auto_accepted_empty", "at": "<ISO8601>", "edit_instructions": "<optional, only for edited_via_writer>"}]}, "parallel_subagents": {"enabled": false, "groups": [{"id": "<parallel_group id, or 'serial-<order>' for ungrouped steps>", "step_orders": [1, 2], "dispatched": "parallel | serialized_due_to_overlap | serial_singleton", "started_at": "<ISO8601>", "completed_at": "<ISO8601>", "errored_step_orders": []}]}},
     "5": {"name": "code-review",    "status": "...", "verified_with": "6.0.0", "iterations": 0, "loop_outcome": "..."},
     "6": {"name": "quality-gate",   "status": "...", "verified_with": "6.0.0"},
     "7": {"name": "runtime-verify", "status": "...", "verified_with": "6.0.0", "ac_verdicts": {}},
@@ -108,7 +108,7 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
 }
 ```
 
-**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.md` enables `stage4_per_task_gate`, `ac_verdicts` for 7).
+**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.md` enables `stage4_per_task_gate`, `parallel_subagents` for 4 when `preferences.md` enables `stage4_parallel_subagents`, `ac_verdicts` for 7).
 
 **`testing_strategy` semantics.** Two modes determine how Stage 3 runs:
 - `direct`: Stage 3 is DEFERRED at first entry; Stage 4 runs first; Stage 3 then runs after Stage 4 with a regression test writer (tests expected to PASS, no red phase).
