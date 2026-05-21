@@ -545,7 +545,8 @@ MAJOR bump. Restructures the install from a single skill (`doer`) into a formal 
 - Path resolution for `lessons/` moves from the heuristic `<doer-skill-dir>/lessons/` to the canonical `${CLAUDE_PLUGIN_ROOT}/lessons/`. The lessons themselves did NOT move on disk (they always lived next to SKILL.md); only the resolver changed.
 - Path resolution for shared protocols moves from inline definitions in SKILL.md to `${CLAUDE_PLUGIN_ROOT}/lib/<file>.md` references.
 - Per-ticket lock protocol shipped (WK-1). Workspace Guard now acquires `.doer/tickets/<ID>/lock.json` on every entry point, every stage transition refreshes the heartbeat via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh touch`, and Stage 9 wrapup releases the lock. Concurrent sessions on the same ticket fail fast.
-- `metadata.json` schema is unchanged (no field added, removed, or renamed in this bump).
+- Inter-stage inbox protocol shipped (WK-2). New top-level `metadata.inbox` array (created lazily on first post). Each stage drains its unacked messages on entry; Stage 9 wrapup clears acked messages.
+- `metadata.json` schema gains an optional top-level `inbox: []` array (lazy: absent until first post). No other fields added, removed, or renamed.
 - `metadata.skill_version` bumps to `"6.0.0"`.
 
 **Per-ticket changes:**

@@ -35,6 +35,7 @@ This document covers the orchestrator narration discipline (Core Principle 1), t
 
 **Per-stage narration:**
 - Before: `"Starting Stage {N}, {name}. {one-sentence goal}."` + write `stages.<N>.started_at`.
+- Right after `started_at` and before any stage logic runs, drain the inbox addressed to this stage: run `${CLAUDE_PLUGIN_ROOT}/lib/helpers/inbox.sh list "<TICKET-ID>" --to <N> --unacked`. For each returned message, narrate per kind and ack via `inbox.sh ack`. `blocker` messages call `AskUserQuestion` to resolve before continuing; `advisory` and `fyi` are narrated and auto-acked in the same turn. See `${CLAUDE_PLUGIN_ROOT}/lib/inbox.md` for the protocol. Empty inbox = silent, no narration.
 - After: write `stages.<N>.completed_at` + `"Stage {N} complete{, committed as {sha}}. Continuing to Stage {N+1}..."` then **auto-proceed** to Stage {N+1} in the same turn. (The `committed as {sha}` clause is included only when the stage actually produced a real-code commit. Stages 1, 2, and 9 typically do not commit; they only update `metadata.json` which is gitignored, so they omit the clause.)
 - After every stage transition (right after writing `completed_at`), run `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh touch "<TICKET-ID>"` to refresh the per-ticket lock heartbeat. See `${CLAUDE_PLUGIN_ROOT}/lib/lock.md` for the protocol. Silent on success; failure is non-fatal (narrate and continue).
 - Inside loop: `"Iteration {i}/{max}: invoking {agent}... agent returned {status}, {findings} findings ({blockers} blockers)."` (`{max}` is `3` for Stage 4 and Stage 5.)

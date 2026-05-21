@@ -33,6 +33,13 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Concurrent sessions on the same ticket fail fast with a clear message (PID + host + last touched). The user resolves manually.
 - TTL override via env var `WK_LOCK_TTL_SECONDS=<seconds>`.
 
+### WK-2: inter-stage inbox protocol
+
+- `lib/inbox.md` operational: spec for the per-ticket inbox (`metadata.inbox` array). Three message kinds: `blocker`, `advisory`, `fyi`. Messages address a specific stage or broadcast to `*`.
+- `lib/helpers/inbox.sh` executable: subcommands `post`, `list`, `ack`, `clear`. Requires `jq`. Idempotent post via `--id`.
+- Narration Protocol: every stage entry drains its unacked inbox after `started_at`. `blocker` messages call `AskUserQuestion` before continuing; `advisory` and `fyi` are narrated and auto-acked in the same turn. Empty inbox is silent.
+- Stage 9 wrapup: new step 11 verifies the inbox has no pending messages (anomaly path), then `clear --acked` keeps `metadata.inbox` from growing across reverify cycles.
+
 ### Runtime
 
 - No change in 9-stage pipeline behavior.
