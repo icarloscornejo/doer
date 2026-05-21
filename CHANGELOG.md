@@ -2,7 +2,7 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
-## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer)
+## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer + WK-9 wk:review external PR review)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).
 
@@ -100,6 +100,20 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Output: standalone runs print findings to stdout grouped by persona then sorted by severity (blocker, high, medium, low). For `target ticket:<TICKET-ID>` the skill ALSO writes `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json` with `{persona_id, target, ran_at, findings[]}` for downstream pipeline stages.
 - Forward-looking Stage 5 integration documented (NOT implemented yet): when `preferences.md` contains `stage5_advisor_personas: ["security", "performance"]`, Stage 5 will call `/wk:advise --target ticket:<ID>` before its reviewer LLM and treat persona blockers as Stage 5 BLOCKERs in the doer/reviewer convergence loop. The doer skill owns this wiring; advise does not modify Stage 5 behavior on its own.
 - `lib/advisor-personas/README.md` documents the JSON shape, the default persona table, and the 5-step guide for adding new personas.
+
+### WK-9: wk:review external PR review
+
+- `skills/review/SKILL.md` operational (replacing the placeholder). `/wk:review <pr-ref>` fetches an external GitHub PR or GitLab MR and runs advisor personas (shared with `/wk:advise`) against it. Targets coworkers' PRs that the dev did NOT generate via the local pipeline.
+- PR-ref forms: full URL (`https://github.com/<owner>/<repo>/pull/<N>`, `https://gitlab.com/<group>/<repo>/-/merge_requests/<N>`), short form (`<owner>/<repo>#<N>`, `<group>/<repo>!<N>`), bare number (`#<N>`, `!<N>`) inside a clone with a single remote. Bare numbers without a sigil prompt once. Platform auto-detected from host or sigil.
+- Required CLIs: `gh` for GitHub, `glab` for GitLab. The skill exits with a clear install/auth message when the CLI is missing. Does NOT fall back to raw `curl`/`git`; auth, pagination, and field normalization are delegated to the platform CLI.
+- Workspace Guard: cwd MUST NOT be `~` or `/`. Same pattern as the rest of the `wk` plugin (see `lib/workspace-guard.md`).
+- Persona resolution: reads `preferences.md` for `review_default_personas` (defaults to `["security"]` if unset). `--personas <id1>,<id2>` overrides; `--persona <id>` is the single-persona shortcut. Missing IDs are dropped with a warning; empty resolved list is a hard error.
+- Fetch step (in-memory only, never written to disk): `gh pr view --json ...` + `gh pr diff` + `gh pr view --comments` for GitHub; `glab mr view -F json` + `glab mr diff` + `glab mr note list` for GitLab. The fetched content is ephemeral context; no `.env` or local secrets are inlined into Agent prompts.
+- Dispatch: one Agent call per persona in a single tool block (parallel). Each Agent receives the persona JSON verbatim, the PR metadata, the diff, and the comments inline. Each returns a JSON array of findings matching the persona's `output_schema` shape (`severity`, `title`, `where`, `explain`, `fix`).
+- Aggregation: findings sorted by severity (blocker, high, medium, low, info) per persona. Deterministic vote rule applied in order: any blocker across any persona = `request_changes`; else any high = `comment`; else `approve`. Vote line printed at the end of the report.
+- Posting: without `--post`, the report goes to stdout only. With `--post` on GitHub, calls `gh pr review --request-changes` or `--comment` (NEVER `--approve`; approval requires human intent). With `--post` on GitLab, posts a comment via `glab mr note create` only (does NOT call `glab mr approve` or `glab mr merge`); the vote line still narrates the recommended manual action.
+- `--list-personas` lists every persona JSON in `lib/advisor-personas/` with id and one-line description, then exits without fetching.
+- Skill is a CONSUMER of `lib/advisor-personas/` (does not define or modify the schema). Persona ownership stays with WK-8.
 
 ### Runtime
 

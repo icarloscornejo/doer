@@ -21,11 +21,11 @@ After installing, the 5 skills are available:
 /wk:doer ABC-123       # 9-stage pipeline orchestrator (core skill)
 /wk:load <ID>          # import a ticket from Jira / Linear / GitHub (operational)
 /wk:advise             # review specs/ACs/code with configurable personas (operational)
-/wk:review             # review external PRs
+/wk:review <pr-ref>    # review external PRs (operational)
 /wk:publish ABC-123    # create MR + transition Jira (opt-in)
 ```
 
-Satellite skills land progressively in 6.0.0 via tickets `WK-7` through `WK-10`. `/wk:load` and `/wk:advise` are operational; `review`, `publish` are placeholders until their tickets ship (see ROADMAP.md).
+Satellite skills land progressively in 6.0.0 via tickets `WK-7` through `WK-10`. `/wk:load`, `/wk:advise`, and `/wk:review` are operational; `publish` is a placeholder until its ticket ships (see ROADMAP.md).
 
 ## Initial setup
 
@@ -44,7 +44,7 @@ doer/
 |  |- doer/                       # orchestrator (operational)
 |  |- load/                       # operational (WK-7, shipped in 6.0.0)
 |  |- advise/                     # operational (WK-8, shipped in 6.0.0)
-|  |- review/                     # placeholder
+|  |- review/                     # operational (WK-9, shipped in 6.0.0)
 |  |- publish/                    # placeholder
 |- lib/                           # shared protocols
 |  |- heartbeat.md                # anti-compaction
