@@ -28,6 +28,12 @@ if [ ! -f "$BODY_FILE" ]; then
 fi
 
 awk '
+function leading_hashes(line,    n) {
+  n = 0
+  while (substr(line, n + 1, 1) == "#") n++
+  return n
+}
+
 BEGIN {
   in_section = 0
   section_level = 0
@@ -35,19 +41,15 @@ BEGIN {
   found = 0
 }
 
-# Detect start of an AC section.
 {
   lower = tolower($0)
 }
 
 # Case 1: Markdown heading (## Acceptance Criteria, # AC:, etc.)
-!in_section && /^#{1,3}[[:space:]]/ && (lower ~ /acceptance criteria/ || lower ~ /\bac:/ || lower ~ /\bacs:/) {
+!in_section && /^#{1,3}[[:space:]]/ && (lower ~ /acceptance criteria/ || lower ~ /\<ac:/ || lower ~ /\<acs:/) {
   in_section = 1
   found = 1
-  # Capture heading level from leading # count
-  heading = $0
-  match(heading, /^(#+)/, arr)
-  section_level = length(arr[1])
+  section_level = leading_hashes($0)
   buffer = buffer $0 "\n"
   next
 }
@@ -71,17 +73,14 @@ BEGIN {
 }
 
 in_section {
-  # Stop at the next heading of same or higher level when we started at a heading.
   if (section_level > 0 && /^#+[[:space:]]/) {
-    match($0, /^(#+)/, arr)
-    cur_level = length(arr[1])
+    cur_level = leading_hashes($0)
     if (cur_level <= section_level) {
       in_section = 0
       next
     }
   }
-  # Stop at the next bold label that looks like a new section header (when started at a bold label).
-  if (section_level == 0 && found && buffer != "" && /^\*\*[A-Z]/ && !/^\*\*acceptance criteria\*\*/i && !/^\*\*ac:\*\*/i) {
+  if (section_level == 0 && found && buffer != "" && /^\*\*[A-Z]/ && tolower($0) !~ /^\*\*acceptance criteria\*\*/ && tolower($0) !~ /^\*\*ac:\*\*/) {
     in_section = 0
     next
   }
@@ -90,7 +89,6 @@ in_section {
 
 END {
   if (found && buffer != "") {
-    # Strip trailing blank lines.
     while (substr(buffer, length(buffer) - 1, 2) == "\n\n") {
       buffer = substr(buffer, 1, length(buffer) - 1)
     }
