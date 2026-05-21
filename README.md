@@ -18,7 +18,7 @@ claude plugin install wk@wk
 claude plugin list
 ```
 
-The plugin ships five skills (one operational, four placeholders, see "Included skills" below). After install, edit `preferences.md` in the cached plugin dir to set your locale.
+The plugin ships five operational skills (see "Included skills" below). After install, edit `preferences.md` in the cached plugin dir to set your locale.
 
 **Updates:**
 
@@ -38,11 +38,9 @@ The Migration Check auto-applies any structural changes to in-flight tickets the
 | `/wk:load <ID>` | **Operational** | Import a ticket from Jira / Linear / GitHub Issues into the doer intake. |
 | `/wk:advise` | **Operational** | Review specs, ACs, or code with configurable advisor personas. |
 | `/wk:review` | **Operational** | Review external pull requests with configurable advisor personas. |
-| `/wk:publish ABC-123` | **Operational** | Create a PR/MR and transition the Jira ticket. Opt-in. |
+| `/wk:publish ABC-123` | **Operational** | Push the feature branch and create a PR (GitHub) or MR (GitLab) for a completed ticket. Optional `--transition <state>` triggers a Jira state change. |
 
 All 4 satellite skills shipped in 6.0.0 via `WK-7` through `WK-10` and are operational. See [`ROADMAP.md`](./ROADMAP.md) for the full roadmap.
-
-**Backward compat:** the legacy `/doer ABC-123` invocation still works. The orchestrator detects the migrated skill and routes to `/wk:doer`.
 
 ---
 
@@ -220,54 +218,64 @@ The decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* N
 
 ## State Layout
 
-**Lessons are GLOBAL**: they live next to `SKILL.md`, shared across every project that uses doer. **Everything per-ticket lives in a single `metadata.json`** (no markdown sidecars, no scratch files, no per-stage review files; v3.0.0 consolidated all of that into structured fields).
+State is split between the **plugin install** (cross-project, ships with `wk`) and **per-repo `.doer/`** (one directory per checkout). Everything per-ticket lives in a single `metadata.json`; no markdown sidecars, no scratch files.
 
 ```
-<doer-skill-dir>/                  # ~/src/doer/ (resolve symlinks)
-├── SKILL.md
-├── preferences.md                 # local config (gitignored, optional)
-└── lessons/                       # GLOBAL, cross-project, gitignored
-    └── {slug}.md
+${CLAUDE_PLUGIN_ROOT}/             # plugin install, e.g. ~/.claude/plugins/cache/wk/
+├── .claude-plugin/{plugin,marketplace}.json
+├── skills/
+│   ├── doer/SKILL.md              # 9-stage orchestrator
+│   ├── load/SKILL.md              # tracker import (Jira / Linear / GitHub)
+│   ├── advise/SKILL.md            # advisor-persona reviewer
+│   ├── review/SKILL.md            # external PR/MR review
+│   └── publish/SKILL.md           # PR/MR creation + Jira transition
+├── lib/
+│   ├── memory-paths.md            # source of truth for state layout + metadata schema
+│   ├── lock.md, inbox.md, cost.md # per-ticket protocol specs
+│   ├── workspace-guard.md, heartbeat.md, narration.md, migrations.md
+│   ├── helpers/{lock,inbox,cost}.sh   # bash helpers consumed by the orchestrator
+│   ├── advisor-personas/*.json    # 5 personas: security, performance, mobile, accessibility, api
+│   └── cost-rates.json            # token rates with TTL
+├── scripts/refresh-rates.sh       # refresh cost-rates.json
+├── lessons/{slug}.md              # GLOBAL, cross-project, gitignored
+└── preferences.md                 # local config (gitignored, optional)
 
 ./.doer/                           # per-repo (in CWD), auto-added to .git/info/exclude
 └── tickets/
     └── {TICKET-ID}/
-        └── metadata.json          # SINGLE file: state + intake + ac + plan + changelog + code_review + assumptions_validation + lessons_captured + summary + performance
+        ├── metadata.json          # SINGLE source of truth per ticket (schema below)
+        ├── lock.json              # per-ticket lock (PID + host + last_touched_at)
+        └── advisor-findings/      # only present when /wk:advise --target ticket:<ID> ran
+            └── {persona-id}.json
 ```
+
+**Lessons are GLOBAL**: shared across every repo that uses the `wk` plugin, so a takeaway captured on project A is available on project B.
 
 **Per ticket: 1 file (`metadata.json`).** Top-level fields cover the full ticket lifecycle:
 
 | Field | Owner | Notes |
 |---|---|---|
+| `ticket_id`, `title`, `branch`, `status`, `current_stage`, `skill_version`, `created_at`, `completed_at` | Intake / state machine | Identifying fields; `status` is `in_progress` or `complete` |
 | `testing_strategy` | Intake (heuristic + dev confirm) | `direct` or `bdd`. Set ONCE; never changes mid-ticket |
 | `intake` | Intake | Raw description, ACs as pasted, context, prior-work flags |
 | `ac` | Stage 1 | Structured: `in_scope[]`, `out_of_scope[]`, `open_questions_resolved[]`, `applicable_lessons[]` |
-| `plan` | Stage 2 | Structured: `files[]`, `steps[]`, `tests[]`, `risks[]`, `assumptions[]` |
+| `plan` | Stage 2 | Structured: `files[]`, `steps[]`, `tests[]`, `risks[]`, `assumptions[]` (assumptions are objects with `id`, `statement`, `check`, `expected`, `risk` since WK-4) |
 | `changelog` | Every doer stage appends | Append-only array of `{stage, iteration, kind, items[]}` |
-| `code_review` | Stage 5 appends | Append-only array of `{iteration, blockers, auto_fixes, suggestions, info, verdict}` |
+| `code_review` | Stage 5 appends | Append-only array of `{iteration, blockers, auto_fixes, suggestions, info, verdict}`. Each finding carries `source: "reviewer"` (default) or `"advisor:<persona-id>"` (WK-11). Iteration 1 also carries `advisor_personas_ran` |
 | `assumptions_validation` | Stage 9 | Each plan assumption marked VALIDATED / INVALIDATED / UNVERIFIED |
 | `lessons_captured` | Stage 9 | Refs to global lessons added during this ticket |
 | `summary` | Stage 9 | One-paragraph wrapup |
 | `performance` | Stage 9 | Timing, agent invocation counts, convergence stats, reviewer ROI |
-| `stages.<N>.{status, verified_with, ...}` | State machine | Per-stage status + stage-specific runtime fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7) |
+| `cost` | Helper-managed (WK-3) | Token + USD totals per model, per stage, with `unknown_models[]` for lazy-fallback warnings. Maintained by `lib/helpers/cost.sh` from rates in `lib/cost-rates.json` |
+| `inbox` | Inter-stage protocol (WK-2) | Per-ticket inbox with `blocker` / `advisory` / `fyi` messages; drained on stage entry, acked entries cleared at wrapup. Maintained by `lib/helpers/inbox.sh` |
+| `commits`, `workspace_guard`, `last_green_sha`, `last_green_test_command`, `runtime_build_command`, `lint_command`, `typecheck_command`, `test_command` | Workspace Guard / Stage 6 / Stage 7 | Bookkeeping for runtime verify, quality gate, and `/wk:publish` pre-flight |
+| `stages.<N>.{status, verified_with, ...}` | State machine | Per-stage status + stage-specific runtime fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha`/`per_task_gate` for 4 when `stage4_per_task_gate` is on, `parallel_subagents` for 4 when `stage4_parallel_subagents` is on, `ac_verdicts` for 7) |
+
+The per-ticket lock (WK-1) lives in `.doer/tickets/<ID>/lock.json`, not in `metadata.json`, so a stale-or-fresh check can run cheaply without parsing the full ticket. The lock helper is `lib/helpers/lock.sh`.
 
 Sub-agents receive the relevant slices of metadata **inlined in their prompts**; they do not read sidecar files.
 
-What got consolidated into `metadata.json` in v3.0.0 (and no longer exists as a file):
-
-- `context.md`
-- `ac.md`
-- `plan.md`
-- `changelog.md`
-- `wrapup.md`
-- The `review/` directory
-
-The consolidation eliminates drift between sidecar files, file-coordination cost across stages, and re-read overhead in subagent loops.
-
-**Migrating from v2.10.0:**
-
-- The first `/wk:doer <ID>` after upgrade auto-runs the migration block.
-- LLM parser agents convert each old `.md` file into its corresponding metadata field, then delete the file.
+The single source of truth for the schema, owners, and stage-specific fields is [`lib/memory-paths.md`](./lib/memory-paths.md).
 
 ---
 
@@ -296,7 +304,7 @@ The team sees ONLY real code commits. No doer artifacts, no metadata, no review 
 
 ## Locale (optional)
 
-By default the orchestrator narrates in English. To override, create a `preferences.md` next to `SKILL.md` with any ISO 639-1 language code:
+By default the orchestrator narrates in English. To override, create a `preferences.md` at the plugin root (`${CLAUDE_PLUGIN_ROOT}/preferences.md`) with any ISO 639-1 language code:
 
 ```yaml
 locale: es    # Spanish
@@ -328,7 +336,7 @@ This file is gitignored; never reaches GitHub. The orchestrator reads it as the 
 "Persistent state on disk" includes:
 
 - Every string field in `metadata.json` (`summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].blockers[].text`, etc.)
-- Global lessons under `<doer-skill-dir>/lessons/`
+- Global lessons under `${CLAUDE_PLUGIN_ROOT}/lessons/`
 - Every commit message
 
 **Why English-only on disk:** the persisted state is read by other subagents and by future tickets across projects. A single language keeps the global lessons pool shareable and prevents cross-language confusion.
@@ -376,7 +384,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 6.0.0** (see SKILL.md frontmatter). The latest migration (5.0.0 → 6.0.0) restructures the install from a single skill into a formal Claude Code plugin with five skills, and ships the per-ticket lock protocol (WK-1).
+**Current version: 6.0.0** (see SKILL.md frontmatter). The 5.0.0 → 6.0.0 migration restructures the install from a single skill into a formal Claude Code plugin with five skills (`/wk:doer`, `/wk:load`, `/wk:advise`, `/wk:review`, `/wk:publish`) and rolls up the full WK-1 through WK-11 ticket series: per-ticket lock (WK-1), inter-stage inbox (WK-2), token-cost tracking (WK-3), pre-flight assumptions in Stage 2 (WK-4), opt-in per-task review gate in Stage 4 (WK-5), opt-in parallel subagents in Stage 4 (WK-6), tracker import (WK-7), advisor personas (WK-8), external PR/MR review (WK-9), publishing (WK-10), and the Stage 5 advisor-persona wiring (WK-11). The migration is idempotent and runs automatically the next time any in-flight ticket is touched. See [`CHANGELOG.md`](./CHANGELOG.md) for the per-ticket detail.
 
 ---
 
@@ -388,7 +396,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **Iteration as a turn.** A full doer/reviewer iteration (incl. AUTO_FIX) runs in a single turn. Works identically in CLI and IDE plugins.
 - **No hidden state.** Everything is on disk in `./.doer/`. Context compression cannot lose progress; closing the session = pausing.
 - **Context continuity (anti-compaction).** Long Claude Code sessions get compacted to fit in context, which can drop SKILL.md rules from the orchestrator's working memory. The orchestrator runs a heartbeat self-check at every stage transition and every `/wk:doer continue`; if the heartbeat anchor is missing from context, it triggers forced re-hydration (re-read preferences, the relevant SKILL section, and metadata). Cost: zero in normal operation, paid only when compaction is detected.
-- **No push, no PR, no deploy.** `/doer` stops after wrapup. You push and open the PR manually after running your project's pre-commit checks (lint, format, full tests) and squashing/reordering commits as desired.
+- **No push, no PR, no deploy from the doer pipeline itself.** `/wk:doer` stops after wrapup. Pushing and opening the PR is a separate, explicit step: run your project's pre-commit checks (lint, format, full tests), squash/reorder commits as desired, then either push manually or invoke `/wk:publish <TICKET-ID>` (which adds pre-flight checks, builds the PR/MR body from `metadata.json`, and optionally transitions the linked Jira ticket via `--transition`).
 
 ---
 
