@@ -1,0 +1,13 @@
+{
+  "name": "wk",
+  "owner": {
+    "name": "Carlos Cornejo"
+  },
+  "plugins": [
+    {
+      "name": "wk",
+      "source": "./",
+      "description": "Doer Work Kit: ticket execution orchestrator + satellite skills."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
-# doer
+# Doer Work Kit (`wk`)
 
-**Ticket execution orchestrator for Claude Code.** Version 5.0.0.
+**Ticket execution orchestrator for Claude Code.** Plugin version 6.0.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -8,36 +8,41 @@ Scope stops before PR and deploy. Anything upstream (PRD, architecture, ticket c
 
 ---
 
-## Installation
+## Install via marketplace
 
-**One-time setup (per machine).** Clone the repo once, then symlink from every Claude Code config directory where you want the skill available.
-
-If you only have a single Claude install, you only need one symlink (`~/.claude/skills/doer`). If you keep multiple Claude configs side-by-side (e.g. one per client, project, or environment, each in its own `~/.claude-*` directory), symlink from each. They all share the same skill.
+Detailed install ritual (and onboarding for a Claude session that just received this repo) lives in [`AGENTS.md`](./AGENTS.md). Quick version:
 
 ```bash
-# 1. Clone the repo (one place only)
-mkdir -p ~/src
-git clone https://github.com/icarloscornejo/doer.git ~/src/doer
-
-# 2. Symlink from each Claude config directory
-ln -s ~/src/doer ~/.claude/skills/doer
-
-# Optional: repeat for any additional Claude configs you maintain.
-# Example with three extra configs:
-ln -s ~/src/doer ~/.claude-work/skills/doer
-ln -s ~/src/doer ~/.claude-personal/skills/doer
-ln -s ~/src/doer ~/.claude-clientA/skills/doer
+claude plugin marketplace add https://github.com/icarloscornejo/doer.git
+claude plugin install wk@wk
+claude plugin list
 ```
 
-**Why symlinks?** All Claude configs see the same `SKILL.md`, `lessons/`, and `preferences.md`. Editing one file updates every Claude. A single `git pull` refreshes everything.
+The plugin ships five skills (one operational, four placeholders, see "Skills incluidas" below). After install, edit `preferences.md` in the cached plugin dir to set your locale.
 
 **Updates:**
 
 ```bash
-cd ~/src/doer && git pull
+claude plugin marketplace update wk
 ```
 
-One pull refreshes every symlinked Claude. The Migration Check auto-applies any structural changes to in-flight tickets the next time they're touched.
+The Migration Check auto-applies any structural changes to in-flight tickets the next time they're touched.
+
+---
+
+## Skills incluidas
+
+| Slash command | Status | Purpose |
+|---------------|--------|---------|
+| `/wk:doer ABC-123` | **Operational** | 9-stage ticket execution orchestrator (the core skill, was previously `/doer`). |
+| `/wk:load PROJ-42` | Placeholder (WK-7) | Import a ticket from Jira / Linear / GitHub Issues into the doer intake. |
+| `/wk:advise` | Placeholder (WK-8) | Review specs, ACs, or code with configurable advisor personas. |
+| `/wk:review` | Placeholder (WK-9) | Review external pull requests with configurable advisor personas. |
+| `/wk:publish ABC-123` | Placeholder (WK-10) | Create a merge request and transition the Jira ticket. Opt-in. |
+
+The 4 satellite skills are stubs in 6.0.0; they will be implemented as `WK-7` through `WK-10`. See [`ROADMAP.md`](./ROADMAP.md) for the full roadmap.
+
+**Backward compat:** the legacy `/doer ABC-123` invocation still works. The orchestrator detects the migrated skill and routes to `/wk:doer`.
 
 ---
 
@@ -47,17 +52,17 @@ One pull refreshes every symlinked Claude. The Migration Check auto-applies any 
 
 | Command | Description |
 |---------|-------------|
-| `/doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, ACs, context, branch name, prior-work flags, then asks you to confirm the inferred testing strategy (`direct` or `bdd`). |
-| `/doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). |
-| `/doer status <TICKET-ID>` | Show current stage, loop state, blockers. |
-| `/doer list` | List all tickets under `./.doer/tickets/`. |
+| `/wk:doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, ACs, context, branch name, prior-work flags, then asks you to confirm the inferred testing strategy (`direct` or `bdd`). |
+| `/wk:doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). |
+| `/wk:doer status <TICKET-ID>` | Show current stage, loop state, blockers. |
+| `/wk:doer list` | List all tickets under `./.doer/tickets/`. |
 
 ### Escape-hatch commands (rarely needed; flows below run automatically)
 
 | Command | When to use it manually |
 |---------|--------------------------|
-| `/doer verify <TICKET-ID>` | Only for tickets already at `status: complete`. The Migration Check auto-upgrades any in-flight ticket, but a closed ticket has no entry point, so this command is the only way to retroactively run new stages added to the skill after the ticket closed. |
-| `/doer cleanup-history <TICKET-ID>` | Auto-runs at wrapup (Stage 9). Use manually only if you declined the prompt at wrapup, want to preview/re-run the cleanup, or are working on a closed ticket. |
+| `/wk:doer verify <TICKET-ID>` | Only for tickets already at `status: complete`. The Migration Check auto-upgrades any in-flight ticket, but a closed ticket has no entry point, so this command is the only way to retroactively run new stages added to the skill after the ticket closed. |
+| `/wk:doer cleanup-history <TICKET-ID>` | Auto-runs at wrapup (Stage 9). Use manually only if you declined the prompt at wrapup, want to preview/re-run the cleanup, or are working on a closed ticket. |
 
 ### Stopping and resuming
 
@@ -70,7 +75,7 @@ State is persisted to `metadata.json` after every Agent return; no separate "sav
 | Press `Esc` | Mid-Agent (the orchestrator is waiting for a subagent). Cancels the current Agent call. Works in CLI clients that support it. |
 | `Ctrl+C` in the parent shell | Mid-Agent in terminal-based clients (e.g. Android Studio terminal) where `Esc` doesn't propagate. |
 
-To resume from any future session: `/doer continue <TICKET-ID>`.
+To resume from any future session: `/wk:doer continue <TICKET-ID>`.
 
 ### Talking to an active ticket
 
@@ -81,7 +86,7 @@ Once a ticket is active, natural language works alongside slash commands. Whatev
 | Anything non-halt (`ok`, `yes`, `continue`, `the plan looks good`, an unrelated question, even an empty message) | **Continue**: reads `metadata.json` and runs the next pending action |
 | A halt signal (`stop`, `wait`, `hold on`) | **Stop**: narrates current position and exits |
 
-You don't need to type `/doer continue` to nudge the next iteration. That command is only for resuming **across sessions**.
+You don't need to type `/wk:doer continue` to nudge the next iteration. That command is only for resuming **across sessions**.
 
 ---
 
@@ -174,7 +179,7 @@ flowchart TD
 
 **Stages 4 (Code) and 5 (Code Review) only.** Max 3 iterations. **One full iteration runs in a single turn** (doer + reviewer + AUTO_FIX pass if needed). Works identically in CLI and IDE plugins.
 
-Stages 2 (Plan) and 3 (Tests) do NOT loop. They run single-pass, then deterministic checks decide pass/fail. On check failure, the writer agent is invoked **once more** with the BLOCKERs inline. A second failure aborts the stage with `status: "blocked"`; the dev fixes manually and reruns `/doer continue` (the orchestrator re-runs only the deterministic checks, no new agent invocation).
+Stages 2 (Plan) and 3 (Tests) do NOT loop. They run single-pass, then deterministic checks decide pass/fail. On check failure, the writer agent is invoked **once more** with the BLOCKERs inline. A second failure aborts the stage with `status: "blocked"`; the dev fixes manually and reruns `/wk:doer continue` (the orchestrator re-runs only the deterministic checks, no new agent invocation).
 
 ```mermaid
 flowchart TD
@@ -262,7 +267,7 @@ The consolidation eliminates drift between sidecar files, file-coordination cost
 
 **Migrating from v2.10.0:**
 
-- The first `/doer <ID>` after upgrade auto-runs the migration block.
+- The first `/wk:doer <ID>` after upgrade auto-runs the migration block.
 - LLM parser agents convert each old `.md` file into its corresponding metadata field, then delete the file.
 
 ---
@@ -281,9 +286,9 @@ A hard rule. The Workspace Guard runs at every entry point and ensures:
 
 After a ticket completes you can still:
 
-- Run `/doer status <TICKET-ID>` for a summary
-- Run `/doer list` to see all tickets
-- Run `/doer continue <TICKET-ID>` to inspect or extend
+- Run `/wk:doer status <TICKET-ID>` for a summary
+- Run `/wk:doer list` to see all tickets
+- Run `/wk:doer continue <TICKET-ID>` to inspect or extend
 - Read `./.doer/tickets/<TICKET-ID>/metadata.json` directly for ac, plan, changelog, code review history, wrapup summary, and performance stats
 
 The team sees ONLY real code commits. No doer artifacts, no metadata, no review history.
@@ -359,7 +364,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **Orchestrator is the sole voice.** Subagents write artifacts and return JSON summaries. Only the orchestrator prompts the user.
 - **Iteration as a turn.** A full doer/reviewer iteration (incl. AUTO_FIX) runs in a single turn. Works identically in CLI and IDE plugins.
 - **No hidden state.** Everything is on disk in `./.doer/`. Context compression cannot lose progress; closing the session = pausing.
-- **Context continuity (anti-compaction).** Long Claude Code sessions get compacted to fit in context, which can drop SKILL.md rules from the orchestrator's working memory. The orchestrator runs a heartbeat self-check at every stage transition and every `/doer continue`; if the heartbeat anchor is missing from context, it triggers forced re-hydration (re-read preferences, the relevant SKILL section, and metadata). Cost: zero in normal operation, paid only when compaction is detected.
+- **Context continuity (anti-compaction).** Long Claude Code sessions get compacted to fit in context, which can drop SKILL.md rules from the orchestrator's working memory. The orchestrator runs a heartbeat self-check at every stage transition and every `/wk:doer continue`; if the heartbeat anchor is missing from context, it triggers forced re-hydration (re-read preferences, the relevant SKILL section, and metadata). Cost: zero in normal operation, paid only when compaction is detected.
 - **No push, no PR, no deploy.** `/doer` stops after wrapup. You push and open the PR manually after running your project's pre-commit checks (lint, format, full tests) and squashing/reordering commits as desired.
 
 ---
