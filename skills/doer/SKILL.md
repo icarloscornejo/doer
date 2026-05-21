@@ -417,7 +417,7 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | 1 ac-confirm | `name`, `status`, `verified_with` | `completed_at` | `skipped_reason` |
 | 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
 | 3 tests | `name`, `status`, `verified_with`, `testing_strategy_mode` | `completed_at`, `retry_used` | `skipped_reason` |
-| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a (Stage 4 is never skipped) |
+| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`. When `preferences.md` has `stage4_per_task_gate: true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `status = "blocked"` via reject: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
 | 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a |
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
 | 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
@@ -989,6 +989,51 @@ If the deterministic checks for the active branch produce any BLOCKERs:
 Loop with **max 3 iterations** (see Doer/Reviewer Loop Pattern).
 
 **Mode check.** At entry, read `metadata.testing_strategy.mode`. The value is inlined into the writer prompt and influences pre-reviewer Check A (see "Pre-reviewer deterministic checks"). After commit, the orchestrator decides where to advance based on `testing_strategy.mode` (see "Direct return" at the end).
+
+**Gate check.** At entry, also read `${CLAUDE_PLUGIN_ROOT}/preferences.md` for `stage4_per_task_gate: true|false` (default `false`). If `true`, run the "Per-task gate (opt-in)" sub-loop below before falling through to the deterministic checks and reviewer. If `false`, skip directly to the writer prompt for the full plan, the deterministic checks, and the reviewer (legacy flow).
+
+### Per-task gate (opt-in)
+
+Active ONLY when `preferences.md` has `stage4_per_task_gate: true`. The orchestrator implements one entry of `metadata.plan.steps[]` at a time and pauses for a human gate after each. The deterministic checks and the reviewer LLM still run ONCE at the end against the full Stage 4 diff (the gate is PRE-reviewer, not POST).
+
+**Initialize at entry:**
+
+1. Capture `metadata.stages.4.pre_stage4_sha = <git rev-parse HEAD>` (full 40-char SHA). This is the rollback anchor for `view-full-diff` and the diff base for the eventual reviewer call.
+2. Initialize `metadata.stages.4.per_task_gate = {"enabled": true, "decisions": []}`.
+
+**Per-step loop.** For each entry in `metadata.plan.steps[]` (in `order`):
+
+1. Capture `pre_step_sha = <git rev-parse HEAD>` (local variable, not persisted).
+2. Invoke the **single-step writer** (variant of the writer prompt below; payload is restricted to the current step plus AC and lessons; read budget shrinks to 5 source files since the surface area is smaller).
+3. `git add -A`.
+4. **Empty-diff branch.** If `git diff --cached` is empty, do NOT present the gate. Append `{step_order: <order>, decision: "auto_accepted_empty", at: "<ISO8601>"}` to `metadata.stages.4.per_task_gate.decisions`, narrate *"Step N produced zero changes. Auto-accepted. Continuing."*, advance to the next step.
+5. **Gate.** Otherwise, narrate the staged diff (`git diff --cached`) and call `AskUserQuestion` with the five-option gate (see "Gate options" below). Apply the chosen branch.
+6. Repeat until all steps are processed OR a `reject` aborts the stage.
+
+**Gate options.** Present exactly these five labels (orchestrator narration is in the operating locale; the option semantics are fixed):
+
+| Option | Action |
+|---|---|
+| `[a]ccept` | Leave the staged diff in place. Append `{step_order, decision: "accepted", at}`. Continue. |
+| `[e]dit` | Sub-prompt: `manual` or `via-writer`. See "Edit semantics" below. |
+| `[r]eject` | `git reset --hard <pre_step_sha>`. Append `{step_order, decision: "rejected", at}`. Set `metadata.stages.4.status = "blocked"`, set `metadata.stages.4.blocked_reason = "rejected at step <order>"`. Narrate *"Stage 4 aborted at step N (rejected). Run /doer continue <ID> after adjusting metadata.plan."*. End turn. |
+| `[s]kip` | `git reset --hard <pre_step_sha>`. Append `{step_order, decision: "skipped", at}`. Continue to the next step. The plan step is recorded as not implemented; the eventual reviewer will see it as a missing-file BLOCKER from Check C if the step required a file that was now never touched, which the dev can address by accepting residuals at convergence or re-running. |
+| `[v]iew-full-diff` | Print `git diff <pre_stage4_sha>..HEAD` (cumulative Stage 4 diff). Do NOT count as a decision. Re-present the SAME gate. |
+
+**Edit semantics.** When the dev picks `[e]dit`, ask one follow-up `AskUserQuestion`:
+
+- `manual`: narrate *"Edit by hand and reply when done."*. End turn. On the next user message that is not a halt signal, run `git add -A`, append `{step_order, decision: "edited_manual", at}`, continue to the next step. (The auto-resume rule from `lib/narration.md` already covers re-entry semantics.)
+- `via-writer`: ask the dev for instructions in a free-text field, then re-invoke the single-step writer with those instructions inlined as `== Dev edit instructions ==`. Re-present the SAME gate (no new `pre_step_sha`; this is still the same step). Append `{step_order, decision: "edited_via_writer", at, edit_instructions: "<verbatim>"}` only when the dev finally accepts (so a step that goes via-writer twice ends up with one `edited_via_writer` decision plus one `accepted`).
+
+**After the per-step loop:**
+
+If the loop exited via a `reject`, Stage 4 is blocked and the turn already ended; nothing else to do. Otherwise (all steps processed via `accepted`, `edited_manual`, `edited_via_writer`, `auto_accepted_empty`, or `skipped`), narrate a one-line summary of the decisions (e.g. *"Per-task gate: 4 accepted, 1 edited (manual), 1 skipped."*) and fall through to the deterministic Check A/B/C and the reviewer LLM exactly as in the legacy flow. The diff base for both is `metadata.stages.4.pre_stage4_sha`.
+
+**Single-step writer prompt skeleton.** Identical to the full writer prompt below, except:
+- `== Current step ==` block is added with the JSON of the one `metadata.plan.steps[i]` entry.
+- The instruction is restricted: *"Implement ONLY the current step. Do not implement other entries of metadata.plan.steps. Do not refactor unrelated code. If the step says to edit a file you have not touched yet, edit ONLY the lines required by this step."*
+- For `via-writer` re-invocations, also include `== Dev edit instructions ==` with the dev's verbatim text and the instruction *"Apply the dev edit instructions. Do not revert prior decisions for other steps; the diff so far is already accepted."*
+- Read budget: 5 source files.
 
 ### Code writer prompt (skeleton)
 

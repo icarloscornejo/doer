@@ -2,7 +2,7 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
-## 6.0.0 (plugin migration + WK-1 lock protocol)
+## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).
 
@@ -56,6 +56,17 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - After Check D, every assumption with `status: "pass"` AND `risk: "high"` posts one inbox advisory addressed to Stage 4 via `lib/helpers/inbox.sh post --from 2 --to 4 --kind advisory`. Skipped (null-check) high-risk assumptions are not posted.
 - Single-retry policy text updated: covers the four deterministic checks (file existence, AC coverage, assumptions shape, assumptions execution).
 - Automatic migration: legacy string-form assumptions in pre-WK-4 tickets convert to object form during 5.0.0 -> 6.0.0 migration. Defaults: `id: "A-<n>"`, `statement` preserved verbatim, `check: null`, `expected: "preserved from pre-WK-4 plan; verify manually"`, `risk: "low"`. Idempotent (objects pass through).
+
+### WK-5: per-task review gate in Stage 4
+
+- New opt-in flag in `preferences.md`: `stage4_per_task_gate: true|false` (default `false`). When `true`, Stage 4 implements one `metadata.plan.steps[]` entry at a time and pauses for a human gate after each.
+- Stage 4 entry now reads `preferences.md` for the flag in addition to `metadata.testing_strategy.mode`. Legacy flow (single writer call against the full plan) is preserved when the flag is off.
+- Per-step sub-loop captures `metadata.stages.4.pre_stage4_sha` (full 40-char SHA) at entry and per-step `pre_step_sha` for rollback. Each step invokes a single-step writer (read budget 5 files; payload restricted to the current step plus AC and lessons), runs `git add -A`, then presents the gate.
+- Gate options: `[a]ccept` (keep diff, log decision, continue), `[e]dit` (sub-prompt for `manual` vs `via-writer`; manual pauses for hand-edit then resumes, via-writer re-invokes the writer with verbatim dev instructions inlined and re-presents the same gate), `[r]eject` (`git reset --hard <pre_step_sha>`, mark Stage 4 `blocked` with `blocked_reason`, end turn), `[s]kip` (`git reset --hard <pre_step_sha>`, log decision, advance), `[v]iew-full-diff` (print `git diff <pre_stage4_sha>..HEAD`, re-present the same gate; not counted as a decision).
+- Empty-diff branch: if a step's writer produced no staged changes, the gate is skipped silently and the decision is logged as `auto_accepted_empty`.
+- Decisions persisted at `metadata.stages.4.per_task_gate.decisions[]` with `step_order`, `decision`, `at`, and (only for `edited_via_writer`) `edit_instructions`.
+- Reviewer LLM and Pre-reviewer Check A/B/C run ONCE at the end of the per-step loop against the full Stage 4 diff (base = `pre_stage4_sha`). The gate is PRE-reviewer.
+- Stage Finalization Checklist for Stage 4 extended: when the flag is on, `pre_stage4_sha` and `per_task_gate.decisions` are required. When `status = "blocked"` via reject, `blocked_reason` is required instead of the loop counters.
 
 ### Runtime
 
