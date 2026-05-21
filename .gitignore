@@ -1,2 +1,11 @@
 preferences.md
 lessons/
+
+# Plugin local cache (si Claude Code escribe algo aqui durante dev)
+.claude-plugin/local/
+
+# Scratch outputs (si alguna skill escribe a output/ en futuro)
+output/
+
+# OS noise
+.DS_Store

@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 5.0.0
+version: 6.0.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -43,7 +43,7 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
    - Stages whose only output is `.doer/` (1 AC, 2 Plan, 9 Wrapup) SKIP the commit entirely. Stages with real code (3 Tests, 4 Code, 5 Review, 7 Runtime, 8 Docs) commit code only.
    - Stage 7 (Runtime Verify) temp commit + revert still works because it touches real source files, not `.doer/`.
 
-9. **EM-DASHES ARE PROHIBITED.** Across every output the orchestrator and its subagents produce: chat narration, questions, summaries, every value persisted into `metadata.json` (string fields like `summary`, `changelog[].items[].text`, `ac.in_scope`, `plan.steps`, `code_review[].blockers[].text`), generated commit messages, generated PR descriptions, global lessons under `<doer-skill-dir>/lessons/`, comments injected into code. ZERO `, ` characters anywhere.
+9. **EM-DASHES ARE PROHIBITED.** Across every output the orchestrator and its subagents produce: chat narration, questions, summaries, every value persisted into `metadata.json` (string fields like `summary`, `changelog[].items[].text`, `ac.in_scope`, `plan.steps`, `code_review[].blockers[].text`), generated commit messages, generated PR descriptions, global lessons under `${CLAUDE_PLUGIN_ROOT}/lessons/`, comments injected into code. ZERO `, ` characters anywhere.
    - Use commas, periods, semicolons, parentheses, colons, or full sentence breaks instead.
    - Examples:
      - Wrong: `Stage 2 complete — proceeding to Stage 3.`
@@ -57,568 +57,19 @@ User-facing orchestrator for executing a single ticket end-to-end on a feature b
 
 ---
 
+
+---
+
 ## Context Continuity (Anti-Compaction)
 
-The Claude Code harness compacts long conversations to fit in context. When that happens mid-pipeline, the orchestrator loses everything that wasn't in the last assistant turn or the summary: locale, narration discipline, schema field requirements, full-SHA convention, Migration Check timing, and other rules baked into SKILL.md. Symptoms observed in prior tickets: abbreviated SHAs, missing `loop_outcome` / `iterations` / `started_at` fields, silent skips of Stage 7 ask-rule, locale flip from `es` to English, `metadata.skill_version` not bumped on PATCH upgrades, and — critically — the orchestrator claiming "context is fresh" immediately after compaction because the heartbeat string survived in the summary.
-
-### Why the old conditional self-check failed
-
-The previous design asked the orchestrator to self-assess whether its context was fresh by trying to recall a known anchor string. This is unreliable: after compaction the anchor string appears verbatim in the conversation summary, so the model always answers "yes, I can recall it" and skips re-hydration even when SKILL.md rules are gone from context. A self-referential freshness test cannot detect its own staleness.
-
-### Transition Sync (unconditional)
-
-**At every stage transition AND at every `/doer continue` invocation (including implicit resumes after natural-language messages), the orchestrator MUST perform a Transition Sync as its FIRST action, before any stage logic. No exceptions. No skip path.**
-
-The sync is three Read calls. Total cost: ~3 tool calls per transition, which the orchestrator already makes to read metadata anyway.
-
-**Transition Sync steps:**
-
-1. Narrate: *"Transition Sync."* (one line; signals to the dev that the sync ran)
-2. Read `<doer-skill-dir>/preferences.md` → re-establish operating locale. Immediately commit ALL output to that locale for the rest of the session. Narrate the locale confirmation IN that language as the very next sentence (e.g. `"Locale: es. Todo el output de ahora en adelante en español."`). If the next output line is in the wrong language, that is a VIOLATION.
-3. Read `./.doer/tickets/<TICKET-ID>/metadata.json` → re-establish ticket state, `current_stage`, prior `changelog` / `code_review` entries.
-4. Read the relevant section of `SKILL.md` for `metadata.current_stage` (e.g. if `current_stage` is 4, re-read the "Stage 4. Code" section). One section, not the whole file.
-5. Narrate in the locale language: *"Sync complete. Stage <N> (<name>), locale <locale>."*
-6. Run Migration Check Phase 1 + Phase 2 (see Versioning & Migrations). If `metadata.skill_version` is behind the SKILL frontmatter, apply migrations now.
-7. Continue with the stage logic.
-
-> **DOER-HEARTBEAT-v3: every action narrated, every field validated, every SHA full-length, every Migration Check explicit.**
-
-(This anchor line is kept for historical reference in lesson notes. It is no longer used as a freshness test — the Transition Sync is unconditional.)
-
-**Locale re-check:** At the next stage transition after any sync, the orchestrator MUST verify its output language matches `preferences.md`. Locale drift after a sync is prohibited.
+Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/heartbeat.md`. The doer skill MUST run the heartbeat self-check at every stage transition and at every `/wk:doer continue` invocation, per that document.
 
 ---
 
 ## Versioning & Migrations
 
-The SKILL frontmatter declares the current version (SemVer: MAJOR.MINOR.PATCH).
+Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/migrations.md`. That file owns the SemVer rules, the Migration Check (Phase 1 + Phase 2 with auto-reverify), the mandatory Bash-execution rule for reading versions, and every per-version migration block from `1.x -> 2.0.0` through `5.0.0 -> 6.0.0`.
 
-| Bump | When | Migration block? |
-|------|------|------------------|
-| **MAJOR** | Structural change (renames/removes stages, changes metadata shape, removes/renames artifact files) | REQUIRED |
-| **MINOR** | Adds capability OR changes the shape of any persistent field in `metadata.json` (e.g. `metadata.plan.tests[]` schema), OR changes the format of a global lesson file | REQUIRED if any persistent format changed; optional otherwise |
-| **PATCH** | Bug fix to orchestrator behavior, doc edit, no file format change | None |
-
-**Rule of thumb:** if a bump changes how an existing artifact file is shaped, **register a migration block**. Tickets in flight should never be stuck reading verbose old formats just because they were created before the optimization. Token-cost reductions are real wins; auto-applying them keeps every ticket on the latest cheapest format.
-
-Each ticket persists `skill_version` in `metadata.json` at intake. The orchestrator runs the **Migration Check** below at every one of these explicit trigger points (NOT only at `/doer continue`):
-
-1. Start of every `/doer <TICKET-ID>` invocation, after the Workspace Guard finishes.
-2. Start of every `/doer continue <TICKET-ID>` (same path; `/doer continue` is just an alias).
-3. Start of every `/doer verify <TICKET-ID>`.
-4. As part of every **Transition Sync** (see Context Continuity section). Because the Transition Sync is unconditional at every stage transition, this subsumes the old "after re-hydration" trigger.
-5. Before every stage transition where `metadata.skill_version` does not match the SKILL frontmatter version (cheap deterministic comparison; if equal, skip).
-
-The "every entry point" phrasing is too vague and gets dropped from context after compaction. The five explicit triggers above are non-negotiable.
-
-### How to read each version (mandatory Bash execution; no inference)
-
-Both versions in the comparison MUST be extracted from their authoritative source via a Bash tool call whose output is then shown verbatim in the narration. Inferring a version value from memory, from a migration block header, from a schema example, from prior narration, or from any other string in the SKILL is a **VIOLATION** of the Migration Check protocol. The orchestrator may not assert either version value unless it has just shown the corresponding Bash output in this turn.
-
-**Mandatory narration template** (the orchestrator MUST emit something equivalent to this; the four lines marked `MUST` are not optional):
-
-```
-Migration Check (this turn):
-[MUST] $ grep '^version:' <absolute path to SKILL.md> | head -1 | awk '{print $2}'
-[MUST] -> <verbatim stdout of the command above, e.g. "3.0.4">
-[MUST] $ jq -r '.skill_version' .doer/tickets/<TICKET-ID>/metadata.json
-[MUST] -> <verbatim stdout of the command above, e.g. "3.0.0">
-Comparison: <metadata value> vs <SKILL value> -> <decision: no-op | silent bump | run migration block | error: downgrade>
-```
-
-The two Bash tool calls MUST execute as actual tool invocations (so the user sees them in the trace). The orchestrator MUST NOT shortcut by stating values from memory.
-
-**Forcing rule for self-check:** before stating either version value in any narration, ask: *"Did I show a Bash output for this value in this turn?"* If no, run the Bash command first. If you find yourself about to write *"SKILL frontmatter = X.Y.Z"* without a preceding Bash output line, STOP and run the grep command first.
-
-**Comparison procedure (after both outputs are shown):**
-
-1. Compare the two strings literally.
-2. If the SKILL value is greater than the metadata value → run Phase 1 (case 4 if a migration block matches; case 5 silent bump otherwise). Narrate which case applies.
-3. If equal → narrate "no migration needed" and continue.
-4. If metadata is greater than SKILL → unexpected (downgrade). Narrate and stop; do not continue.
-
-**Common failure mode this prevents:** the orchestrator parses `3.0.0` from a migration block header like `### Migration: From 2.10.0 → 3.0.0`, from a schema example like `verified_with: "3.0.0"`, or from associative memory of a prior session, and reports it as the current SKILL version without ever running the grep command. Those strings are NOT the SKILL version. Only the frontmatter `^version:` line, read fresh via Bash this turn, is authoritative. This failure was observed in v3.0.2 and v3.0.3 (the spec said "do not infer" but lacked a forcing function); v3.0.4 adds the mandatory Bash execution + verbatim output narration as the forcing function.
-
-### Migration Check (auto, silent)
-
-Runs as part of the Workspace Guard sequence (right after the exclude check, before any stage logic). Two phases:
-
-**Phase 1: file-format / data migration (existing behavior)**
-
-1. Read `metadata.skill_version` (default `"1.0.0"` if missing, pre-versioning era).
-2. Read current SKILL frontmatter `version`.
-3. If equal → no-op for Phase 1.
-4. If ticket version < current version → walk every migration block below in chronological order. For each block whose `from` matches the ticket's current version: apply it, then bump `metadata.skill_version` to the block's `to`. Continue until the ticket's version equals the current SKILL version.
-5. If the ticket version is behind the SKILL but no migration block matches the gap (e.g. a PATCH bump): silently bump `metadata.skill_version` to current. No file changes.
-6. **Always auto-apply without asking the user**, but **NOT silently in execution**. Per Core Principle 1 (Narration first), the orchestrator MUST narrate progress per step inside any non-trivial migration block (one narration line per step is the minimum: *"Migration step 3/11: parsing changelog.md → metadata.changelog..."*, then *"...done"* on completion). The "no confirmations" rule is about not pausing for user input; it is NOT a license to go silent for minutes while parser agents run. At the end, narrate ONE summary line IF any migration block actually executed: *"Migrated ticket X.Y.Z → A.B.C: N steps, M files changed."* If only a silent version-bump happened (case 5, no actual block ran), narrate nothing.
-
-**Phase 2: per-stage auto-reverify (introduced in 2.10.0)**
-
-Every migration block declares `affected_stages: [<stage names>]` listing the stages whose runtime behavior changed in that bump. When the ticket version moved across one or more migration blocks (Phase 1), the orchestrator computes the union of `affected_stages` across all migrations applied this run. Then:
-
-1. For each stage in that union, look up `metadata.stages.<N>.verified_with`.
-2. If the stage has `status` in `("complete", "skipped", "imported")` AND `verified_with < current SKILL version`, mark it as a **reverify candidate**.
-3. If the ticket is `complete` and there are reverify candidates, ask ONCE:
-   ```
-   Ticket already complete. SKILL upgraded to <X.Y.Z>; <N> stages changed
-   behavior since this ticket finished:
-   <list>
-   Re-verify them now? [Y/n]
-   ```
-   If `n` → narrate, do nothing else. If `Y` → run spot-checks (next bullet).
-4. If the ticket is `in_progress`, run spot-checks AUTOMATICALLY (no prompt) before resuming. The dev expected to keep working; verify-first is the safer default.
-
-**Spot-check mechanics per stage:**
-
-| Stage | Spot-check |
-|-------|------------|
-| 1 ac-confirm | Re-run a lightweight AC validation: read `metadata.ac` and `metadata.intake`, confirm the AC list still aligns. No subagent unless validation fails. |
-| 2 plan | Re-run the three deterministic checks (file existence, AC coverage, assumptions present) on `metadata.plan`. No LLM. If a check fails, reopen Stage 2 with that BLOCKER. |
-| 3 tests | Re-run the deterministic checks for the recorded `metadata.stages.3.testing_strategy_mode` (parse/run + presence + red-phase for `bdd`; parse/run + regression coverage for `direct`). No LLM. |
-| 4 code | Re-run pre-checks (test pass + lint + typecheck + plan-driven scope). Skip LLM reviewer unless pre-checks find new issues. |
-| 5 code-review | Re-run pre-checks (RED grep, secrets, smoke, bare except). Skip LLM reviewer unless pre-checks find new issues. |
-| 6 quality-gate | Re-run test suite via the skip-safe check (`last_green_sha` lookup; usually no-op). |
-| 7 runtime-verify | CANNOT auto-rerun (needs device + dev). Ask: *"Stage 7 changed behavior in <X.Y.Z>. Re-exercise on device? [Y/n]"*. If n, mark `verified_with: <new>` with note `dev_acknowledged_skip`. |
-| 8 docs-sync | Re-run pre-checks A/B/C. Skip LLM agent unless update list non-empty. |
-| 9 wrapup | No spot-check. Wrapup is the terminal stage; if its behavior changed, the dev re-runs `/doer <ID>` to refresh `metadata.summary` and `metadata.performance` only if they want updated stats. |
-
-**Spot-check outcomes:**
-
-- All clean → update each stage's `verified_with` to current SKILL version. Continue normal flow.
-- Any spot-check produced BLOCKERs → reopen the ticket at the FIRST affected stage with the BLOCKERs preloaded. Set `metadata.status = "in_progress"`, `metadata.current_stage = N`, narrate which stage and why. The dev resumes from there.
-
-The orchestrator narrates ONE summary at the end:
-```
-Auto-reverify complete: <K> stages spot-checked.
-- 5 clean (verified_with bumped to <X.Y.Z>)
-- 1 reopened: Stage 4 found new BLOCKERs from updated lint rules.
-Resuming at Stage 4.
-```
-
-### Migration: From 1.x → 2.0.0
-
-`affected_stages: [all]`. Every stage was renumbered or restructured.
-
-Major bump: stage 5 (Reflect) removed, stages renumbered, several artifact files consolidated.
-
-**Per-ticket changes:**
-
-```bash
-TICKET_DIR=.doer/tickets/<TICKET-ID>
-META=$TICKET_DIR/metadata.json
-
-# 1. Move ticket.md → metadata.raw (if ticket.md exists)
-if [ -f "$TICKET_DIR/ticket.md" ]; then
-  # Parse the markdown into description, raw_acs, context (regex on the section headings).
-  # Write into metadata.json under "raw": {description, raw_acs, context}.
-  # Then: rm "$TICKET_DIR/ticket.md"
-fi
-
-# 2. Renumber stages in metadata.stages
-#    OLD → NEW: 6→5 (code-review), 7→6 (quality-gate), 8→7 (runtime-verify),
-#               9→8 (docs-sync), 10→9 (wrapup)
-#    Stage 5 (reflect) is dropped from the active map. If it had status="complete",
-#    move it to metadata.deprecated_stages.reflect (preserve history). If pending,
-#    just remove it.
-
-# 3. Renumber metadata.current_stage
-#    1,2,3,4 → unchanged
-#    5 (reflect, pending) → 5 (code-review)   # skip the deprecated stage
-#    6 → 5, 7 → 6, 8 → 7, 9 → 8, 10 → 9
-
-# 4. Consolidate per-iteration review files into one per stage:
-#    review/plan-review-1.md + plan-review-2.md + ... → review/plan-review.md
-#    Same for tests-review-N.md and code-review-N.md.
-#    Each old file becomes a "## Iteration N" section in the consolidated file.
-#    Then: rm the old per-iteration files.
-
-# 5. Orphaned files, leave on disk as historical (do NOT delete):
-#    reflect.md, runtime-logs-added.md, runtime-log-output.txt, performance.md
-#    The new pipeline doesn't reference them; they're inert.
-
-# 6. Set metadata.skill_version = "2.0.0"
-```
-
-**Repository-level cleanup** (orchestrator does this once per repo if needed):
-- Lessons in `.doer/knowledge/lessons/` already migrated by Workspace Guard step 5 (existing rule).
-
-### Migration: From 2.0.0 → 2.1.0
-
-`affected_stages: [2, 3, 4, 5]`. The format change to `plan.md` and `changelog.md` affects every stage that reads them.
-
-MINOR bump that compacted `plan.md` and `changelog.md` formats. Existing tickets must be re-formatted so their downstream reads (test-writer, code-writer, reviewers) consume the cheaper format.
-
-**Per-ticket changes:**
-
-```bash
-TICKET_DIR=.doer/tickets/<TICKET-ID>
-
-# 1. Reformat plan.md if it exists and is not already compact.
-#    Detect "already compact": presence of "## Files" with a markdown table
-#    on the next non-empty line. If absent, run the format-converter agent:
-if [ -f "$TICKET_DIR/plan.md" ] && ! grep -qE '^## Files' "$TICKET_DIR/plan.md"; then
-  # Invoke a general-purpose agent with this prompt:
-  #   "Read $TICKET_DIR/plan.md (verbose 1.x format).
-  #    Re-write it IN-PLACE using the compact 2.1.0 format defined in
-  #    Stage 2's planner prompt: ## Files (table), ## Steps (numbered
-  #    bullets with file:line refs), ## Tests (bullets), ## Risks
-  #    (bullets), ## Assumptions (bullets). Preserve EVERY piece of
-  #    information from the original, only the shape changes.
-  #    Do NOT add new content, do NOT drop content, do NOT reinterpret.
-  #    Output only the rewritten file content."
-fi
-
-# 2. Reformat changelog.md if it exists and is not already compact.
-#    Detect "already compact": every "## Iteration" section is followed
-#    by bullets, no prose paragraphs. If prose detected, invoke same
-#    agent with the changelog format (see Doer/Reviewer Loop Pattern
-#    "Changelog file" subsection).
-
-# 3. Set metadata.skill_version = "2.1.0"
-```
-
-**Notes:**
-- The format-converter agent is a one-shot reformatter; it must NOT add or remove information.
-- If reformatting fails (parse error, agent unsure), leave the file untouched and bump `skill_version` anyway. The verbose format is still readable; cost optimization just doesn't apply to that ticket.
-- Tickets with no `plan.md` or `changelog.md` (early stages, e.g. just past intake) are no-ops for those steps.
-
-### Migration: From 2.1.0 → 2.2.0
-
-`affected_stages: []`. Orchestration / turn-boundary behavior only; no per-stage logic changed.
-
-MINOR bump that changes orchestrator BEHAVIOR only, no file changes:
-- An entire loop iteration (doer + reviewer + AUTO_FIX) now runs in a single turn. Previously each Agent call was its own turn. Fixes broken auto-resume in VS Code/IDE plugins.
-- `/doer pause` removed. State persists after every Agent return; abandoning the session = pausing.
-
-**Per-ticket changes:** none. Just bump `metadata.skill_version` to "2.2.0". The orchestrator's NEW behavior takes effect on the next iteration.
-
-```bash
-# 1. Set metadata.skill_version = "2.2.0"
-# That's it. No file rewrites, no structural changes.
-```
-
-The `metadata.status` field continues to use `"in_progress"` and `"complete"`. The `"paused"` value, if present from old tickets, is treated as equivalent to `"in_progress"` (resume-able). New tickets never write `"paused"`.
-
-### Migration: From 2.2.0 → 2.3.0
-
-`affected_stages: [3, 5, 7]`. Test-writer (Stage 3), code-reviewer (Stage 5), runtime-logger / cleanup (Stage 7).
-
-MINOR bump that tightens behavior in three places, no file format changes, no structural changes:
-- Stage 7 runtime-logger: stricter "DO NOT" list (no variables-just-to-log, no refactors-to-enable-logging, no helpers). Stage 7 cleanup adds a post-revert drift check that scans the diff for non-log debug artifacts (variables, helpers, structural changes) that survive a clean revert.
-- Stage 3 test-writer: prohibits `RED:` / `TDD red:` / "fails because X" comments. Stage 5 code-reviewer checklist now flags any residual ones as AUTO_FIX (mechanical removal).
-- Stage boundaries: removed two narration templates that asked "Continue? [Y/n]" between stages (Stage 1 finalization + `/doer continue` resume). Hardened the no-prompt rule with explicit right/wrong examples. Stages auto-chain; the only stop is a halt signal in the next message.
-
-**Per-ticket changes:** none. Just bump `metadata.skill_version` to "2.3.0". The orchestrator's stricter behavior takes effect on the next subagent invocation.
-
-```bash
-# 1. Set metadata.skill_version = "2.3.0"
-# No file rewrites; the new prompts apply on the next agent call.
-```
-
-### Migration: From 2.3.0 → 2.4.0
-
-`affected_stages: [1, 2, 3, 4, 5]`. Locale scope, intake reshape, Stage 1 confirmations, loop pattern overhaul (context.md + budgets + iter 2+ combined), Stage 3/4/5 pre-checks.
-
-MINOR bump bundling several behavior changes, intake simplification, a hard global rule, and a loop-latency optimization pass. No persistent file format changes.
-
-**Behavior + UX:**
-- **Locale scope corrected.** When operating locale is not English, ONLY the live chat is in that locale. All persistent artifacts (`ac.md`, `plan.md`, `changelog.md`, review files, `wrapup.md`, lessons, JSON values, commit messages) are ALWAYS in English. Subagent prompt instruction updated accordingly.
-- **Intake simplified.** The "What type is it?" question (feature / bug / refactor / other) was removed. The `type` field no longer exists in `metadata.json`. Nothing read it; ceremonial.
-- **Pre-existing-work questions moved to intake.** The "Have you done prior work?" question and its 4 follow-ups (plan / tests / code / docs) used to live in Stage 1. Now captured during intake and persisted under `metadata.raw.prior_work`. Stage 1 reads from metadata; never re-asks.
-- **Single entry-point command.** `/doer <TICKET-ID>` now handles both start and resume automatically (detected by metadata.json presence). `/doer continue <ID>` and `/doer start <ID>` are accepted as backward-compat aliases (the verb is parsed and ignored).
-- **Stage 1 confirmations consolidated.** Down from 4 confirms to 1-2 (entry stage if applicable, plus a single combined "ACs + Out of Scope + Open Questions" approval).
-- **PR helper at wrapup.** After the recommended commit message, the orchestrator offers to fill in a PR description (paste your template, ask for `default`, or `skip`).
-- **Em-dashes globally prohibited (Core Principle 9).** Zero `—` characters in any chat output, narration, artifact, commit message, PR description, comment, or anything the orchestrator or its subagents write. Subagent prompts must include the rule.
-
-**Loop-latency optimization (the big one):**
-- **`context.md` persistent scratch.** Iter 1 doer now writes a small `context.md` (touched paths, key signatures, module boundaries, decisions baked in). Iter 2+ agents read this instead of re-exploring the codebase. Biggest single latency win in the loop.
-- **Read budgets per role.** Each sub-agent prompt now declares a soft file-read budget (iter 1 doer ≤15, iter 1 reviewer ≤5 for spot checks, iter 2+ combined ≤3 in BLOCKER targets, AUTO_FIX fixer 0 exploration).
-- **Iter 2+ uses ONE combined "fixer-reviewer" agent.** Instead of two sequential calls (doer → reviewer), iter 2+ runs a single agent that fixes BLOCKERs and self-reviews the fixes. Halves the calls on the convergence tail. Iter 1 keeps the fresh-eyes review pass.
-
-**Per-ticket changes:**
-
-```bash
-# 1. If metadata.json has a "type" field, remove it (purely cosmetic cleanup).
-#    The orchestrator no longer references it.
-# 2. If metadata.raw lacks a "prior_work" object, initialize it as
-#    { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }.
-#    Old tickets that had been answered live in Stage 1 do not need backfill;
-#    Stage 1 already passed.
-# 3. Set metadata.skill_version = "2.4.0"
-```
-
-`context.md` is generated organically the next time iter 1 of a looped stage runs. No backfill needed for tickets already past iter 1; those continue with the old re-exploration cost on iter 2+ until wrapup. Negligible.
-
-The behavioral changes apply on the next chat turn or subagent call.
-
-### Migration: From 2.4.0 → 2.10.0
-
-`affected_stages: [all]`. This release introduces per-stage `verified_with` tracking and Phase 2 of the Migration Check (auto-reverify). Every stage gains a new field; every future migration block declares which stages it touched.
-
-Big version jump (2.4.0 → 2.10.0) signals the size of the change. SemVer-strict it is still MINOR (additive, no breaking), but the per-stage reverify is a structural shift in how doer treats SKILL upgrades.
-
-**What this bump adds:**
-- **Per-stage `verified_with` field.** Every stage that completes (or is marked skipped/imported) records the SKILL version that verified it.
-- **`affected_stages` field on every migration block.** Lists which stages changed runtime behavior in that bump. Used by the auto-reverify mechanism.
-- **Migration Check Phase 2.** After applying file/data migrations, the orchestrator computes the union of `affected_stages` across all migrations applied this run, looks up each affected stage's `verified_with`, and runs spot-checks (lightweight per-stage validation, see Phase 2 spec) on completed stages whose verification is stale.
-- **Auto-reverify behavior:**
-  - Ticket `in_progress`: spot-checks run automatically before resume.
-  - Ticket `complete`: orchestrator asks once if the dev wants to reverify.
-  - Spot-checks that find new BLOCKERs reopen the ticket at the affected stage.
-- **`/doer verify` command stays as escape hatch** for the rare case the dev wants to force a reverify when version matches.
-
-**Per-ticket changes:**
-
-```bash
-# 1. For each existing stage in metadata.stages where status is one of
-#    ("complete", "skipped", "imported"), set verified_with = "2.4.0"
-#    (the version they were last validated under, since this bump is the
-#    first to introduce the field).
-
-# 2. Set metadata.skill_version = "2.10.0"
-```
-
-After the bump, the next `/doer <TICKET-ID>` triggers Phase 2: it looks up the union of `affected_stages` across the chain of migrations the ticket walked through this run (in 2.4.0 → 2.10.0 case: just `[all]`). Spot-checks fire on all completed stages of in-flight tickets, or behind a one-time prompt for completed tickets.
-
-The behavioral changes apply on the next `/doer <ID>` invocation.
-
-### Migration: From 2.10.0 → 3.0.0
-
-`affected_stages: [all]`. Structural overhaul: every per-ticket `.md` artifact is consolidated into `metadata.json` as structured fields, Stages 2 and 3 lose their doer/reviewer loops (single-pass + deterministic checks + single retry), Stages 4 and 5 keep loops but cap at 3 iterations (was 5), `context.md` is eliminated, sub-agents now receive metadata slices inlined in their prompts. **Stage 7 silent auto-skip is REMOVED**; Stage 7 now always asks the dev, even when the diff is 100% non-runtime (the classification only picks the default option in the prompt). **New `mode: lite | full` field**; migrated tickets default to `mode: "full"`. Lite mode is opt-in for new tickets via the intake heuristic + dev confirmation.
-
-**MAJOR bump.** Removes/renames artifact files, changes metadata shape. Both Phase 1 (file/data migration) and Phase 2 (auto-reverify) execute on first `/doer <TICKET-ID>` after upgrade.
-
-**Per-ticket changes:**
-
-**Narration requirement** (per Core Principle 1): the orchestrator MUST narrate before EACH numbered step below, e.g. *"Migration 2.10.0 → 3.0.0, step 1/11: stashing existing .md files..."*. Do NOT execute the bash block silently. After the last step, narrate ONE summary line: *"Migrated ticket 2.10.0 → 3.0.0: 11 steps, N files parsed, M files dropped."*
-
-**Parser agent read budget**: every parser agent invoked in steps 2-6 below MUST receive the explicit instruction *"Read budget: exactly 1 file (the one named in your prompt). No directory listings, no exploration of related files. If the named file is missing or unreadable, fail fast and let the orchestrator handle it."* Each parser is one-shot, single-file. Exploration is wasted tokens.
-
-```bash
-TICKET_DIR=.doer/tickets/<TICKET-ID>
-META=$TICKET_DIR/metadata.json
-
-# 1. Stash existing .md files for safe rollback if any parser fails.
-#    Narrate: "Step 1/11: stashing .md files for rollback safety."
-git -C "$TICKET_DIR" stash push -m "doer-3.0.0-migration-stash" 2>/dev/null || true
-# (.doer/ is gitignored locally; stash is a fallback only when the dev had committed it.)
-
-# 2. Parse ac.md → metadata.ac (one-shot LLM parser agent).
-if [ -f "$TICKET_DIR/ac.md" ]; then
-  # Invoke a general-purpose agent with this prompt:
-  #   "Read $TICKET_DIR/ac.md (sections: ## In Scope, ## Out of Scope,
-  #    ## Open Questions (resolved), ## Applicable Lessons).
-  #    Convert to JSON matching this schema:
-  #    {
-  #      \"in_scope\": [\"<full Given/When/Then string>\", ...],
-  #      \"out_of_scope\": [\"<item>\", ...],
-  #      \"open_questions_resolved\": [{\"question\": \"...\", \"answer\": \"...\"}],
-  #      \"applicable_lessons\": [\"<slug>\", ...]
-  #    }
-  #    Output ONLY the JSON. Preserve every line of content; do not summarize."
-  # Validate: in_scope is a non-empty array of strings.
-  # On success: persist into metadata.ac. Then: rm "$TICKET_DIR/ac.md".
-  # On parse failure: leave ac.md in place, narrate the error, continue
-  # the migration of the other files. The dev will hand-fix.
-fi
-
-# 3. Parse plan.md → metadata.plan (one-shot LLM parser agent).
-if [ -f "$TICKET_DIR/plan.md" ]; then
-  # Agent prompt:
-  #   "Read $TICKET_DIR/plan.md (sections: ## Files (markdown table),
-  #    ## Steps (numbered list), ## Tests (bullets), ## Risks (bullets),
-  #    ## Assumptions (bullets)). Convert to JSON:
-  #    {
-  #      \"files\":  [{\"path\":\"...\",\"change\":\"edit|new|delete\",\"reason\":\"...\"}],
-  #      \"steps\":  [{\"order\":N,\"verb\":\"...\",\"what\":\"...\",\"where\":\"<file>:<lines>\"}],
-  #      \"tests\":  [{\"name\":\"...\",\"covers\":[\"AC-N\"],\"what\":\"...\"}],
-  #      \"risks\":  [{\"risk\":\"...\",\"mitigation\":\"...\"}],
-  #      \"assumptions\": [\"...\"]
-  #    }
-  #    Output ONLY the JSON. Preserve every item."
-  # Validate: files/steps/tests/risks are arrays; assumptions is an array (may be empty).
-  # On success: persist into metadata.plan. Then: rm "$TICKET_DIR/plan.md".
-fi
-
-# 4. Parse changelog.md → metadata.changelog (one-shot LLM parser agent).
-if [ -f "$TICKET_DIR/changelog.md" ]; then
-  # Agent prompt:
-  #   "Read $TICKET_DIR/changelog.md. Each '## Iteration N. <stage> (<initial|fixes>)'
-  #    section becomes one entry. Convert to JSON array:
-  #    [
-  #      {\"stage\":N,\"iteration\":N,\"kind\":\"initial|fixes\",
-  #       \"items\":[{\"type\":\"decision|step|fix|auto_fix\",\"text\":\"...\",
-  #                   \"blocker_id\":\"<optional>\",\"id\":\"<optional>\"}]}
-  #    ]
-  #    Map old bullets: 'Decision: X' -> {type:decision,text:X};
-  #    'Fix #B-N: X' -> {type:fix,blocker_id:B-N,text:X};
-  #    'AutoFix #AF-N: X' -> {type:auto_fix,id:AF-N,text:X};
-  #    everything else -> {type:step,text:X}.
-  #    Output ONLY the JSON array. Preserve order."
-  # On success: persist into metadata.changelog. Then: rm "$TICKET_DIR/changelog.md".
-fi
-
-# 5. Parse review/code-review.md → metadata.code_review (one-shot LLM parser).
-if [ -f "$TICKET_DIR/review/code-review.md" ]; then
-  # Agent prompt:
-  #   "Read $TICKET_DIR/review/code-review.md. Each '## Iteration N' section becomes
-  #    one entry. Convert to JSON array per the metadata.code_review schema documented
-  #    in Knowledge & State Layout. Output ONLY the JSON array."
-  # On success: persist into metadata.code_review. Then: rm the file.
-fi
-
-# 6. Parse wrapup.md (if ticket was already complete pre-migration).
-if [ -f "$TICKET_DIR/wrapup.md" ]; then
-  # Agent prompt:
-  #   "Read $TICKET_DIR/wrapup.md. Extract:
-  #    - assumptions_validation: from '## Assumptions' section, each '- X -> STATUS: reason'
-  #      becomes {text:X, status:STATUS, reason:reason or null}.
-  #    - lessons_captured: from '## Lessons captured', each '- [slug], takeaway'
-  #      becomes {slug:slug, takeaway:takeaway}.
-  #    - summary: a one-paragraph synthesis of the wrapup file (or first paragraph if present).
-  #    - performance: from '## Performance' section, parse into the metadata.performance
-  #      schema documented in Knowledge & State Layout.
-  #    Output JSON: {assumptions_validation:[...], lessons_captured:[...], summary:'...', performance:{...}}."
-  # Persist into the four metadata fields. Then: rm "$TICKET_DIR/wrapup.md".
-fi
-
-# 7. Drop deprecated files unconditionally (no parsing needed):
-rm -f "$TICKET_DIR/context.md"
-rm -f "$TICKET_DIR/review/plan-review.md"
-rm -f "$TICKET_DIR/review/tests-review.md"
-rm -f ".doer/knowledge/assumptions/<TICKET-ID>.md"
-
-# 8. Clean up empty review/ subdir (if all review files were removed):
-rmdir "$TICKET_DIR/review" 2>/dev/null || true
-
-# 9. Reset Stage 2 / Stage 3 if they were mid-loop (loops no longer exist for these stages):
-#    For each of stages.2 and stages.3:
-#    if status == "in_progress" AND iterations field exists with value > 1:
-#      set status = "pending"
-#      remove iterations, blockers, etc. (loop-specific fields)
-#      Stage will re-run as single-pass when /doer <ID> resumes.
-
-# 10. Set metadata.mode = "full" (migrated tickets default to full to preserve their existing pipeline behavior; v3.0.0 lite mode is opt-in for new tickets at intake).
-
-# 11. Set metadata.skill_version = "3.0.0"
-```
-
-**Important migration notes:**
-
-- The LLM parser agents are one-shot and operate per-file. If any agent fails (returns invalid JSON, refuses, etc.), the orchestrator narrates the failure for that file but continues with the others. The dev can run `/doer <ID>` again after fixing the offending file by hand (or accept that the field will be empty until they re-run the corresponding stage).
-- Validation is structural only (right shape, right types). The orchestrator does NOT semantically validate that the parsed content matches the original; that is the dev's responsibility if they want to spot-check after migration.
-- Stage 2 / Stage 3 reset (step 9) only applies to in-flight tickets that were stuck mid-loop. Tickets where Stage 2/3 already completed under the old loop (status=`complete`) remain `complete`; the auto-reverify (Phase 2) will spot-check them via the new deterministic checks.
-- All file deletions in step 7 are safe: those files are no longer read by any code path.
-
-After Phase 1 finishes, Phase 2 auto-reverify runs (because `affected_stages: [all]`). For in-flight tickets the spot-checks fire automatically; for complete tickets the orchestrator asks once per the standard prompt.
-
-The behavioral changes apply on the next `/doer <ID>` invocation.
-
-### Migration: From 3.0.6 -> 4.0.0
-
-`affected_stages: [1, 3, 4]`
-
-MAJOR bump. Adds unified `testing_strategy` + pipeline_mode inference at intake (single combined confirm replaces the standalone lite/full question), branches Stage 3 into three modes (direct, tdd, bdd), introduces a new `deferred` status for Stage 3 (used only in `direct` mode, where Stage 3 runs AFTER Stage 4), makes Stage 4 strategy-aware, and adds new persistent fields to `metadata.json` (`testing_strategy`, `mode_overridden_by_dev`, `metadata.stages.3.testing_strategy_mode`).
-
-Why MAJOR: `metadata.json` shape changes (new top-level field, new per-stage field, new `deferred` value in the `status` enum); the Stage 3 state machine changes (a stage may now run after a later-numbered stage). Both Phase 1 (file/data migration) and Phase 2 (auto-reverify) execute on first `/doer <TICKET-ID>` after upgrade.
-
-This block also covers any 3.0.x source via Phase 1 case 5 silent bump, then Phase 1 case 4 matches `from: 3.0.6` to apply the changes below. Patch versions 3.0.0 through 3.0.6 silently bump to 3.0.6 first.
-
-**Per-ticket changes:**
-
-```bash
-TICKET_DIR=.doer/tickets/<TICKET-ID>
-META=$TICKET_DIR/metadata.json
-
-# Narrate before each step (per Core Principle 1).
-
-# 1. Add metadata.testing_strategy with default tdd (preserves existing TDD-red behavior).
-#    Narrate: "Migration 3.0.6 -> 4.0.0, step 1/3: defaulting testing_strategy to tdd for backward compatibility."
-#    Idempotent: skip if metadata.testing_strategy already exists.
-jq '.testing_strategy //= {
-  "mode": "tdd",
-  "rationale": "pre-existing ticket, defaulting to tdd for backward compatibility",
-  "signals": ["migrated"],
-  "overridden_by_dev": false
-}' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-
-# 2. Add metadata.mode_overridden_by_dev = false if absent (cosmetic flag, prior tickets
-#    accepted the suggested mode without an explicit override marker).
-jq '.mode_overridden_by_dev //= false' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-
-# 3. Backfill metadata.stages.3.testing_strategy_mode = "tdd" if Stage 3 exists.
-#    Idempotent: leave alone if already set.
-jq '
-  if (.stages | has("3")) and (.stages."3" | has("testing_strategy_mode") | not)
-  then .stages."3".testing_strategy_mode = "tdd"
-  else . end
-' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-
-# 4. Set metadata.skill_version = "4.0.0".
-jq '.skill_version = "4.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-```
-
-**Important migration notes:**
-
-- No file rewrites. The new branches and prompts apply on the next chat turn or subagent call.
-- Tickets currently mid-Stage 3 (`status == "in_progress"` or `status == "blocked"`) keep their existing TDD-red contract because `testing_strategy.mode = "tdd"`. Phase 2 auto-reverify spot-checks Stage 3 with the same three deterministic checks (parse/run, plan-driven presence, TDD red verified) it used before; nothing changes for them.
-- Tickets that have already completed Stage 3 keep `testing_strategy_mode = "tdd"`. They never use the `direct` deferred path.
-- `deferred` is a new value in the Stage 3 `status` enum. Existing tickets never use it (their migration default is `tdd`). Only NEW tickets created after upgrade can land in `deferred` (when intake infers `direct`).
-
-The behavioral changes apply on the next `/doer <ID>` invocation.
-
-### Migration: From 4.0.1 -> 5.0.0
-
-`affected_stages: [1, 3, 4, 5, 8, 9]`
-
-MAJOR bump. Removes `metadata.mode` (lite/full pipeline mode) and `metadata.mode_overridden_by_dev`; collapses the testing_strategy enum from {direct, tdd, bdd} to {direct, bdd}. Pipeline always runs in what was previously called 'full'. Tickets with `testing_strategy.mode == "tdd"` are auto-rewritten to `"bdd"` with narration; bdd's red-phase contract has the same shape (failing tests first, deterministic parse/run + presence + red-phase check), so in-flight Stage 3 keeps its operational semantics.
-
-Why MAJOR: schema-breaking. Top-level `mode` and `mode_overridden_by_dev` fields are removed; `testing_strategy.mode` enum is reduced; `stages.3.testing_strategy_mode` enum is reduced.
-
-This block also covers any 4.0.x source via silent patch bump first (Phase 1 case 5), then matches `from: 4.0.1` to apply the changes below.
-
-**Per-ticket changes:**
-
-```bash
-TICKET_DIR=.doer/tickets/<TICKET-ID>
-META=$TICKET_DIR/metadata.json
-
-# Narrate before each step (per Core Principle 1).
-
-# 1. Rewrite testing_strategy.mode "tdd" -> "bdd" if present.
-#    Narrate: "Migration 4.0.1 -> 5.0.0, step 1/4: rewriting testing_strategy.mode from tdd to bdd."
-jq '
-  if .testing_strategy.mode == "tdd"
-  then .testing_strategy.mode = "bdd"
-     | .testing_strategy.rationale = "auto-rewritten from tdd during 5.0.0 migration; bdd red-phase contract is equivalent"
-  else . end
-' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-
-# 2. Rewrite stages.3.testing_strategy_mode "tdd" -> "bdd" if present.
-#    Narrate: "Migration 4.0.1 -> 5.0.0, step 2/4: rewriting stages.3.testing_strategy_mode from tdd to bdd."
-jq '
-  if (.stages."3"?.testing_strategy_mode // null) == "tdd"
-  then .stages."3".testing_strategy_mode = "bdd"
-  else . end
-' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-
-# 3. Remove top-level mode and mode_overridden_by_dev fields.
-#    Narrate: "Migration 4.0.1 -> 5.0.0, step 3/4: removing obsolete top-level fields mode and mode_overridden_by_dev."
-jq 'del(.mode, .mode_overridden_by_dev)' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-
-# 4. Bump skill_version to 5.0.0.
-#    Narrate: "Migration 4.0.1 -> 5.0.0, step 4/4: bumping skill_version to 5.0.0."
-jq '.skill_version = "5.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-```
-
-**Important migration notes:**
-
-- Tickets mid-Stage 3 with `testing_strategy.mode == "tdd"` end up as `"bdd"`. The Stage 3 deterministic check (parse/run + plan-driven presence + red-phase verified) is the same shape; nothing changes operationally.
-- Tickets that already completed Stage 3 with `testing_strategy_mode == "tdd"` are also rewritten to `"bdd"` for metadata consistency. The tests are already written and committed; only the metadata label changes.
-- Tickets with `mode == "lite"` mid-pipeline lose the field and continue as the unified pipeline. No prior stages are mutated. If they were inside a Lite branch of Stage 4 or 5 and had not committed yet, the next turn places them on the standard convergence loop (max 3 iterations), which is strictly more permissive.
-- `deferred` as a Stage 3 status value remains valid (used by `direct`).
-
-The behavioral changes apply on the next `/doer <ID>` invocation.
 
 ---
 
@@ -642,120 +93,12 @@ The behavioral changes apply on the next `/doer <ID>` invocation.
 
 ---
 
+---
+
 ## Knowledge & State Layout
 
-All state lives under `./.doer/` in the current working directory (scoped to the target repo).
+The per-repo `./.doer/` layout, the global `lessons/` location, and the full `metadata.json` schema are documented in `${CLAUDE_PLUGIN_ROOT}/lib/memory-paths.md`. Read that file before reading or writing any persistent ticket state.
 
-**Lessons are GLOBAL**: they live next to `SKILL.md` (so all repos share the same accumulated knowledge). **Everything else is per-ticket and lives in a single `metadata.json` per ticket.** No markdown sidecars, no scratch files, no per-stage review files.
-
-```
-<doer-skill-dir>/                  # ~/src/doer/ in this install (resolve symlinks)
-├── SKILL.md
-├── preferences.md                 # local config (gitignored)
-└── lessons/                       # GLOBAL, cross-project, gitignored
-    └── {slug}.md
-
-./.doer/                           # per-repo (in CWD), gitignored via .git/info/exclude
-├── knowledge/                     # reserved for future cross-ticket data; empty by default
-└── tickets/
-    └── {TICKET-ID}/
-        └── metadata.json          # SINGLE file per ticket: state + intake + ac + plan + changelog + code_review + assumptions + wrapup
-```
-
-**Per ticket: 1 file (`metadata.json`).** Everything (ac, plan, changelog, code review history, assumptions, lessons captured, summary, performance) lives as structured fields inside `metadata.json`. One source of truth, no drift, no file-coordination cost. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
-
-### `metadata.json` schema (v5.0.0)
-
-```json
-{
-  "ticket_id": "<ID>",
-  "title": "<title>",
-  "branch": "<branch>",
-  "status": "in_progress | complete",
-  "current_stage": 1,
-  "skill_version": "5.0.0",
-  "testing_strategy": {
-    "mode": "direct | bdd",
-    "rationale": "<one sentence explaining why this mode was chosen>",
-    "signals": ["<signal-id>", "..."],
-    "overridden_by_dev": false
-  },
-  "created_at": "<ISO8601>",
-  "completed_at": null,
-
-  "intake": {
-    "description": "<full pasted description>",
-    "raw_acs": "<full pasted ACs or 'derive'>",
-    "context": "<extra context or 'none'>",
-    "prior_work": { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }
-  },
-
-  "ac": {
-    "in_scope": ["AC-1: ...", "AC-2: ..."],
-    "out_of_scope": ["..."],
-    "open_questions_resolved": [{"question": "...", "answer": "..."}],
-    "applicable_lessons": ["<lesson-slug>"]
-  },
-
-  "plan": {
-    "files": [{"path": "...", "change": "edit | new | delete", "reason": "..."}],
-    "steps": [{"order": 1, "verb": "...", "what": "...", "where": "<file>:<line-range>"}],
-    "tests": [{"name": "...", "covers": ["AC-N"], "what": "..."}],
-    "risks": [{"risk": "...", "mitigation": "..."}],
-    "assumptions": ["..."]
-  },
-
-  "stages": {
-    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "5.0.0", "completed_at": "<ISO8601>"},
-    "2": {"name": "plan",           "status": "...", "verified_with": "5.0.0", "retry_used": false},
-    "3": {"name": "tests",          "status": "pending | in_progress | complete | deferred | skipped | imported | blocked", "verified_with": "5.0.0", "retry_used": false, "testing_strategy_mode": "direct | bdd"},
-    "4": {"name": "code",           "status": "...", "verified_with": "5.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals"},
-    "5": {"name": "code-review",    "status": "...", "verified_with": "5.0.0", "iterations": 0, "loop_outcome": "..."},
-    "6": {"name": "quality-gate",   "status": "...", "verified_with": "5.0.0"},
-    "7": {"name": "runtime-verify", "status": "...", "verified_with": "5.0.0", "ac_verdicts": {}},
-    "8": {"name": "docs-sync",      "status": "...", "verified_with": "5.0.0"},
-    "9": {"name": "wrapup",         "status": "...", "verified_with": "5.0.0"}
-  },
-
-  "changelog": [
-    {"stage": 2, "iteration": 1, "kind": "initial | fixes", "items": [
-      {"type": "decision | step | fix | auto_fix", "text": "<one-line>", "blocker_id": "<optional, only for fix>", "id": "<optional, only for auto_fix>"}
-    ]}
-  ],
-
-  "code_review": [
-    {"iteration": 1, "blockers": [{"id": "B-1", "text": "..."}], "auto_fixes": [], "suggestions": [], "info": [], "verdict": "needs_revision | converged"},
-    {"iteration": 2, "prior_blockers_resolved": ["B-1"], "prior_blockers_still_open": [], "new_blockers": [], "auto_fixes": [], "suggestions": [], "info": [], "verdict": "..."}
-  ],
-
-  "assumptions_validation": [{"text": "...", "status": "VALIDATED | INVALIDATED | UNVERIFIED", "reason": "..."}],
-  "lessons_captured": [{"slug": "<lesson-slug>", "takeaway": "..."}],
-  "summary": "<wrapup paragraph>",
-  "performance": {"started": "...", "completed": "...", "wall_clock": "...", "active": "...", "stages": [], "code": {}, "agents": {}, "convergence": {}, "reviewer_roi": "..."},
-
-  "blocking_conditions": [],
-  "commits": [],
-  "workspace_guard": "ok",
-  "runtime_build_command": null,
-  "lint_command": null,
-  "typecheck_command": null,
-  "test_command": null,
-  "last_green_sha": null,
-  "last_green_test_command": null
-}
-```
-
-**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `ac_verdicts` for 7).
-
-**`testing_strategy` semantics.** Two modes determine how Stage 3 runs:
-- `direct`: Stage 3 is DEFERRED at first entry; Stage 4 runs first; Stage 3 then runs after Stage 4 with a regression test writer (tests expected to PASS, no red phase).
-- `bdd`: Stage 3 writes Given/When/Then scenario tests that fail because no implementation exists; Stage 4 implements code derived from the scenarios.
-
-`testing_strategy.mode` is set ONCE at intake and never changes mid-ticket. The dev can override the inferred mode at the confirmation prompt at intake.
-
-**Path resolution for `lessons/`:** the orchestrator MUST resolve the directory of the running `SKILL.md` (following symlinks, most installs put it under `~/.claude*/skills/doer/SKILL.md` symlinked to `~/src/doer/SKILL.md`) and treat `<resolved-dir>/lessons/` as the canonical lessons directory. Use `readlink` or `realpath` if needed.
-
-The global `lessons/` directory must already exist next to the skill. The per-repo `./.doer/` directory and the `tickets/` subdir under it are created on first invocation if missing. The `knowledge/` subdir is reserved for future use and is created lazily when something writes to it.
 
 ---
 
@@ -846,7 +189,7 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
 
    **Once set, `testing_strategy.mode` does not change for the remainder of the ticket.**
 
-3. Initialize `metadata.json` (intake fields + chosen mode are embedded, see Knowledge & State Layout for the full schema):
+3. Initialize `metadata.json` (intake fields + chosen mode are embedded, see `${CLAUDE_PLUGIN_ROOT}/lib/memory-paths.md` for the full schema):
 
    ```json
    {
@@ -855,7 +198,7 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
      "branch": "<branch-name>",
      "status": "in_progress",
      "current_stage": 1,
-     "skill_version": "<read from frontmatter at intake time, e.g. 5.0.0>",
+     "skill_version": "<read from frontmatter at intake time, e.g. 6.0.0>",
      "testing_strategy": {
        "mode": "<direct | bdd chosen in step 2>",
        "rationale": "<one-sentence rationale>",
@@ -893,11 +236,11 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
 
    The remaining top-level fields (`ac`, `plan`, `assumptions_validation`, `lessons_captured`, `summary`, `performance`, etc.) are populated by their owning stages and start absent.
 
-   **Per-stage `verified_with` rule.** When a stage transitions to `status: "complete"` (or `"skipped"`, or `"imported"`), the orchestrator MUST also write `verified_with: "<current SKILL frontmatter version>"` on that stage. Example after Stage 2 finishes under SKILL 5.0.0:
+   **Per-stage `verified_with` rule.** When a stage transitions to `status: "complete"` (or `"skipped"`, or `"imported"`), the orchestrator MUST also write `verified_with: "<current SKILL frontmatter version>"` on that stage. Example after Stage 2 finishes under SKILL 6.0.0:
    ```json
-   "2": {"name": "plan", "status": "complete", "verified_with": "5.0.0", "completed_at": "...", ...}
+   "2": {"name": "plan", "status": "complete", "verified_with": "6.0.0", "completed_at": "...", ...}
    ```
-   This is the only mechanism that lets the auto-reverify check (see Versioning & Migrations) know which stages to spot-check after a SKILL upgrade.
+   This is the only mechanism that lets the auto-reverify check (see `${CLAUDE_PLUGIN_ROOT}/lib/migrations.md`) know which stages to spot-check after a SKILL upgrade.
 
 4. Create the feature branch in the current repo:
 
@@ -916,181 +259,17 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
 
 ---
 
+---
+
 ## Workspace Guard
 
-Idempotent check that prevents `.doer/` from ever being committed in this clone. MUST run at every entry point: intake (after creating branch), `/doer continue`, `/doer verify`, any first action after context reset.
-
-### Steps
-
-1. **Idempotency check.** If `metadata.workspace_guard == "ok"` AND `.git/info/exclude` contains `.doer/` → skip rest silently.
-
-2. **Ensure exclude contains `.doer/`:**
-   ```bash
-   mkdir -p .git/info
-   [ -f .git/info/exclude ] || touch .git/info/exclude
-   grep -qxF '.doer/' .git/info/exclude || echo '.doer/' >> .git/info/exclude
-   ```
-   `.git/info/exclude` is per-clone, never committed, team sees nothing.
-
-3. **Verify it works:**
-   ```bash
-   mkdir -p .doer && touch .doer/.guard-test
-   STATUS=$(git status --porcelain .doer/.guard-test 2>/dev/null)
-   rm .doer/.guard-test
-   ```
-   `STATUS` MUST be empty. If not, investigate (global gitignore override, repo `.gitignore` un-ignoring `.doer/`). Stop and report.
-
-4. **Detect already-tracked `.doer/`:** `TRACKED=$(git ls-files .doer/ 2>/dev/null | head -1)`. If non-empty, ask the user **once per ticket**:
-   ```
-   ⚠ .doer/ is currently tracked. Options to untrack:
-   1) Commit `git rm -r --cached .doer/` on this branch (one extra commit in PR)
-   2) Skip, keep tracking, clean manually later
-   3) Untrack silently (stage but don't commit)
-   ```
-   Default to **3** if no response.
-
-5. **Migrate stale per-repo lessons → global pool.** Idempotent. The per-repo lessons location was deprecated in favor of `<doer-skill-dir>/lessons/` (global, cross-project). Old tickets still have files at `./.doer/knowledge/lessons/` from before the change. Migrate them so the user keeps a single global pool.
-
-   ```bash
-   GLOBAL_LESSONS=$(dirname "$(realpath <SKILL.md path>)")/lessons
-   LOCAL_LESSONS=.doer/knowledge/lessons
-   if [ -d "$LOCAL_LESSONS" ]; then
-     mkdir -p "$GLOBAL_LESSONS"
-     for f in "$LOCAL_LESSONS"/*.md; do
-       [ -f "$f" ] || continue
-       NAME=$(basename "$f")
-       if [ -f "$GLOBAL_LESSONS/$NAME" ]; then
-         if cmp -s "$f" "$GLOBAL_LESSONS/$NAME"; then
-           rm "$f"   # identical → just delete local
-         else
-           # Conflict, ask user once per file: overwrite | keep both (rename) | skip
-           # Default to "keep both" (rename local with -from-<repo-name> suffix) if no answer.
-         fi
-       else
-         mv "$f" "$GLOBAL_LESSONS/$NAME"
-       fi
-     done
-     rmdir "$LOCAL_LESSONS" 2>/dev/null || true
-     # Also remove .doer/knowledge if now empty
-     rmdir .doer/knowledge 2>/dev/null || true
-   fi
-   ```
-   Narrate the migration outcome only if any file was moved or a conflict was raised. Silent no-op when there's nothing to migrate.
-
-6. **Migration Check.** If a ticket is active, run the **Migration Check** (see Versioning & Migrations). Auto-applies any pending migration silently. Idempotent, once at current version, no-op.
-
-7. **Mark satisfied:** if a ticket is active, write `metadata.workspace_guard = "ok"`. (No-op if no active ticket, next ticket-scoped invocation sets it.)
-
-For deep cleanup of historical `.doer/` content from earlier commits on the feature branch, use `/doer cleanup-history <TICKET-ID>`, out of scope for the Guard.
+Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md`. The Guard MUST run at every entry point (intake, `/wk:doer continue`, `/wk:doer verify`, any first action after context reset).
 
 ---
 
 ## Narration Protocol
 
-**Per-stage narration:**
-- Before: `"Starting Stage {N}, {name}. {one-sentence goal}."` + write `stages.<N>.started_at`.
-- After: write `stages.<N>.completed_at` + `"Stage {N} complete{, committed as {sha}}. Continuing to Stage {N+1}..."` then **auto-proceed** to Stage {N+1} in the same turn. (The `committed as {sha}` clause is included only when the stage actually produced a real-code commit. Stages 1, 2, and 9 typically do not commit; they only update `metadata.json` which is gitignored, so they omit the clause.)
-- Inside loop: `"Iteration {i}/{max}: invoking {agent}... agent returned {status}, {findings} findings ({blockers} blockers)."` (`{max}` is `3` for Stage 4 and Stage 5.)
-
-### Turn boundaries: auto-proceed by default, end-turn ONLY at user-input gates
-
-The orchestrator's default is to chain work in a single turn. The ONLY events that end a turn are:
-
-1. The orchestrator is about to call `AskUserQuestion` (a real, scripted gate where the dev's input changes the next action).
-2. An Agent call returned an error and the orchestrator wants to surface it before retrying.
-3. The user typed a halt signal (`stop`, `wait`, `hold on`).
-
-Everything else, including stage transitions and loop iteration boundaries, auto-proceeds in the same turn.
-
-```
-Iteration N (single turn):
-  Agent(doer) -> narrate result
-  -> Agent(reviewer) -> narrate result
-  -> (if AUTO_FIXes) Agent(fixer) -> narrate result
-  -> if BLOCKERs > 0 and iter < max: Agent(combined fixer-reviewer) for iter N+1
-  -> if converged: continue to next stage in the same turn
-```
-
-| Boundary | Same turn? |
-|----------|------------|
-| Within one loop iteration (doer -> reviewer -> fixer) | YES |
-| Between iteration N and N+1 of the same loop | **YES** (auto-proceed) |
-| Between stages | **YES** (auto-proceed) |
-| Between subagent and a major file write that informs the next subagent | YES |
-| Right before any `AskUserQuestion` call | NO. The tool itself ends the turn. |
-| After an Agent error | NO. Surface the error first, then end the turn. |
-
-**MUST rules:**
-
-1. **Auto-proceed at every stage boundary.** Narrate `"Stage N complete. Continuing to Stage N+1..."` and KEEP GOING in the same turn. Do NOT stop. Do NOT wait for a non-halt message; just start Stage N+1.
-2. **Auto-proceed between loop iterations** of the same loop (Stage 4 / Stage 5). Narrate the iteration result, then start the next iteration in the same turn (subject to the max-iteration cap and to the AUTO_FIX/fixer rules).
-3. The ONLY non-error reason to end a turn is calling `AskUserQuestion`. The tool itself ends the turn; do not preemptively narrate "ending turn" before invoking it.
-4. **If an Agent call returns an error**, narrate the error and end the turn before invoking anything else. The user decides what to do next.
-
-**Self-check before every response:** *"Am I about to call `AskUserQuestion`, surface an Agent error, or respond to a halt? If no to all three, I MUST keep going in this same turn."*
-
-### SUGGESTIONs never pause
-
-Zero BLOCKERs = converged. SUGGESTIONs are persisted as part of the stage's `metadata.code_review[<iteration>]` entry. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds to the next stage in the same turn.
-
-### Interrupt detection, and the auto-resume rule
-
-If the orchestrator DID end a turn (because it just called `AskUserQuestion` or an Agent errored), the user's next message is interpreted as:
-
-| User message contains... | Interpretation |
-|--------------------------|----------------|
-| `stop`, `wait`, `hold on`, or a clear halt signal | **HALT**: narrate "Stopping. Run `/doer continue <TICKET-ID>` to resume." Stop. State already persisted in metadata. |
-| A direct answer to the `AskUserQuestion` that just ran | Use the answer to drive the next action. |
-| **Anything else** (including empty, `ok`, `yes`, `continue`, `go`, `y`, an unrelated comment, a question about the work) | **RESUME**: read `metadata.json`, do the next pending action without further prompting |
-
-**MUST NOT** ask the user "Continue? [Y/n]" / "Shall I proceed?" / "Ready for the next stage?" between iterations OR between stages. Continuation is implicit AND in-turn. The narration template is informative, not inquisitive:
-
-- Right: *"Stage 2 complete. Continuing to Stage 3..."* and immediately starts Stage 3.
-- Wrong: *"Stage 2 complete. Continuing to Stage 3..."* then ends the turn waiting for the user.
-- Wrong: *"Stage 2 complete. Continue to Stage 3? [Y/n]"*
-- Wrong: *"Stage 2 complete. Shall I move on to Stage 3?"*
-- Wrong: *"Stage 2 complete. Ready to start Stage 3?"*
-
-The user already opted in by starting the ticket. Asking again on every stage boundary makes the orchestrator feel like it's babysitting. Stages auto-chain in the same turn until a real user-input gate (an `AskUserQuestion`) or an error.
-
-**MUST NOT** require the user to type `/doer continue <TICKET-ID>` or any other nudge to advance work in flight. `/doer continue` is for resuming **across sessions**, not for nudging the next step.
-
-**State persistence:** all progress (current iteration, BLOCKERs found, files written, etc.) is persisted to `metadata.json` after every Agent return. Closing the session at any point preserves state, the next `/doer continue <TICKET-ID>` resumes intact. There is no separate "pause" command needed; abandoning the session = pausing.
-
-**To stop mid-Agent (the Agent is already running):** terminal users can use `Ctrl+C` in the parent shell or `Esc` if their client supports it. The orchestrator cannot be interrupted mid-Agent from inside.
-
-### Performance counters (consumed by Stage 9 wrapup)
-
-Counters are written into `metadata.json` as the ticket progresses. Stage 9 reads them as-is into `metadata.performance` (no separate aggregation pass needed).
-
-Per-stage runtime fields (live under each `metadata.stages.<N>`):
-
-```json
-"<N>": {
-  "name": "...",
-  "status": "...",
-  "verified_with": "4.0.0",
-  "started_at":   "<ISO8601>",
-  "completed_at": "<ISO8601>",
-  "iterations": <int>,                                  // for stages 4 and 5 only
-  "loop_outcome": "converged | accepted_with_residuals",
-  "blockers_resolved_total": <int>                      // for stages 4 and 5 only
-}
-```
-
-Top-level runtime counter for agent invocations (lives at `metadata.performance.agents`, populated incrementally on every Agent call):
-
-```json
-"performance": {
-  "agents": {"<agent-name>": <count>, ...}
-  // The remaining performance fields (started, completed, wall_clock, active, code, convergence, reviewer_roi)
-  // are filled in by Stage 9 step 3 from these per-stage and agents counters plus git log/diff.
-}
-```
-
-Increment `metadata.performance.agents[<name>]` on every Agent call. Set `metadata.stages.<N>.started_at` when the stage begins and `completed_at` on transition to `complete | skipped | imported`. Set `iterations`/`loop_outcome`/`blockers_resolved_total` on loop exit (stages 4 and 5 only).
-
-There is no `pauses` array and no `active_duration_seconds` field. There is no `/doer pause` command; state persists after every Agent return, so closing the session IS pausing. Wall-clock duration in `metadata.performance.wall_clock` is computed from `metadata.created_at` to `metadata.completed_at`; "active" duration is the same value (no paused intervals to subtract).
+Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`. That file owns Core Principles 1 and 9 (narration first, em-dashes prohibited), turn boundary rules, the auto-proceed contract, performance counters, and locale resolution (`preferences.md` is the authoritative source for the operating locale).
 
 ---
 
@@ -1275,7 +454,7 @@ Only after all required fields validate clean, write the final `status` and cont
 ### Step 1: Load context
 
 1. Read `metadata.json`. Pull `title`, `intake.description`, `intake.raw_acs`, `intake.context`, and `intake.prior_work` (all captured during intake).
-2. Read `<doer-skill-dir>/lessons/*.md` (global, cross-project, see Knowledge & State Layout for path resolution). Note any whose `when_it_applies` matches this ticket.
+2. Read `${CLAUDE_PLUGIN_ROOT}/lessons/*.md` (global, cross-project, see `${CLAUDE_PLUGIN_ROOT}/lib/memory-paths.md` for path resolution). Note any whose `when_it_applies` matches this ticket.
 
 ### Step 2: Branch on prior work (no question, read metadata)
 
@@ -1406,7 +585,7 @@ Persist the confirmed Stage 1 output into `metadata.ac`:
 }
 ```
 
-Each `in_scope` entry is a complete Given/When/Then string starting with the AC ID. `applicable_lessons` lists slugs of global lessons (`<doer-skill-dir>/lessons/{slug}.md`) whose `when_it_applies` matches this ticket; downstream agents read those lesson files when relevant.
+Each `in_scope` entry is a complete Given/When/Then string starting with the AC ID. `applicable_lessons` lists slugs of global lessons (`${CLAUDE_PLUGIN_ROOT}/lessons/{slug}.md`) whose `when_it_applies` matches this ticket; downstream agents read those lesson files when relevant.
 
 No sidecar `ac.md` file. No separate assumptions file (assumptions surface in Stage 2 inside `metadata.plan.assumptions`).
 
@@ -1443,7 +622,7 @@ The orchestrator has already loaded these and inlined them below:
 
 == Applicable lessons (read these files in full before planning) ==
 <for each slug in metadata.ac.applicable_lessons, the resolved file path
-under <doer-skill-dir>/lessons/{slug}.md>
+under ${CLAUDE_PLUGIN_ROOT}/lessons/{slug}.md>
 
 Explore the codebase to understand the structure relevant to this ticket.
 Read budget: up to 10 source files. Free to grep within the budget.
@@ -2544,7 +1723,7 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
    If NO signals detected, ask once: *"Any lesson worth saving for future tickets? Reply with one, or `none`."* (one prompt, not multiple).
 
-   For each lesson, write to the GLOBAL pool at `<doer-skill-dir>/lessons/{slug}.md` (lessons remain as files; they are cross-project knowledge, not per-ticket state). Format:
+   For each lesson, write to the GLOBAL pool at `${CLAUDE_PLUGIN_ROOT}/lessons/{slug}.md` (lessons remain as files; they are cross-project knowledge, not per-ticket state). Format:
    ```markdown
    ---
    slug: <kebab-case>
@@ -2757,14 +1936,14 @@ This is the path that runs when `/doer <TICKET-ID>` detects `./.doer/tickets/<TI
 
      # 4d. Detect already-tracked .doer/ files (handle once per ticket)
      TRACKED=$(git ls-files .doer/ 2>/dev/null | head -1)
-     # If TRACKED non-empty, surface the 3-option prompt to the user (see Workspace Guard section
+     # If TRACKED non-empty, surface the 3-option prompt to the user (see `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md`
      # for the exact prompt text and default to option 3).
 
-     # 4e. Migrate stale per-repo lessons → global pool (see Workspace Guard step 5
+     # 4e. Migrate stale per-repo lessons → global pool (see `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md` step 5
      # for the full bash + conflict-handling rules). Idempotent: silent no-op
      # when .doer/knowledge/lessons/ doesn't exist or is empty.
 
-     # 4f. Migration Check (see Versioning & Migrations). If
+     # 4f. Migration Check (see `${CLAUDE_PLUGIN_ROOT}/lib/migrations.md`). If
      # metadata.skill_version < current SKILL frontmatter version, apply each
      # registered migration in order. Auto-silent. Narrate one summary line at end.
 
@@ -2946,41 +2125,6 @@ All subagents (doer or reviewer) must:
 The orchestrator (this skill) is the sole user-facing voice. Subagents must NOT invoke `AskUserQuestion`.
 
 ---
-
-## Locale resolution (READ THIS FIRST)
-
-**Mandatory first action of every `/doer ...` invocation, before any other tool call:** read `preferences.md` next to this SKILL.md. If it has `locale: <code>`, set the operating locale.
-
-**The first user-facing word MUST be in the operating locale**: anchors the conversation against English drift.
-
-### Priority (highest wins)
-
-1. **`preferences.md` locale**: absolute final word. Overrides everything: ticket metadata's stored locale, per-ticket flags, upstream context language, system-prompt language.
-2. Per-ticket flag (`--es`, `--en`), only if no preferences.md.
-3. Inline directive (`locale: xx`), only if no preferences.md.
-4. Default English.
-
-### Two scopes, different rules
-
-| Scope | Language |
-|-------|----------|
-| **Conversation with the user** (narration, questions, confirmations, summaries the orchestrator emits live in chat) | **Operating locale** (es, fr, etc.) |
-| **All persistent state** (every string field in `metadata.json`: `summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].blockers[].text`, etc.; global lessons under `<doer-skill-dir>/lessons/`; every commit message) | **Always English** |
-
-The artifacts are read by other subagents (planner reads ac, code-writer reads plan, reviewer reads changelog, etc.) and by future tickets across projects. Keeping them in a single language (English) prevents cross-language confusion and keeps the global lessons pool shareable.
-
-The operating locale ONLY affects what the orchestrator types directly to the user in chat. Everything written to disk stays English regardless.
-
-### When operating locale ≠ English. MUST/MUST NOT
-
-- **MUST NOT** write a different locale to `metadata.json`. If metadata has `"locale": "<other>"` from a prior session, leave it alone and ignore it.
-- **MUST NOT** ask "what locale?", already decided.
-- **MUST NOT** drift to English because surrounding context (CLAUDE.md, injected docs, agent system prompts) is in English. Operating locale wins, period.
-- **MUST** narrate, ask, summarize, and confirm in the operating locale. The user sees the orchestrator's live chat in their language.
-- **MUST NOT** write any persistent state in the operating locale. Every string value persisted into `metadata.json` (e.g. `summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].*`), every global lesson under `<doer-skill-dir>/lessons/`, every commit message: ALL English, ALWAYS, regardless of operating locale. (See "Two scopes" table above.)
-- **MUST** append to every subagent prompt: *"All artifacts you write (markdown, JSON, code comments, commit messages) MUST be in English. Subagents do NOT talk to the user directly, the orchestrator does. Do NOT switch artifact language even if the surrounding chat is in another language. This overrides any default."*
-- **MUST** re-read `preferences.md` at the top of any stage with multiple subagent calls, cheap insurance against drift.
-- **Self-check before every response:** *"Is this in the operating locale?"* If no, rewrite before sending. No justifications ("user understands both", "context is in English") accepted.
 
 ---
 
