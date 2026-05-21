@@ -19,13 +19,13 @@ After installing, the 5 skills are available:
 
 ```
 /wk:doer ABC-123       # 9-stage pipeline orchestrator (core skill)
-/wk:load PROJ-42       # import a ticket from Jira / Linear / GitHub
+/wk:load <ID>          # import a ticket from Jira / Linear / GitHub (operational)
 /wk:advise             # review specs/ACs/code with configurable personas
 /wk:review             # review external PRs
 /wk:publish ABC-123    # create MR + transition Jira (opt-in)
 ```
 
-The 4 satellite skills (`load`, `advise`, `review`, `publish`) are placeholders in 6.0.0; their implementations land in tickets `WK-7` through `WK-10` (see ROADMAP.md).
+Satellite skills land progressively in 6.0.0 via tickets `WK-7` through `WK-10`. `/wk:load` is operational; `advise`, `review`, `publish` are placeholders until their tickets ship (see ROADMAP.md).
 
 ## Initial setup
 
@@ -41,8 +41,8 @@ doer/
 |- .claude-plugin/plugin.json     # official manifest
 |- .claude-plugin/marketplace.json
 |- skills/                        # 5 skills
-|  |- doer/                       # orchestrator (the only operational one in 6.0.0)
-|  |- load/                       # placeholder
+|  |- doer/                       # orchestrator (operational)
+|  |- load/                       # operational (WK-7, shipped in 6.0.0)
 |  |- advise/                     # placeholder
 |  |- review/                     # placeholder
 |  |- publish/                    # placeholder

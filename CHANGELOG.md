@@ -2,7 +2,7 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
-## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents)
+## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).
 
@@ -79,6 +79,16 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Error handling: if any Agent in a group returns an error, sibling Agents are NOT cancelled. Successful changelog appendices are persisted; the failed step's `order` is recorded in `parallel_subagents.groups[g].errored_step_orders`; Stage 4 ends the turn with a `blocked` status. Successful work is preserved across the pause.
 - Pre-reviewer Check A/B/C and the reviewer LLM still run ONCE at the end of Stage 4 against the cumulative diff (base = `metadata.stages.4.pre_stage4_sha`).
 - Stage Finalization Checklist for Stage 4 extended: when `stage4_parallel_subagents` is on, `pre_stage4_sha` and a non-empty `parallel_subagents.groups[]` are required. When `status = "blocked"` via parallel error, `blocked_reason` is required instead of the loop counters.
+
+### WK-7: wk:load tracker import
+
+- `skills/load/SKILL.md` operational (replacing the placeholder). `/wk:load <ID>` imports a ticket from Jira, Linear, or GitHub Issues into `.doer/tickets/<ID>/metadata.json` and prints a `Next: /wk:doer <ID>` hand-off line.
+- Auto-detection by ID shape: GitHub when the input contains `#` (`owner/repo#N` or bare `#N` inside a clone with a single GitHub remote), Jira when the ID matches `^[A-Z][A-Z0-9_]+-\d+$` and `WK_JIRA_BASE_URL` is set, Linear when the same pattern matches and `WK_LINEAR_API_KEY` is set. Ambiguity falls back to `--tracker jira|linear|gh`.
+- Backends shell out to native CLIs / HTTP: `gh issue view <ref>` for GitHub, `curl` against `${WK_JIRA_BASE_URL}/rest/api/3/issue/<ID>` for Jira (env vars `WK_JIRA_BASE_URL`, `WK_JIRA_EMAIL`, `WK_JIRA_TOKEN`), `curl` against `https://api.linear.app/graphql` with `Authorization: ${WK_LINEAR_API_KEY}`.
+- Output writes via `jq` to a temp file then `mv`, never partial. Populates `ticket_id`, `title`, `branch` (default `<ID>-<slugified-title>`, override with `--branch`), `status: "in_progress"`, `current_stage: 1`, `skill_version: "6.0.0"`, `created_at`, and a full `intake` block with `description`, `raw_acs` (verbatim AC section if found, else `"derive"`), `context` (labels + tracker status as one-liner), `prior_work` (zeroed), and `intake.tracker = {kind, source_id, source_url, imported_at}` for provenance.
+- AC extraction heuristic in `skills/load/lib/extract-acs.sh` (executable; pure bash + awk). Recognizes `## Acceptance Criteria`, `**AC:**`, `AC:` headings; emits the verbatim block; prints nothing when no AC section is present (the skill then writes `"derive"`).
+- Idempotent: aborts when `intake.description` is non-empty unless `--force`. With `--force`, only the `intake` block and identifying fields are overwritten; `plan`, `changelog`, `code_review`, etc. are preserved untouched.
+- Other flags: `--branch <name>` overrides the proposed branch; `--dry-run` prints what would be written without persisting.
 
 ### Runtime
 
