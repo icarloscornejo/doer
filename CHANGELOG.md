@@ -2,7 +2,7 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
-## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import)
+## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).
 
@@ -89,6 +89,17 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - AC extraction heuristic in `skills/load/lib/extract-acs.sh` (executable; pure bash + awk). Recognizes `## Acceptance Criteria`, `**AC:**`, `AC:` headings; emits the verbatim block; prints nothing when no AC section is present (the skill then writes `"derive"`).
 - Idempotent: aborts when `intake.description` is non-empty unless `--force`. With `--force`, only the `intake` block and identifying fields are overwritten; `plan`, `changelog`, `code_review`, etc. are preserved untouched.
 - Other flags: `--branch <name>` overrides the proposed branch; `--dry-run` prints what would be written without persisting.
+
+### WK-8: wk:advise persona reviewer
+
+- `skills/advise/SKILL.md` operational (replacing the placeholder). `/wk:advise` runs configurable advisor personas against files, diffs, ticket plans, or ad-hoc text. Standalone or pipeline use.
+- Persona model: each persona is a JSON file at `lib/advisor-personas/<id>.json` with `id`, `display_name`, `summary`, `system_prompt`, `focus_checklist`, `out_of_scope`, `severity_scale`, `output_schema`. The skill reads the directory at invocation; adding a persona requires only dropping a valid JSON file and `jq empty` validation. No code changes, no registration step.
+- Personas shipped by default: `security`, `performance`, `mobile`, `accessibility`, `api`. Each `system_prompt` is 150 to 300 words, em-dashes prohibited; each `focus_checklist` lists at least 12 items.
+- Invocation forms: `--list` prints id/display_name/summary for each persona, `--persona <id> --explain` prints the persona's prompt and checklists, `--persona <id> --target <target>` runs a single review, `--personas a,b,c --target <target>` dispatches one Agent call per persona in parallel within a single tool block (same pattern as Stage 4 parallel subagents in WK-6).
+- Targets: `file:<path>` reads and inlines a single file, `diff:<base>..<head>` collects `git diff` output, `ticket:<TICKET-ID>` reads `metadata.ac` + `metadata.plan` from `.doer/tickets/<TICKET-ID>/metadata.json`, `text:<inline-text>` passes verbatim text. Default for `diff:` is `main..HEAD`.
+- Output: standalone runs print findings to stdout grouped by persona then sorted by severity (blocker, high, medium, low). For `target ticket:<TICKET-ID>` the skill ALSO writes `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json` with `{persona_id, target, ran_at, findings[]}` for downstream pipeline stages.
+- Forward-looking Stage 5 integration documented (NOT implemented yet): when `preferences.md` contains `stage5_advisor_personas: ["security", "performance"]`, Stage 5 will call `/wk:advise --target ticket:<ID>` before its reviewer LLM and treat persona blockers as Stage 5 BLOCKERs in the doer/reviewer convergence loop. The doer skill owns this wiring; advise does not modify Stage 5 behavior on its own.
+- `lib/advisor-personas/README.md` documents the JSON shape, the default persona table, and the 5-step guide for adding new personas.
 
 ### Runtime
 

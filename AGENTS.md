@@ -20,12 +20,12 @@ After installing, the 5 skills are available:
 ```
 /wk:doer ABC-123       # 9-stage pipeline orchestrator (core skill)
 /wk:load <ID>          # import a ticket from Jira / Linear / GitHub (operational)
-/wk:advise             # review specs/ACs/code with configurable personas
+/wk:advise             # review specs/ACs/code with configurable personas (operational)
 /wk:review             # review external PRs
 /wk:publish ABC-123    # create MR + transition Jira (opt-in)
 ```
 
-Satellite skills land progressively in 6.0.0 via tickets `WK-7` through `WK-10`. `/wk:load` is operational; `advise`, `review`, `publish` are placeholders until their tickets ship (see ROADMAP.md).
+Satellite skills land progressively in 6.0.0 via tickets `WK-7` through `WK-10`. `/wk:load` and `/wk:advise` are operational; `review`, `publish` are placeholders until their tickets ship (see ROADMAP.md).
 
 ## Initial setup
 
@@ -43,7 +43,7 @@ doer/
 |- skills/                        # 5 skills
 |  |- doer/                       # orchestrator (operational)
 |  |- load/                       # operational (WK-7, shipped in 6.0.0)
-|  |- advise/                     # placeholder
+|  |- advise/                     # operational (WK-8, shipped in 6.0.0)
 |  |- review/                     # placeholder
 |  |- publish/                    # placeholder
 |- lib/                           # shared protocols
@@ -57,6 +57,7 @@ doer/
 |  |- cost.md                     # operational (WK-3, shipped in 6.0.0)
 |  |- cost-rates.json             # seeded rates (WK-3, shipped in 6.0.0)
 |  |- helpers/                    # executable scripts (lock.sh, inbox.sh, cost.sh in 6.0.0)
+|  |- advisor-personas/           # JSON personas for /wk:advise (WK-8, shipped in 6.0.0)
 |- scripts/refresh-rates.sh       # operational (WK-3, shipped in 6.0.0)
 |- lessons/                       # global, cross-project (5 files)
 |- preferences.md                 # personal config

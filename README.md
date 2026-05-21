@@ -36,11 +36,11 @@ The Migration Check auto-applies any structural changes to in-flight tickets the
 |---------------|--------|---------|
 | `/wk:doer ABC-123` | **Operational** | 9-stage ticket execution orchestrator (the core skill, was previously `/doer`). |
 | `/wk:load <ID>` | **Operational** | Import a ticket from Jira / Linear / GitHub Issues into the doer intake. |
-| `/wk:advise` | Placeholder (WK-8) | Review specs, ACs, or code with configurable advisor personas. |
+| `/wk:advise` | **Operational** | Review specs, ACs, or code with configurable advisor personas. |
 | `/wk:review` | Placeholder (WK-9) | Review external pull requests with configurable advisor personas. |
 | `/wk:publish ABC-123` | Placeholder (WK-10) | Create a merge request and transition the Jira ticket. Opt-in. |
 
-Satellite skills land progressively in 6.0.0 via `WK-7` through `WK-10`. `/wk:load` is operational; `advise`, `review`, `publish` are placeholders until their tickets ship. See [`ROADMAP.md`](./ROADMAP.md) for the full roadmap.
+Satellite skills land progressively in 6.0.0 via `WK-7` through `WK-10`. `/wk:load` and `/wk:advise` are operational; `review`, `publish` are placeholders until their tickets ship. See [`ROADMAP.md`](./ROADMAP.md) for the full roadmap.
 
 **Backward compat:** the legacy `/doer ABC-123` invocation still works. The orchestrator detects the migrated skill and routes to `/wk:doer`.
 
