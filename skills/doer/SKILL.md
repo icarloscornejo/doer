@@ -299,16 +299,19 @@ Stage 5 appends one object per iteration to `metadata.code_review` (a JSON array
 ```json
 {
   "iteration": <N>,
-  "blockers":   [{"id": "B-1", "text": "<finding>"}, ...],          // iter 1 form
-  "prior_blockers_resolved":   ["B-1", ...],                         // iter 2+ form
-  "prior_blockers_still_open": ["B-2", ...],                         // iter 2+ form
-  "new_blockers": [{"id": "B-3", "text": "..."}, ...],              // iter 2+ form
+  "blockers":   [{"id": "B-1", "text": "<finding>", "source": "reviewer | advisor:<persona-id>"}, ...],   // iter 1 form
+  "prior_blockers_resolved":   ["B-1", ...],                                                              // iter 2+ form
+  "prior_blockers_still_open": ["B-2", ...],                                                              // iter 2+ form
+  "new_blockers": [{"id": "B-3", "text": "...", "source": "reviewer | advisor:<persona-id>"}, ...],     // iter 2+ form
   "auto_fixes":  [{"id": "AF-1", "text": "<mechanical change>"}, ...],
-  "suggestions": [{"id": "S-1",  "text": "<observation>"}, ...],
-  "info":        [{"id": "I-1",  "text": "..."}, ...],
-  "verdict": "needs_revision | converged"
+  "suggestions": [{"id": "S-1",  "text": "<observation>", "source": "reviewer | advisor:<persona-id>"}, ...],
+  "info":        [{"id": "I-1",  "text": "...", "source": "reviewer | advisor:<persona-id>"}, ...],
+  "verdict": "needs_revision | converged",
+  "advisor_personas_ran": ["<persona-id>", ...]                                                          // iter 1 only, when stage5_advisor_personas is non-empty
 }
 ```
+
+The `source` field is optional and defaults to `"reviewer"` for entries written by the Stage 5 reviewer LLM and the deterministic Pre-reviewer Checks. Entries promoted from `/wk:advise` carry `"source": "advisor:<persona-id>"`. The `advisor_personas_ran` field is set on iter 1 only when `preferences.md` enables `stage5_advisor_personas` and at least one persona ran successfully; it is absent on iter 2/3 because personas do not re-run.
 
 The reviewer reads ONLY the most recent `metadata.code_review[-1]` entry plus prior unresolved BLOCKERs (both passed inline in the prompt). Old SUGGESTIONs stay logged for the dev but are NOT re-analyzed.
 
@@ -418,7 +421,7 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
 | 3 tests | `name`, `status`, `verified_with`, `testing_strategy_mode` | `completed_at`, `retry_used` | `skipped_reason` |
 | 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`. When `preferences.md` has `stage4_per_task_gate: true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `preferences.md` has `stage4_parallel_subagents: true` (and `stage4_per_task_gate: false`): also `pre_stage4_sha` (40-char) and `parallel_subagents.groups` (non-empty; one entry per dispatched group with `id`, `step_orders`, `dispatched`, `started_at`, `completed_at`). When `status = "blocked"` via reject (per-task gate) or via parallel error: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
-| 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total` | n/a |
+| 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`. When `preferences.md` has a non-empty `stage5_advisor_personas` list AND iter 1 actually dispatched personas: also `metadata.code_review[iteration=1].advisor_personas_ran` (non-empty list of persona ids that ran) | n/a |
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
 | 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
 | 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at` | `skipped_reason` |
@@ -1259,6 +1262,42 @@ After Stage 4 commits and updates the green-test marker, decide where to advance
 ## Stage 5. Code Review (Hybrid: Deterministic + Reviewer LLM)
 
 **Goal:** PR-readiness check. Catch the mechanical "should never reach a PR" issues with deterministic greps, then invoke the reviewer LLM only for the semantic judgements that require it.
+
+### Advisor personas (opt-in)
+
+Run BEFORE the deterministic Pre-reviewer Checks A/B/C, but ONLY in iteration 1 of Stage 5. Personas do not re-run in iter 2/3; their blockers carry into later iterations through the standard `prior_blockers_resolved` / `prior_blockers_still_open` flow exactly like reviewer-sourced blockers.
+
+**Step 1. Read the flag.** Read `${CLAUDE_PLUGIN_ROOT}/preferences.md` and extract `stage5_advisor_personas` as a list. If the key is absent or the list is empty, skip this entire block and proceed directly to the Pre-reviewer Checks below.
+
+**Step 2. Validate persona ids.** For each id in the list, verify `${CLAUDE_PLUGIN_ROOT}/lib/advisor-personas/<id>.json` exists. Drop missing ids with one narrated warning per missing id (`"Persona '<id>' not found in lib/advisor-personas/. Skipping."`). If the list is empty after validation, skip this block.
+
+**Step 3. Dispatch.** Invoke `/wk:advise --target ticket:<TICKET-ID> --personas <comma-list>` (or the equivalent Agent dispatch using the persona JSON files inline; see `skills/advise/SKILL.md` for the prompt template). The skill writes one file per persona at `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json`. Wait for all persona Agents to return before proceeding.
+
+**Step 4. Ingest findings.** For each `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json` written this iteration, parse the `findings[]` array and route each entry by `severity`:
+
+- `"blocker"` -> append to `metadata.code_review[iteration=1].blockers[]` as `{"id": "B-<n>", "text": "<title>: <explain> Fix: <fix> (where: <where>)", "source": "advisor:<persona-id>"}`. Use the next available `B-<n>` id (continue numbering across reviewer + advisor blockers in the same iteration).
+- `"high"`, `"medium"`, `"low"` -> append to `metadata.code_review[iteration=1].suggestions[]` as `{"text": "[<SEVERITY>] <title>: <explain> Fix: <fix> (where: <where>)", "source": "advisor:<persona-id>"}`.
+- `"info"` -> append to `metadata.code_review[iteration=1].info[]` as `{"text": "<title>: <explain> (where: <where>)", "source": "advisor:<persona-id>"}`.
+
+Set `metadata.code_review[iteration=1].advisor_personas_ran` to the list of persona ids that successfully ran (excluding the dropped-missing ones).
+
+**Step 5. Inline findings into the reviewer LLM prompt.** When invoking the reviewer LLM in the next sub-step, append a section to its prompt:
+
+```
+== Advisor findings (already ingested into metadata.code_review) ==
+<JSON dump of the findings appended this turn, grouped by persona>
+```
+
+The reviewer is instructed to acknowledge advisor blockers but NOT to re-judge them; its scope remains the three judgement axes documented below.
+
+**Step 6. Convergence interaction.** If advisor personas produced any blockers AND the deterministic Pre-reviewer Checks A/B/C also produce blockers, all blockers from this iteration are persisted together. The combined fixer-reviewer in iter 2 receives the prior `metadata.code_review` entry inline and treats every prior blocker (regardless of `source`) under the standard `RESOLVED` / `STILL_OPEN` rule.
+
+**Iteration 2 and 3 behavior.** Personas are NOT re-invoked. The combined fixer-reviewer of iter 2/3 inherits all prior blockers (advisor and reviewer alike) through the existing loop machinery. Any `source: "advisor:<persona-id>"` annotation is preserved when a blocker is recorded as `STILL_OPEN`.
+
+**Failure modes.**
+- `/wk:advise` returns a non-JSON or empty array for a persona: log a warning, treat that persona as having zero findings, and continue. Do NOT fail Stage 5.
+- A persona file is malformed JSON: drop with a warning, continue.
+- All requested personas fail: narrate a single warning (`"All advisor personas returned no usable findings. Continuing with deterministic checks only."`) and proceed.
 
 ### Pre-reviewer deterministic checks
 

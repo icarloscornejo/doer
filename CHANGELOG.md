@@ -2,7 +2,7 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
-## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer + WK-9 wk:review external PR review + WK-10 wk:publish MR creation)
+## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer + WK-9 wk:review external PR review + WK-10 wk:publish MR creation + WK-11 wire wk:advise into Stage 5)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).
 
@@ -127,6 +127,19 @@ All releases follow SemVer. For migration details, see `lib/migrations.md`.
 - Optional Jira transition via `--transition <state>` requires `metadata.intake.tracker.kind == "jira"` (provenance from `/wk:load`) and env vars `WK_JIRA_EMAIL`, `WK_JIRA_TOKEN`, `WK_JIRA_BASE_URL`. Resolves transition id by case-insensitive name match against `GET /rest/api/3/issue/<id>/transitions`, then `POST` to the same endpoint. HTTP 204 = success. Failures (missing env, mismatched tracker kind, transition not found, non-204) are NEVER rolled back; the PR/MR stays live, the error is persisted to `metadata.publish.jira_transition.error`, and the dev is instructed to re-run with `--reuse --transition` after fixing.
 - Flags: `--draft`, `--base <branch>` (default `main`), `--dry-run` (prints would-do preview without any write or push), `--reuse`, `--transition <state>`. Combinations are allowed.
 - Edge cases handled with named aborts: detached HEAD, missing remote, missing CLI, auth failure, missing `metadata.json`, ticket not complete, drifted `last_green_sha`. Jira auth failures (HTTP 401/403) are recorded in `metadata.publish.jira_transition.error` and exit non-zero.
+
+### WK-11: wire wk:advise into Stage 5
+
+- New opt-in flag in `preferences.md`: `stage5_advisor_personas: [<id>, ...]` (default `[]`). When non-empty, Stage 5 invokes `/wk:advise --target ticket:<TICKET-ID> --personas <list>` ONCE at the start of iteration 1, BEFORE the deterministic Pre-reviewer Checks A/B/C. Personas do NOT re-run in iter 2 or 3. Closes the forward-looking integration documented in WK-8.
+- Persona-id validation: missing `${CLAUDE_PLUGIN_ROOT}/lib/advisor-personas/<id>.json` produces a single warning per missing id and the id is dropped. Empty list after validation skips the block silently.
+- Findings ingested from `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json` (written by `/wk:advise` per WK-8). Routing by `severity`: `blocker` -> `metadata.code_review[iteration=1].blockers[]` (loop continues until resolved, exactly like reviewer-sourced blockers); `high`/`medium`/`low` -> `suggestions[]` (severity preserved as a `[<SEVERITY>]` prefix in `text`); `info` -> `info[]`. Blocker ids continue the iteration's existing `B-<n>` numbering across reviewer + advisor sources.
+- Each promoted entry in `blockers`, `suggestions`, and `info` carries an optional `source` field: `"reviewer"` (default; covers reviewer LLM and Pre-reviewer Check output) or `"advisor:<persona-id>"`. Absent field is interpreted as `"reviewer"` for backward compatibility with pre-WK-11 tickets. Schema documented in `lib/memory-paths.md`.
+- New iter-1-only field `metadata.code_review[iteration=1].advisor_personas_ran` lists the persona ids that successfully dispatched and returned (excluding dropped-missing ones). Absent on iter 2/3 because personas do not re-run.
+- Reviewer LLM prompt extended: when advisor findings exist for the iteration, an `== Advisor findings (already ingested into metadata.code_review) ==` section is appended with the JSON dump grouped by persona. The reviewer is instructed to acknowledge but NOT re-judge advisor blockers; its scope remains the three judgement axes (one logical unit, semantic error handling, stale comments).
+- Convergence interaction: advisor blockers and reviewer/Pre-check blockers share the same iteration entry. Iter 2/3 combined fixer-reviewer receives the prior `metadata.code_review` entry inline and applies the standard `RESOLVED` / `STILL_OPEN` rule to every prior blocker regardless of `source`. The `source` annotation is preserved when a blocker is recorded as `STILL_OPEN`.
+- Failure modes are non-fatal: a persona returning non-JSON or empty findings is treated as zero findings with a warning; a malformed persona file is dropped with a warning; if all requested personas fail, Stage 5 narrates a single warning and proceeds with deterministic checks only. Stage 5 is NEVER aborted by an advisor failure.
+- Stage Finalization Checklist for Stage 5 extended: when `preferences.md` has a non-empty `stage5_advisor_personas` AND iter 1 actually dispatched personas, `metadata.code_review[iteration=1].advisor_personas_ran` is required (non-empty list of ids).
+- No automatic migration needed: pre-WK-11 tickets continue to work because all new fields (`source`, `advisor_personas_ran`) are optional and absent values are interpreted via the documented defaults.
 
 ### Runtime
 
