@@ -1903,6 +1903,17 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     ```
     Idempotent. The lock file is removed; future invocations of `/wk:doer <TICKET-ID>` (e.g. `verify` on a closed ticket) will acquire fresh.
 
+11. **Drain the inbox.** Run:
+    ```bash
+    PENDING=$(${CLAUDE_PLUGIN_ROOT}/lib/helpers/inbox.sh list "<TICKET-ID>" --unacked | jq 'length')
+    if [ "${PENDING:-0}" -gt 0 ]; then
+      echo "Wrapup: $PENDING pending inbox messages remain. Resolve before completing." >&2
+      exit 1
+    fi
+    ${CLAUDE_PLUGIN_ROOT}/lib/helpers/inbox.sh clear "<TICKET-ID>" --acked
+    ```
+    Pending messages at wrapup are an anomaly; the orchestrator MUST surface them via `AskUserQuestion` and ack them out of band before continuing. Acked messages are cleared so `metadata.inbox` does not grow unbounded across reverify cycles.
+
     Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
 
 ---

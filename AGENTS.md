@@ -53,10 +53,10 @@ doer/
 |  |- workspace-guard.md          # install check + .doer/ exclude
 |  |- memory-paths.md             # canonical paths + metadata.json schema
 |  |- lock.md                     # operational (WK-1, shipped in 6.0.0)
-|  |- inbox.md                    # stub (WK-2)
+|  |- inbox.md                    # operational (WK-2, shipped in 6.0.0)
 |  |- cost.md                     # stub (WK-3)
 |  |- cost-rates.json             # stub (WK-3)
-|  |- helpers/                    # executable scripts (lock.sh shipped in 6.0.0)
+|  |- helpers/                    # executable scripts (lock.sh, inbox.sh shipped in 6.0.0)
 |- scripts/refresh-rates.sh       # stub (WK-3)
 |- lessons/                       # global, cross-project (5 files)
 |- preferences.md                 # personal config
