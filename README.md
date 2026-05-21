@@ -18,7 +18,7 @@ claude plugin install wk@wk
 claude plugin list
 ```
 
-The plugin ships five skills (one operational, four placeholders, see "Skills incluidas" below). After install, edit `preferences.md` in the cached plugin dir to set your locale.
+The plugin ships five skills (one operational, four placeholders, see "Included skills" below). After install, edit `preferences.md` in the cached plugin dir to set your locale.
 
 **Updates:**
 
@@ -30,7 +30,7 @@ The Migration Check auto-applies any structural changes to in-flight tickets the
 
 ---
 
-## Skills incluidas
+## Included skills
 
 | Slash command | Status | Purpose |
 |---------------|--------|---------|
@@ -353,7 +353,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 5.0.0** (see SKILL.md frontmatter). The latest migration (4.0.1 → 5.0.0) removes the `mode` (lite/full) axis and collapses `testing_strategy` from `{direct, tdd, bdd}` to `{direct, bdd}`. Also replaces the conditional heartbeat self-check with an unconditional Transition Sync at every stage boundary.
+**Current version: 6.0.0** (see SKILL.md frontmatter). The latest migration (5.0.0 → 6.0.0) restructures the install from a single skill into a formal Claude Code plugin with five skills, and ships the per-ticket lock protocol (WK-1).
 
 ---
 

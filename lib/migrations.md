@@ -544,6 +544,7 @@ MAJOR bump. Restructures the install from a single skill (`doer`) into a formal 
 - The skill `doer` is now part of plugin `wk`. Invocation moves from `/doer ABC-123` to `/wk:doer ABC-123`. Backward-compat: if the user types `/doer ABC-123`, the orchestrator detects this is the migrated skill and accepts it.
 - Path resolution for `lessons/` moves from the heuristic `<doer-skill-dir>/lessons/` to the canonical `${CLAUDE_PLUGIN_ROOT}/lessons/`. The lessons themselves did NOT move on disk (they always lived next to SKILL.md); only the resolver changed.
 - Path resolution for shared protocols moves from inline definitions in SKILL.md to `${CLAUDE_PLUGIN_ROOT}/lib/<file>.md` references.
+- Per-ticket lock protocol shipped (WK-1). Workspace Guard now acquires `.doer/tickets/<ID>/lock.json` on every entry point, every stage transition refreshes the heartbeat via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh touch`, and Stage 9 wrapup releases the lock. Concurrent sessions on the same ticket fail fast.
 - `metadata.json` schema is unchanged (no field added, removed, or renamed in this bump).
 - `metadata.skill_version` bumps to `"6.0.0"`.
 
@@ -565,40 +566,6 @@ jq '.skill_version = "6.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 - No file rewrites. No schema changes. The behavioral changes (path resolution, plugin namespacing) apply on the next `/wk:doer <ID>` invocation.
 - Stage 2 / Stage 3 / Stage 4 / Stage 5 retain their behavior. Phase 2 auto-reverify will spot-check completed stages because `affected_stages: [all]`, but in practice no spot-check should fail because runtime semantics are identical.
 - Tickets in flight at any stage continue from where they were. The orchestrator on the next `/wk:doer continue <ID>` reads `metadata.skill_version`, sees it is < 6.0.0, applies this block, and resumes.
-- After 6.0.0 ships, future Fase 1+ tickets (WK-1 through WK-10) will introduce more migrations as `lib/lock`, `lib/inbox`, `lib/cost`, satellite skills, and core enhancements land.
-
-The behavioral changes apply on the next `/wk:doer <ID>` invocation.
-
-### Migration: From 6.0.0 -> 6.1.0
-
-`affected_stages: []`
-
-MINOR bump. Adds the per-ticket lock protocol (`lib/lock.md` + `lib/helpers/lock.sh`). The Workspace Guard now acquires a lock on every entry point and Stage 9 wrapup releases it; every stage transition refreshes a heartbeat. No `metadata.json` schema change. No stage logic change.
-
-**What this bump adds:**
-- `${CLAUDE_PLUGIN_ROOT}/lib/lock.md` operational (was a stub before).
-- `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh` executable helper with `acquire`, `touch`, `release`, `check` subcommands.
-- Workspace Guard step 7 acquires the lock; step 8 marks `metadata.workspace_guard = "ok"`.
-- Stage 9 step 10 releases the lock.
-- Stage transitions refresh `last_touched_at`.
-
-**Per-ticket changes:**
-
-```bash
-TICKET_DIR=.doer/tickets/<TICKET-ID>
-META=$TICKET_DIR/metadata.json
-
-# Narrate before each step (per Core Principle 1).
-
-# 1. Bump skill_version to 6.1.0.
-#    Narrate: "Migration 6.0.0 -> 6.1.0, step 1/1: bumping skill_version to 6.1.0."
-jq '.skill_version = "6.1.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
-```
-
-**Important migration notes:**
-
-- No file rewrites. No schema changes.
-- The lock file (`lock.json`) is created lazily on the first `acquire` call after the upgrade. Tickets that were mid-pipeline at upgrade time will acquire on the next `/wk:doer continue <ID>`; if the user has two concurrent sessions, one will be blocked at that point (which is the desired behavior).
-- Stage 9 wrapups that completed before this bump will not have called `release`. The next `/wk:doer <ID>` on a closed ticket (e.g. `/wk:doer verify`) will steal a stale lock if present, since `last_touched_at` will be older than the TTL.
+- After 6.0.0 ships, future tickets (WK-2 through WK-10) will introduce more migrations as `lib/inbox`, `lib/cost`, satellite skills, and core enhancements land.
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.

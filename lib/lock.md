@@ -1,6 +1,6 @@
 # Lock Protocol
 
-Status: protocol shared by all skills in the `wk` plugin. Implemented in `WK-1` (v6.1.0).
+Status: protocol shared by all skills in the `wk` plugin. Implemented in `WK-1` (shipped in v6.0.0).
 
 Per-ticket exclusive lock that prevents two concurrent `/wk:doer` sessions from racing on the same ticket. Single-user, single-machine guarantee. Cross-host concurrency is out of scope (`.doer/` is per-clone, not shared).
 
@@ -58,7 +58,7 @@ Every stage transition (where the orchestrator writes `metadata.stages.<N>.compl
 
 ## Configuration
 
-`LOCK_TTL_SECONDS` defaults to `1800` (30 minutes). Override per-invocation with the env var `WK_LOCK_TTL_SECONDS=<n>`. There is no global config file for this in v6.1.0.
+`LOCK_TTL_SECONDS` defaults to `1800` (30 minutes). Override per-invocation with the env var `WK_LOCK_TTL_SECONDS=<n>`. There is no global config file for this in v6.0.0.
 
 ## What this protocol does NOT do
 
