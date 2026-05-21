@@ -2,6 +2,27 @@
 
 Todas las versiones siguen SemVer. Para detalles de migraciones, ver `lib/migrations.md`.
 
+## 6.1.0 (WK-1: per-ticket lock)
+
+**Tipo:** MINOR (additive, no schema change).
+
+### Cambios
+
+- `lib/lock.md` operacional: spec del lock per-ticket (file en `.doer/tickets/<ID>/lock.json`, TTL 30 min, steal-if-stale, abort-if-fresh).
+- `lib/helpers/lock.sh` ejecutable: subcomandos `acquire`, `touch`, `release`, `check`. Sin dependencias mas alla de bash + opcionalmente jq.
+- Workspace Guard: nuevo step 7 invoca `lock.sh acquire`. Si retorna != 0, el orquestador detiene el run.
+- Stage 9 wrapup: nuevo step 10 invoca `lock.sh release`.
+- Narration Protocol: cada stage transition invoca `lock.sh touch` para refrescar el heartbeat.
+
+### Runtime
+
+- Sesiones concurrentes en el mismo ticket fallan fast con un mensaje claro (PID + host + last touched). El user resuelve manualmente.
+- Override del TTL por env var `WK_LOCK_TTL_SECONDS=<segundos>`.
+
+### Migracion automatica
+
+Tickets con `skill_version: "6.0.0"` bumpean a `6.1.0` al primer `/wk:doer continue <ID>`. Sin rewrites de archivos. Ver bloque `6.0.0 -> 6.1.0` en `lib/migrations.md`.
+
 ## 6.0.0 (Fase 0 plugin migration)
 
 **Tipo:** MAJOR (estructural, no de runtime).

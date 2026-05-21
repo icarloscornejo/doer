@@ -57,7 +57,7 @@ Cada uno se ejecuta como `/wk:doer WK-N` despues de Fase 0. Pipeline 9 etapas co
 
 | # | Ticket | Tipo | Descripcion |
 |---|---|---|---|
-| WK-1 | implement lib/lock.md + helper | LIB | Per-ticket exclusive lock con PID, auto-roba si proceso muerto |
+| ~~WK-1~~ | ~~implement lib/lock.md + helper~~ | LIB | **Done in 6.1.0**: per-ticket lock con TTL 30 min, steal-if-stale, abort-if-fresh. PID + host + heartbeat para diagnosticos |
 | WK-2 | implement lib/inbox.md + helper | LIB | Mensajeria entre etapas: advisory / blocker / fyi |
 | WK-3 | implement lib/cost.md + cost-rates.json + scripts/refresh-rates.sh | LIB | Tracking de costos, TTL semanal, fallback lazy |
 | WK-4 | integrate pre-flight assumptions into Stage 2 | CORE | Tabla de checks ejecutables en spec antes de despachar plan |

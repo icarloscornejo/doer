@@ -568,3 +568,37 @@ jq '.skill_version = "6.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 - After 6.0.0 ships, future Fase 1+ tickets (WK-1 through WK-10) will introduce more migrations as `lib/lock`, `lib/inbox`, `lib/cost`, satellite skills, and core enhancements land.
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
+### Migration: From 6.0.0 -> 6.1.0
+
+`affected_stages: []`
+
+MINOR bump. Adds the per-ticket lock protocol (`lib/lock.md` + `lib/helpers/lock.sh`). The Workspace Guard now acquires a lock on every entry point and Stage 9 wrapup releases it; every stage transition refreshes a heartbeat. No `metadata.json` schema change. No stage logic change.
+
+**What this bump adds:**
+- `${CLAUDE_PLUGIN_ROOT}/lib/lock.md` operational (was a stub before).
+- `${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh` executable helper with `acquire`, `touch`, `release`, `check` subcommands.
+- Workspace Guard step 7 acquires the lock; step 8 marks `metadata.workspace_guard = "ok"`.
+- Stage 9 step 10 releases the lock.
+- Stage transitions refresh `last_touched_at`.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# Narrate before each step (per Core Principle 1).
+
+# 1. Bump skill_version to 6.1.0.
+#    Narrate: "Migration 6.0.0 -> 6.1.0, step 1/1: bumping skill_version to 6.1.0."
+jq '.skill_version = "6.1.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No file rewrites. No schema changes.
+- The lock file (`lock.json`) is created lazily on the first `acquire` call after the upgrade. Tickets that were mid-pipeline at upgrade time will acquire on the next `/wk:doer continue <ID>`; if the user has two concurrent sessions, one will be blocked at that point (which is the desired behavior).
+- Stage 9 wrapups that completed before this bump will not have called `release`. The next `/wk:doer <ID>` on a closed ticket (e.g. `/wk:doer verify`) will steal a stale lock if present, since `last_touched_at` will be older than the TTL.
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.

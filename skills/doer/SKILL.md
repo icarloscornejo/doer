@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 6.0.0
+version: 6.1.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -1897,7 +1897,13 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
 9. **Forcing rule before final narration.** Re-read `metadata.stages.9.commit_message_presented` and `metadata.stages.9.pr_description_presented` from disk. If either is absent or literal `false`, STOP. Do NOT proceed to the closing narration. Jump back to step 7 (if `commit_message_presented` is missing) or step 8 (if `pr_description_presented` is missing) and run them now. Only after BOTH flags read `true` (or the literal `"skipped"` for `pr_description_presented`) may the orchestrator continue to the closing narration below.
 
-   Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
+10. **Release the per-ticket lock.** Run:
+    ```bash
+    ${CLAUDE_PLUGIN_ROOT}/lib/helpers/lock.sh release "<TICKET-ID>"
+    ```
+    Idempotent. The lock file is removed; future invocations of `/wk:doer <TICKET-ID>` (e.g. `verify` on a closed ticket) will acquire fresh.
+
+    Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
 
 ---
 
