@@ -1,6 +1,6 @@
 # Doer Work Kit (`wk`)
 
-**Ticket execution orchestrator for Claude Code.** Plugin version 6.1.0.
+**Ticket execution orchestrator for Claude Code.** Plugin version 6.2.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -18,7 +18,7 @@ claude plugin install wk@wk
 claude plugin list
 ```
 
-The plugin ships five operational skills (see "Included skills" below). After install, edit `preferences.md` in the cached plugin dir to set your locale.
+The plugin ships five operational skills (see "Included skills" below). After install, set your locale with `/wk:doer locale es` (or any ISO 639-1 code). The setting persists at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` and survives plugin upgrades.
 
 **Updates:**
 
@@ -36,7 +36,7 @@ claude plugin list   # should show wk@wk at the new version
 
 `marketplace update` only refreshes the catalog; it does NOT migrate the active install. `claude plugin update wk` currently fails with "Plugin not found" because the CLI expects the short name on uninstall but the full `wk@wk` id on install/update lookup, and `update` doesn't reconcile them. The uninstall + reinstall flow above is the working path until that gap is fixed upstream. Restart Claude Code after reinstalling so the new version is loaded.
 
-The Migration Check auto-applies any structural changes to in-flight tickets the next time they're touched.
+The Migration Check auto-applies any structural changes to in-flight tickets the next time they're touched. As of **6.2.0**, your locale and opt-in flags live at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (outside the versioned plugin cache), so they are NOT lost across upgrades. The 6.1.0 -> 6.2.0 migration imports any legacy `${CLAUDE_PLUGIN_ROOT}/preferences.md` automatically the first time you run `/wk:doer` after upgrading.
 
 ---
 
@@ -243,12 +243,14 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install, e.g. ~/.claude/plugins/cach
 │   ├── memory-paths.md            # source of truth for state layout + metadata schema
 │   ├── lock.md, inbox.md, cost.md # per-ticket protocol specs
 │   ├── workspace-guard.md, heartbeat.md, narration.md, migrations.md
-│   ├── helpers/{lock,inbox,cost,cost-transcript}.sh   # bash helpers consumed by the orchestrator
+│   ├── helpers/{lock,inbox,cost,cost-transcript,preferences}.sh   # bash helpers consumed by the orchestrator
 │   ├── advisor-personas/*.json    # 5 personas: security, performance, mobile, accessibility, api
 │   └── cost-rates.json            # token rates + cache_multipliers with TTL
 ├── scripts/refresh-rates.sh       # refresh cost-rates.json
-├── lessons/{slug}.md              # GLOBAL, cross-project, gitignored
-└── preferences.md                 # local config (gitignored, optional)
+└── lessons/{slug}.md              # GLOBAL, cross-project, gitignored
+
+${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/   # PER-CLAUDE-CONFIG, lives OUTSIDE the versioned plugin cache
+└── preferences.json               # locale + opt-in flags. Survives plugin uninstall/install/upgrade.
 
 ./.doer/                           # per-repo (in CWD), auto-added to .git/info/exclude
 └── tickets/
@@ -315,27 +317,22 @@ The team sees ONLY real code commits. No doer artifacts, no metadata, no review 
 
 ## Locale (optional)
 
-By default the orchestrator narrates in English. To override, create a `preferences.md` at the plugin root (`${CLAUDE_PLUGIN_ROOT}/preferences.md`) with any ISO 639-1 language code:
+By default the orchestrator narrates in English. There is **one** way to override the locale, and it is global per Claude Code config:
 
-```yaml
-locale: es    # Spanish
-# locale: fr    # French
-# locale: pt    # Portuguese
-# locale: de    # German
-# locale: it    # Italian
-# locale: ja    # Japanese
-# locale: zh    # Chinese
-# locale: ko    # Korean
-# locale: ru    # Russian
-# locale: ar    # Arabic
-# locale: hi    # Hindi
-# locale: nl    # Dutch
-# locale: pl    # Polish
-# locale: tr    # Turkish
-# locale: en    # English (the default; setting it explicitly is harmless)
+```bash
+/wk:doer locale es     # Spanish
+/wk:doer locale fr     # French
+/wk:doer locale en     # English (default; setting it explicitly silences the heuristic)
+# any ISO 639-1 code
 ```
 
-This file is gitignored; never reaches GitHub. The orchestrator reads it as the **first action** of every invocation and narrates everything in that locale, overriding any other source.
+The command runs `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh set-locale <code>` and writes to `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`. The file lives **outside** the versioned plugin cache, so the locale survives plugin uninstall, install, and version upgrades. There is no per-ticket override; the locale is global to this Claude Code config.
+
+If you have multiple Claude Code installs on the same machine (e.g. claude-tm, claude-sephora, claude-personal), each has its own `$CLAUDE_CONFIG_DIR` and therefore its own preferences file. They do not interfere with each other.
+
+**First-run heuristic.** When the global preferences file has no `locale` set, the orchestrator runs a one-shot heuristic on your first message: if it detects Spanish keyword density, it asks ONE confirmation in Spanish and persists `locale: es` on `Y`. On `N`, it proceeds in English without persisting (the heuristic will run again next invocation; run `/wk:doer locale en` to make English explicit and silence the heuristic permanently).
+
+The orchestrator re-reads the locale at every stage transition (the heartbeat Transition Sync) so a `/wk:doer locale ...` call mid-session takes effect on the next narration line.
 
 **Scope of the locale override:**
 
@@ -354,9 +351,9 @@ This file is gitignored; never reaches GitHub. The orchestrator reads it as the 
 
 ---
 
-## Opt-in features (preferences.md)
+## Opt-in features (preferences.json)
 
-All three toggles below live in `preferences.md` (gitignored, local). Defaults are off; nothing changes for existing tickets unless the dev opts in.
+All three toggles below live in the global preferences file at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`. Defaults are off; nothing changes for existing tickets unless the dev opts in.
 
 | Key | Default | Effect when enabled |
 |---|---|---|
@@ -364,17 +361,25 @@ All three toggles below live in `preferences.md` (gitignored, local). Defaults a
 | `stage4_parallel_subagents` | `false` | Stage 4 groups steps by `metadata.plan.steps[].parallel_group` and dispatches each group as parallel Agent calls in a single tool block when files are disjoint; serializes the group when files overlap. Mutually exclusive with `stage4_per_task_gate` (the gate wins on collision and parallelism is silently disabled with a narrated warning). The reviewer LLM still runs once at the end against the full Stage 4 diff. |
 | `stage5_advisor_personas` | `[]` | When non-empty (e.g. `["security", "performance"]`), Stage 5 dispatches the listed advisor personas via `/wk:advise` ONCE at the start of iteration 1 (before the deterministic Pre-reviewer Checks A/B/C and the reviewer LLM). Findings ingested from `.doer/tickets/<ID>/advisor-findings/<persona-id>.json`: `severity: blocker` to blockers, `high`/`medium`/`low` to suggestions, `info` to info. Each promoted entry carries `source: "advisor:<persona-id>"`. Personas do NOT re-run in iter 2/3; advisor blockers flow through the standard `prior_blockers_resolved` / `still_open` machinery. Personas live as JSON under `${CLAUDE_PLUGIN_ROOT}/lib/advisor-personas/` (5 shipped: `security`, `performance`, `mobile`, `accessibility`, `api`). |
 
-Example `preferences.md`:
+Example `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`:
 
-```yaml
-locale: es
-
-stage4_per_task_gate: false
-stage4_parallel_subagents: true        # parallel dispatch when steps share parallel_group
-stage5_advisor_personas: ["security"]  # security review before the reviewer LLM
+```json
+{
+  "locale": "es",
+  "stage4_per_task_gate": false,
+  "stage4_parallel_subagents": true,
+  "stage5_advisor_personas": ["security"]
+}
 ```
 
-The orchestrator reads `preferences.md` at every entry point and respects the toggles for the rest of the session. See `skills/doer/SKILL.md` for the per-stage protocols.
+Set individual flags via the helper directly (it creates the file and parent directory if missing):
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" set-flag stage4_parallel_subagents true
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" set-flag stage5_advisor_personas '["security","performance"]'
+```
+
+The orchestrator reads the preferences file via `preferences.sh get-flag <key>` at every entry point and at every stage transition. See `skills/doer/SKILL.md` for the per-stage protocols.
 
 ---
 
@@ -395,7 +400,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 6.1.0** (see SKILL.md frontmatter). 6.1.0 adds the **sub-agent delegation contract** (stages 2/3/4/5/7/8 MUST delegate LLM-heavy work via the Agent tool; the Stage Finalization Checklist enforces `agent_invocations >= 1` as a hard stop) and the **transcript-based cost backstop** (`lib/helpers/cost-transcript.sh reconcile` parses Claude Code session JSONL and records orchestrator-side token usage in `metadata.cost.transcript_reconciled`; Stage 9 narrates the delta vs. Agent-recorded cost). 6.0.0 (Phase 1) restructured the install into a formal Claude Code plugin with five skills (`/wk:doer`, `/wk:load`, `/wk:advise`, `/wk:review`, `/wk:publish`) and rolled up the full WK-1 through WK-11 ticket series: per-ticket lock (WK-1), inter-stage inbox (WK-2), token-cost tracking (WK-3), pre-flight assumptions in Stage 2 (WK-4), opt-in per-task review gate in Stage 4 (WK-5), opt-in parallel subagents in Stage 4 (WK-6), tracker import (WK-7), advisor personas (WK-8), external PR/MR review (WK-9), publishing (WK-10), and the Stage 5 advisor-persona wiring (WK-11). All migrations are idempotent and run automatically the next time any in-flight ticket is touched. See [`CHANGELOG.md`](./CHANGELOG.md) for per-version detail.
+**Current version: 6.2.0** (see SKILL.md frontmatter). 6.2.0 moves locale and opt-in flags **out of the versioned plugin cache**: the previous `${CLAUDE_PLUGIN_ROOT}/preferences.md` is replaced by `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (single read/write surface: `lib/helpers/preferences.sh`), so the locale and flags survive plugin uninstall, install, and version upgrades. Adds `/wk:doer locale <code>` to set the locale globally per Claude Code config, and a one-shot first-message heuristic that asks ONE confirmation when Spanish is detected. The 6.1.0 -> 6.2.0 migration imports any legacy `preferences.md` automatically. 6.1.0 added the **sub-agent delegation contract** (stages 2/3/4/5/7/8 MUST delegate LLM-heavy work via the Agent tool; the Stage Finalization Checklist enforces `agent_invocations >= 1` as a hard stop) and the **transcript-based cost backstop** (`lib/helpers/cost-transcript.sh reconcile` parses Claude Code session JSONL and records orchestrator-side token usage in `metadata.cost.transcript_reconciled`; Stage 9 narrates the delta vs. Agent-recorded cost). 6.0.0 (Phase 1) restructured the install into a formal Claude Code plugin with five skills (`/wk:doer`, `/wk:load`, `/wk:advise`, `/wk:review`, `/wk:publish`) and rolled up the full WK-1 through WK-11 ticket series: per-ticket lock (WK-1), inter-stage inbox (WK-2), token-cost tracking (WK-3), pre-flight assumptions in Stage 2 (WK-4), opt-in per-task review gate in Stage 4 (WK-5), opt-in parallel subagents in Stage 4 (WK-6), tracker import (WK-7), advisor personas (WK-8), external PR/MR review (WK-9), publishing (WK-10), and the Stage 5 advisor-persona wiring (WK-11). All migrations are idempotent and run automatically the next time any in-flight ticket is touched. See [`CHANGELOG.md`](./CHANGELOG.md) for per-version detail.
 
 ---
 
@@ -406,7 +411,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **Orchestrator is the sole voice.** Subagents write artifacts and return JSON summaries. Only the orchestrator prompts the user.
 - **Iteration as a turn.** A full doer/reviewer iteration (incl. AUTO_FIX) runs in a single turn. Works identically in CLI and IDE plugins.
 - **No hidden state.** Everything is on disk in `./.doer/`. Context compression cannot lose progress; closing the session = pausing.
-- **Context continuity (anti-compaction).** Long Claude Code sessions get compacted to fit in context, which can drop SKILL.md rules from the orchestrator's working memory. The orchestrator runs a heartbeat self-check at every stage transition and every `/wk:doer continue`; if the heartbeat anchor is missing from context, it triggers forced re-hydration (re-read preferences, the relevant SKILL section, and metadata). Cost: zero in normal operation, paid only when compaction is detected.
+- **Context continuity (anti-compaction).** Long Claude Code sessions get compacted to fit in context, which can drop SKILL.md rules from the orchestrator's working memory. The orchestrator runs a heartbeat self-check at every stage transition and every `/wk:doer continue`; if the heartbeat anchor is missing from context, it triggers forced re-hydration (re-resolve locale via `preferences.sh`, re-read the relevant SKILL section, and re-read metadata). Cost: zero in normal operation, paid only when compaction is detected.
 - **No push, no PR, no deploy from the doer pipeline itself.** `/wk:doer` stops after wrapup. Pushing and opening the PR is a separate, explicit step: run your project's pre-commit checks (lint, format, full tests), squash/reorder commits as desired, then either push manually or invoke `/wk:publish <TICKET-ID>` (which adds pre-flight checks, builds the PR/MR body from `metadata.json`, and optionally transitions the linked Jira ticket via `--transition`).
 
 ---

@@ -2,6 +2,30 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.2.0 (locale and preferences moved out of versioned plugin cache)
+
+**Type:** MINOR (new helper, new command, behavior change to locale resolution; no metadata shape change).
+
+### What changed
+
+- `${CLAUDE_PLUGIN_ROOT}/preferences.md` (markdown, gitignored, lived inside the versioned plugin cache `cache/wk/wk/<version>/`) is replaced by `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (JSON, lives next to the active Claude Code config). The new path survives plugin uninstall, install, and upgrade. Each Claude Code config (claude-tm, claude-sephora, claude-personal, etc.) has its own isolated preferences.
+- New helper `lib/helpers/preferences.sh` is the single read/write surface: `get-locale`, `set-locale`, `get-flag`, `set-flag`, `detect-locale`, `path`, `init`, `migrate-from-md`. All `preferences.md`-referencing logic in `lib/narration.md`, `lib/heartbeat.md`, `lib/memory-paths.md`, and `skills/doer/SKILL.md` rewritten to call the helper.
+- New command `/doer locale <code>` (and `/wk:doer locale <code>`) persists the global locale via `preferences.sh set-locale`. There is no `--global` flag because the global file is the only locale source. There is no per-ticket override and no `metadata.locale` field.
+- New first-message heuristic: when the global preferences file has no `locale` set, the orchestrator runs `preferences.sh detect-locale "<first user message>"` and asks ONE confirmation. On `Y`, the locale persists globally; on `N`, the orchestrator proceeds in English without persisting (the heuristic will run again next invocation; the user can run `/doer locale en` to silence it permanently).
+
+### Why
+
+Real-world failure: claude-sephora, after a plugin upgrade, lost its `preferences.md` (the file lived in `cache/wk/wk/6.0.0/` and 6.1.0 ships in `cache/wk/wk/6.1.0/`, so the new install does not inherit the markdown). The orchestrator fell through to `default English` and narrated in the wrong language, despite the dev expecting Spanish for that machine. The fix is structural: move preferences out of the versioned cache so they survive every upgrade.
+
+### Migration
+
+- `metadata.skill_version` bumps to `6.2.0`. Migration block at `lib/migrations.md` (6.1.0 -> 6.2.0) calls `preferences.sh migrate-from-md` against any legacy `${CLAUDE_PLUGIN_ROOT}/preferences.md` and bumps `metadata.skill_version`. Idempotent (existing JSON keys are preserved; only missing keys are filled from the markdown).
+- `affected_stages: []`. Phase 2 auto-reverify is a no-op for this bump because no per-stage artifact format changed.
+
+### Smoke tests
+
+- `tests/helpers.sh` gains 6 smoke tests for `preferences.sh` covering get/set, env override, JSON shape, idempotent init, and Spanish detection.
+
 ## 6.1.0 (sub-agent delegation contract + transcript-based cost backstop)
 
 **Type:** MINOR (additive metadata fields, behavior reinforcement, new helper).

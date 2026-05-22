@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 6.1.0
+version: 6.2.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -82,6 +82,7 @@ Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/migrations.md`. That file owns
 | `/doer list` | List all tickets in `./.doer/tickets/`. |
 | `/doer verify <TICKET-ID>` | Run stages that exist in the current skill but were missing when the ticket was closed. |
 | `/doer cleanup-history <TICKET-ID>` | Strip any `.doer/` content from commits on the ticket's feature branch. Auto-runs at wrapup; this command lets you re-run it manually. |
+| `/doer locale <code>` | Set the global operating locale (e.g. `/doer locale es`, `/doer locale en`). Persists to `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`; survives plugin upgrades. |
 
 **Backward compat:** `/doer continue <ID>`, `/doer start <ID>`, etc. are accepted as aliases, the verb is parsed and ignored. `/doer <ID>` always does the right thing.
 
@@ -90,6 +91,22 @@ Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/migrations.md`. That file owns
 **Stages cannot be skipped manually.** Every stage must run. The only way to skip stages is through Stage 1's pre-existing-work detection (see Stage 1 below). This is by design: the orchestrator decides which stages to skip, not the user.
 
 **Implicit activation:** If the user writes natural language (e.g. "keep going", "pause here", "the plan looks good") and an active ticket exists in `./.doer/tickets/*/metadata.json` with `status == "in_progress"`, treat the message as a directive to the active orchestrator rather than a new query.
+
+---
+
+## `/doer locale <code>`
+
+Sets the global operating locale for this Claude Code config. The orchestrator runs:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" set-locale "<code>"
+```
+
+The helper writes `.locale = "<code>"` into `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (creating the file and parent directory if missing). After persisting, the orchestrator narrates a confirmation IN the new locale (e.g. *"Locale set to es. All chat from now on in Spanish."* or *"Locale fijado a es. Toda la conversación de aquí en adelante en español."*).
+
+This setting is global to the Claude Code config (claude-tm vs claude-sephora vs claude-personal each have their own `$CLAUDE_CONFIG_DIR` and therefore their own preferences file). It survives plugin uninstall, install, and version upgrades. It is NOT per-ticket; switching locale affects the next chat output across all tickets.
+
+The command is valid at any time, with or without an active ticket. There is no `--global` flag because the global file is the only locale source.
 
 ---
 
@@ -112,6 +129,26 @@ This single command handles BOTH **starting a new ticket** AND **resuming an exi
 The dev never has to remember whether a ticket already exists. `/doer ABC-123` always does the right thing.
 
 **Backward-compat note:** `/doer continue <TICKET-ID>` is treated as a synonym for `/doer <TICKET-ID>`, the leading `continue` is parsed and ignored. Same for any other verb the user might type out of habit.
+
+### Locale resolution at every entry point (BEFORE any other tool call)
+
+The very first action of every `/doer ...` invocation (intake OR resume) is to resolve the operating locale. This MUST happen before reading metadata, before the Workspace Guard, before any narration.
+
+```bash
+LOCALE="$("${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" get-locale)"
+```
+
+If `LOCALE` is `en` AND the global preferences file has no explicit locale set (i.e. `preferences.sh path` points to a file that does not exist OR `jq -r '.locale // empty'` on it is empty), the orchestrator runs the heuristic on the user's most recent message:
+
+```bash
+DETECTED="$("${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" detect-locale "<last user message text>")"
+```
+
+If `DETECTED == "es"`, the orchestrator asks ONE confirmation via `AskUserQuestion`, in Spanish: *"Detecté que escribes en español. ¿Quieres que toda la narración sea en español a partir de ahora? Y / N"*. On `Y`, run `preferences.sh set-locale es` (persists globally; this is the only time the heuristic runs because future invocations find a non-empty locale). On `N`, narrate in English from now on and do NOT persist anything (the heuristic will run again on the next invocation; the user can also run `/doer locale en` to make English explicit and silence the heuristic).
+
+If `DETECTED == "en"`, proceed in English silently.
+
+The resolved locale binds the entire chat output for this invocation (and persists for future invocations once `set-locale` is called).
 
 ### Intake (when ticket does NOT exist)
 
@@ -295,7 +332,7 @@ Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md`. The Guard
 
 ## Narration Protocol
 
-Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`. That file owns Core Principles 1 and 9 (narration first, em-dashes prohibited), turn boundary rules, the auto-proceed contract, performance counters, and locale resolution (`preferences.md` is the authoritative source for the operating locale).
+Follow the protocol in `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`. That file owns Core Principles 1 and 9 (narration first, em-dashes prohibited), turn boundary rules, the auto-proceed contract, performance counters, and locale resolution (the global preferences file at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`, accessed via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh`, is the authoritative source for the operating locale).
 
 ---
 
@@ -337,7 +374,7 @@ Stage 5 appends one object per iteration to `metadata.code_review` (a JSON array
 }
 ```
 
-The `source` field is optional and defaults to `"reviewer"` for entries written by the Stage 5 reviewer LLM and the deterministic Pre-reviewer Checks. Entries promoted from `/wk:advise` carry `"source": "advisor:<persona-id>"`. The `advisor_personas_ran` field is set on iter 1 only when `preferences.md` enables `stage5_advisor_personas` and at least one persona ran successfully; it is absent on iter 2/3 because personas do not re-run.
+The `source` field is optional and defaults to `"reviewer"` for entries written by the Stage 5 reviewer LLM and the deterministic Pre-reviewer Checks. Entries promoted from `/wk:advise` carry `"source": "advisor:<persona-id>"`. The `advisor_personas_ran` field is set on iter 1 only when `preferences.sh get-flag stage5_advisor_personas` returns a non-empty list and at least one persona ran successfully; it is absent on iter 2/3 because personas do not re-run.
 
 The reviewer reads ONLY the most recent `metadata.code_review[-1]` entry plus prior unresolved BLOCKERs (both passed inline in the prompt). Old SUGGESTIONs stay logged for the dev but are NOT re-analyzed.
 
@@ -463,8 +500,8 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | 1 ac-confirm | `name`, `status`, `verified_with` | `completed_at` | `skipped_reason` |
 | 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used`, `agent_invocations` (integer >= 1) | `skipped_reason` |
 | 3 tests | `name`, `status`, `verified_with`, `testing_strategy_mode` | `completed_at`, `retry_used`, `agent_invocations` (integer >= 1) | `skipped_reason` |
-| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`, `agent_invocations` (integer >= 1). When `preferences.md` has `stage4_per_task_gate: true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `preferences.md` has `stage4_parallel_subagents: true` (and `stage4_per_task_gate: false`): also `pre_stage4_sha` (40-char) and `parallel_subagents.groups` (non-empty; one entry per dispatched group with `id`, `step_orders`, `dispatched`, `started_at`, `completed_at`). When `status = "blocked"` via reject (per-task gate) or via parallel error: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
-| 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`, `agent_invocations` (integer >= 1). When `preferences.md` has a non-empty `stage5_advisor_personas` list AND iter 1 actually dispatched personas: also `metadata.code_review[iteration=1].advisor_personas_ran` (non-empty list of persona ids that ran) | n/a |
+| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`, `agent_invocations` (integer >= 1). When `preferences.sh get-flag stage4_per_task_gate` returns `true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `preferences.sh get-flag stage4_parallel_subagents` returns `true` (and `stage4_per_task_gate` is `false`): also `pre_stage4_sha` (40-char) and `parallel_subagents.groups` (non-empty; one entry per dispatched group with `id`, `step_orders`, `dispatched`, `started_at`, `completed_at`). When `status = "blocked"` via reject (per-task gate) or via parallel error: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
+| 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`, `agent_invocations` (integer >= 1). When `preferences.sh get-flag stage5_advisor_personas` returns a non-empty list AND iter 1 actually dispatched personas: also `metadata.code_review[iteration=1].advisor_personas_ran` (non-empty list of persona ids that ran) | n/a |
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
 | 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts`, `agent_invocations` (integer >= 1) | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
 | 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `agent_invocations` (integer >= 1) | `skipped_reason` |
@@ -811,7 +848,7 @@ For each `metadata.plan.steps[i]`, if the entry has a `parallel_group` field, it
 - B-8 (parallel_group shape): step 3 has parallel_group of type number; must be a non-empty string or null
 - B-9 (parallel_group shape): step 5 has parallel_group as empty string; use null or omit the field
 ```
-This check costs zero LLM tokens and is independent of whether `preferences.md` enables `stage4_parallel_subagents`. Validating shape at plan time keeps Stage 4 simple.
+This check costs zero LLM tokens and is independent of whether `preferences.sh get-flag stage4_parallel_subagents` returns `true`. Validating shape at plan time keeps Stage 4 simple.
 
 ### Single retry policy
 
@@ -1061,7 +1098,7 @@ Loop with **max 3 iterations** (see Doer/Reviewer Loop Pattern).
 
 **Mode check.** At entry, read `metadata.testing_strategy.mode`. The value is inlined into the writer prompt and influences pre-reviewer Check A (see "Pre-reviewer deterministic checks"). After commit, the orchestrator decides where to advance based on `testing_strategy.mode` (see "Direct return" at the end).
 
-**Gate check.** At entry, also read `${CLAUDE_PLUGIN_ROOT}/preferences.md` for `stage4_per_task_gate: true|false` (default `false`) and `stage4_parallel_subagents: true|false` (default `false`). The two flags are mutually exclusive: if both are `true`, the gate wins, parallelism is silently disabled, and the orchestrator narrates *"Both stage4_per_task_gate and stage4_parallel_subagents are true. Per-task gate takes precedence; parallelism disabled for this Stage 4."* before continuing. The decision tree:
+**Gate check.** At entry, also resolve `stage4_per_task_gate` and `stage4_parallel_subagents` via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-flag <flag-name>` (each returns `true`, `false`, or empty/`false` when unset, default `false`). The two flags are mutually exclusive: if both are `true`, the gate wins, parallelism is silently disabled, and the orchestrator narrates *"Both stage4_per_task_gate and stage4_parallel_subagents are true. Per-task gate takes precedence; parallelism disabled for this Stage 4."* before continuing. The decision tree:
 
 1. If `stage4_per_task_gate: true`: run the "Per-task gate (opt-in)" sub-loop below.
 2. Else if `stage4_parallel_subagents: true`: run the "Parallel subagents (opt-in)" sub-loop below.
@@ -1071,7 +1108,7 @@ In all three branches, the deterministic Check A/B/C and the reviewer LLM run ON
 
 ### Per-task gate (opt-in)
 
-Active ONLY when `preferences.md` has `stage4_per_task_gate: true`. The orchestrator implements one entry of `metadata.plan.steps[]` at a time and pauses for a human gate after each. The deterministic checks and the reviewer LLM still run ONCE at the end against the full Stage 4 diff (the gate is PRE-reviewer, not POST).
+Active ONLY when `preferences.sh get-flag stage4_per_task_gate` returns `true`. The orchestrator implements one entry of `metadata.plan.steps[]` at a time and pauses for a human gate after each. The deterministic checks and the reviewer LLM still run ONCE at the end against the full Stage 4 diff (the gate is PRE-reviewer, not POST).
 
 **Initialize at entry:**
 
@@ -1114,7 +1151,7 @@ If the loop exited via a `reject`, Stage 4 is blocked and the turn already ended
 
 ### Parallel subagents (opt-in)
 
-Active ONLY when `preferences.md` has `stage4_parallel_subagents: true` AND `stage4_per_task_gate: false`. The orchestrator dispatches independent steps in parallel within each `parallel_group`. The deterministic checks and the reviewer LLM still run ONCE at the end against the cumulative Stage 4 diff (parallelism is PRE-reviewer, not POST).
+Active ONLY when `preferences.sh get-flag stage4_parallel_subagents` returns `true` AND `stage4_per_task_gate` returns `false` (or is unset). The orchestrator dispatches independent steps in parallel within each `parallel_group`. The deterministic checks and the reviewer LLM still run ONCE at the end against the cumulative Stage 4 diff (parallelism is PRE-reviewer, not POST).
 
 **Initialize at entry:**
 
@@ -1324,7 +1361,7 @@ After Stage 4 commits and updates the green-test marker, decide where to advance
 
 Run BEFORE the deterministic Pre-reviewer Checks A/B/C, but ONLY in iteration 1 of Stage 5. Personas do not re-run in iter 2/3; their blockers carry into later iterations through the standard `prior_blockers_resolved` / `prior_blockers_still_open` flow exactly like reviewer-sourced blockers.
 
-**Step 1. Read the flag.** Read `${CLAUDE_PLUGIN_ROOT}/preferences.md` and extract `stage5_advisor_personas` as a list. If the key is absent or the list is empty, skip this entire block and proceed directly to the Pre-reviewer Checks below.
+**Step 1. Read the flag.** Run `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-flag stage5_advisor_personas` (the helper reads `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` and emits a comma-separated list of persona ids, e.g. `security,performance`). If the output is empty, skip this entire block and proceed directly to the Pre-reviewer Checks below.
 
 **Step 2. Validate persona ids.** For each id in the list, verify `${CLAUDE_PLUGIN_ROOT}/lib/advisor-personas/<id>.json` exists. Drop missing ids with one narrated warning per missing id (`"Persona '<id>' not found in lib/advisor-personas/. Skipping."`). If the list is empty after validation, skip this block.
 

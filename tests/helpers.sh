@@ -14,6 +14,7 @@ LOCK_SH="${REPO_ROOT}/lib/helpers/lock.sh"
 INBOX_SH="${REPO_ROOT}/lib/helpers/inbox.sh"
 COST_SH="${REPO_ROOT}/lib/helpers/cost.sh"
 COST_TRANSCRIPT_SH="${REPO_ROOT}/lib/helpers/cost-transcript.sh"
+PREFS_SH="${REPO_ROOT}/lib/helpers/preferences.sh"
 EXTRACT_SH="${REPO_ROOT}/skills/load/lib/extract-acs.sh"
 FIXTURES="${REPO_ROOT}/tests/fixtures/transcripts"
 
@@ -370,10 +371,78 @@ JSON
   unset WK_COST_RATES_FILE
 }
 
+test_preferences() {
+  echo "## preferences.sh"
+
+  new_workdir
+  PREFS_DIR="$(pwd)/wk-prefs"
+  export WK_PREFERENCES_FILE="$PREFS_DIR/preferences.json"
+
+  RESOLVED="$(bash "$PREFS_SH" path)"
+  if [ "$RESOLVED" = "$WK_PREFERENCES_FILE" ]; then
+    pass "preferences honours WK_PREFERENCES_FILE override"
+  else
+    fail "preferences honours WK_PREFERENCES_FILE override" "got $RESOLVED"
+  fi
+
+  LOC="$(bash "$PREFS_SH" get-locale)"
+  if [ "$LOC" = "en" ]; then
+    pass "preferences get-locale defaults to en when file missing"
+  else
+    fail "preferences get-locale defaults to en when file missing" "got $LOC"
+  fi
+
+  bash "$PREFS_SH" set-locale es >/dev/null
+  LOC="$(bash "$PREFS_SH" get-locale)"
+  if [ "$LOC" = "es" ] && [ -f "$WK_PREFERENCES_FILE" ]; then
+    pass "preferences set-locale persists locale"
+  else
+    fail "preferences set-locale persists locale" "got $LOC, file=$WK_PREFERENCES_FILE"
+  fi
+
+  bash "$PREFS_SH" set-flag stage4_per_task_gate true >/dev/null
+  bash "$PREFS_SH" set-flag stage5_advisor_personas '["security","performance"]' >/dev/null
+  GATE="$(bash "$PREFS_SH" get-flag stage4_per_task_gate)"
+  PERSONAS="$(bash "$PREFS_SH" get-flag stage5_advisor_personas)"
+  if [ "$GATE" = "true" ] && [ "$PERSONAS" = "security,performance" ]; then
+    pass "preferences set-flag handles bool and array"
+  else
+    fail "preferences set-flag handles bool and array" "gate=$GATE personas=$PERSONAS"
+  fi
+
+  if jq -e '.locale == "es" and .stage4_per_task_gate == true and (.stage5_advisor_personas | length) == 2' \
+       "$WK_PREFERENCES_FILE" >/dev/null 2>&1; then
+    pass "preferences JSON shape valid"
+  else
+    fail "preferences JSON shape valid"
+  fi
+
+  ES="$(bash "$PREFS_SH" detect-locale "ok dale hazlo porfavor con esto")"
+  EN="$(bash "$PREFS_SH" detect-locale "please run the test now and report")"
+  if [ "$ES" = "es" ] && [ "$EN" = "en" ]; then
+    pass "preferences detect-locale heuristic"
+  else
+    fail "preferences detect-locale heuristic" "es=$ES en=$EN"
+  fi
+
+  rm -f "$WK_PREFERENCES_FILE"
+  bash "$PREFS_SH" init >/dev/null
+  bash "$PREFS_SH" init >/dev/null
+  if jq -e '.locale == null and .stage4_per_task_gate == false and (.stage5_advisor_personas | length) == 0' \
+       "$WK_PREFERENCES_FILE" >/dev/null 2>&1; then
+    pass "preferences init is idempotent"
+  else
+    fail "preferences init is idempotent"
+  fi
+
+  unset WK_PREFERENCES_FILE
+}
+
 test_lock
 test_inbox
 test_cost
 test_cost_transcript
+test_preferences
 test_extract_acs
 
 echo

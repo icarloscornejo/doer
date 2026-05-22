@@ -11,18 +11,33 @@ All state lives under `./.doer/` in the current working directory (scoped to the
 **Lessons are GLOBAL**: they live next to the plugin install (so all repos share the same accumulated knowledge). **Everything else is per-ticket and lives in a single `metadata.json` per ticket.** No markdown sidecars, no scratch files, no per-stage review files.
 
 ```
-${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins/cache/wk/)
+${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins/cache/wk/wk/<version>/)
 ├── skills/doer/SKILL.md
-├── preferences.md                 # local config (gitignored)
 ├── lib/                           # shared protocols (this file lives here)
 └── lessons/                       # GLOBAL, cross-project, gitignored
     └── {slug}.md
+
+${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/   # PER-CLAUDE-CONFIG, lives outside the versioned plugin cache
+└── preferences.json               # locale + opt-in flags. Survives plugin uninstall/install/upgrade.
 
 ./.doer/                           # per-repo (in CWD), gitignored via .git/info/exclude
 └── tickets/
     └── {TICKET-ID}/
         └── metadata.json          # SINGLE file per ticket: state + intake + ac + plan + changelog + code_review + assumptions + wrapup
 ```
+
+**Why `preferences.json` lives outside `${CLAUDE_PLUGIN_ROOT}`:** the plugin cache is versioned (e.g. `cache/wk/wk/6.2.0/`), so any preference stored next to `SKILL.md` is wiped on every `uninstall + install` cycle. The global preferences file lives next to the active Claude Code config dir (`$CLAUDE_CONFIG_DIR`, falls back to `~/.claude`), which is stable across plugin upgrades and distinct per Claude install (claude-tm vs claude-sephora vs claude-personal each have their own `$CLAUDE_CONFIG_DIR`, so their preferences are isolated). Shape:
+
+```json
+{
+  "locale": "es",
+  "stage4_per_task_gate": false,
+  "stage4_parallel_subagents": false,
+  "stage5_advisor_personas": []
+}
+```
+
+All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh`. There is no `metadata.locale` field on tickets; the global file is the only locale source.
 
 **Per ticket: 1 file (`metadata.json`).** Everything (ac, plan, changelog, code review history, assumptions, lessons captured, summary, performance) lives as structured fields inside `metadata.json`. One source of truth, no drift, no file-coordination cost. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
 
@@ -61,7 +76,7 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
 
   "plan": {
     "files": [{"path": "...", "change": "edit | new | delete", "reason": "..."}],
-    "steps": [{"order": 1, "verb": "...", "what": "...", "where": "<file>:<line-range>", "parallel_group": "<optional string id; steps sharing the same id are independent and may dispatch in parallel when preferences.md has stage4_parallel_subagents: true>"}],
+    "steps": [{"order": 1, "verb": "...", "what": "...", "where": "<file>:<line-range>", "parallel_group": "<optional string id; steps sharing the same id are independent and may dispatch in parallel when preferences.sh get-flag stage4_parallel_subagents returns true>"}],
     "tests": [{"name": "...", "covers": ["AC-N"], "what": "..."}],
     "risks": [{"risk": "...", "mitigation": "..."}],
     "assumptions": ["..."]
@@ -109,9 +124,9 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
 }
 ```
 
-**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.md` enables `stage4_per_task_gate`, `parallel_subagents` for 4 when `preferences.md` enables `stage4_parallel_subagents`, `ac_verdicts` for 7). `session_ids` and `session_ids_source` are written at intake and appended on every resume; owned by the orchestrator entry-point and resume flow. `cost.transcript_reconciled` is written by `cost-transcript.sh reconcile` at Stage 9 step 12.
+**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.sh get-flag stage4_per_task_gate` returns `true`, `parallel_subagents` for 4 when `preferences.sh get-flag stage4_parallel_subagents` returns `true`, `ac_verdicts` for 7). `session_ids` and `session_ids_source` are written at intake and appended on every resume; owned by the orchestrator entry-point and resume flow. `cost.transcript_reconciled` is written by `cost-transcript.sh reconcile` at Stage 9 step 12.
 
-**`code_review[].source` field semantics (added in WK-11).** Each entry in `blockers`, `suggestions`, and `info` carries an optional `source` field: `"reviewer"` (default; from the Stage 5 reviewer LLM) or `"advisor:<persona-id>"` (from a persona invoked via `/wk:advise` when `preferences.md` enables `stage5_advisor_personas`). Absence of the field is interpreted as `"reviewer"` for backward compatibility with pre-WK-11 tickets. The `advisor_personas_ran` field on iteration 1 lists which personas were dispatched; it is absent on iter 2/3 because personas do not re-run.
+**`code_review[].source` field semantics (added in WK-11).** Each entry in `blockers`, `suggestions`, and `info` carries an optional `source` field: `"reviewer"` (default; from the Stage 5 reviewer LLM) or `"advisor:<persona-id>"` (from a persona invoked via `/wk:advise` when `preferences.sh get-flag stage5_advisor_personas` returns a non-empty list). Absence of the field is interpreted as `"reviewer"` for backward compatibility with pre-WK-11 tickets. The `advisor_personas_ran` field on iteration 1 lists which personas were dispatched; it is absent on iter 2/3 because personas do not re-run.
 
 **`testing_strategy` semantics.** Two modes determine how Stage 3 runs:
 - `direct`: Stage 3 is DEFERRED at first entry; Stage 4 runs first; Stage 3 then runs after Stage 4 with a regression test writer (tests expected to PASS, no red phase).

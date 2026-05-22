@@ -272,10 +272,12 @@ as described in the Targets section. Future pipeline stages can read this file t
 
 This section documents the planned integration with `/wk:doer`. The integration is NOT implemented in this version; it is documented here so the doer skill can wire it when the time comes.
 
-When `preferences.md` contains:
+When `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-flag stage5_advisor_personas` returns a non-empty list (e.g. `security,performance`, persisted in `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`):
 
-```yaml
-stage5_advisor_personas: ["security", "performance"]
+```json
+{
+  "stage5_advisor_personas": ["security", "performance"]
+}
 ```
 
 Stage 5 of the doer pipeline calls `/wk:advise` after its own deterministic pre-checks and before invoking its reviewer LLM. The invocation uses `--target ticket:<TICKET-ID>` so findings are written to `.doer/tickets/<TICKET-ID>/advisor-findings/`. The Stage 5 reviewer LLM prompt includes the findings files inline so it can reference them in its review.

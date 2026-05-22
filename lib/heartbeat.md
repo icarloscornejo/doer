@@ -16,7 +16,7 @@ The sync is three Read calls. Total cost: ~3 tool calls per transition, which th
 **Transition Sync steps:**
 
 1. Narrate: *"Transition Sync."* (one line; signals to the dev that the sync ran)
-2. Read `${CLAUDE_PLUGIN_ROOT}/preferences.md` → re-establish operating locale. Immediately commit ALL output to that locale for the rest of the session. Narrate the locale confirmation IN that language as the very next sentence (e.g. `"Locale: es. Todo el output de ahora en adelante en español."`). If the next output line is in the wrong language, that is a VIOLATION.
+2. Resolve operating locale by running `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-locale` (reads `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`, falls back to `en`). Immediately commit ALL output to that locale for the rest of the session. Narrate the locale confirmation IN that language as the very next sentence (e.g. `"Locale: es. Todo el output de ahora en adelante en español."`). If the next output line is in the wrong language, that is a VIOLATION.
 3. Read `./.doer/tickets/<TICKET-ID>/metadata.json` → re-establish ticket state, `current_stage`, prior `changelog` / `code_review` entries.
 4. Read the relevant section of `SKILL.md` for `metadata.current_stage` (e.g. if `current_stage` is 4, re-read the "Stage 4. Code" section). One section, not the whole file.
 5. Narrate in the locale language: *"Sync complete. Stage <N> (<name>), locale <locale>."*
@@ -27,5 +27,5 @@ The sync is three Read calls. Total cost: ~3 tool calls per transition, which th
 
 (This anchor line is kept for historical reference in lesson notes. It is no longer used as a freshness test — the Transition Sync is unconditional.)
 
-**Locale re-check:** At the next stage transition after any sync, the orchestrator MUST verify its output language matches `preferences.md`. Locale drift after a sync is prohibited.
+**Locale re-check:** At the next stage transition after any sync, the orchestrator MUST verify its output language matches the locale emitted by `preferences.sh get-locale`. Locale drift after a sync is prohibited.
 

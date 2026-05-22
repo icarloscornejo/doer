@@ -29,9 +29,10 @@ All 4 satellite skills (`load`, `advise`, `review`, `publish`) shipped in 6.0.0 
 
 ## Initial setup
 
-After installing, edit these files in `~/.claude/plugins/cache/wk/` (or wherever Claude Code cached the plugin):
+After installing:
 
-- `preferences.md`: locale (`es` / `en`) and other personal preferences.
+- Set the locale with `/wk:doer locale es` (or any ISO 639-1 code). The setting persists at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (outside the versioned plugin cache, so it survives upgrades).
+- Set opt-in flags via the helper if you want them: `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh set-flag stage4_parallel_subagents true`.
 - `lessons/`: the 5 initial lessons ship with the plugin. The plugin accumulates more as tickets close.
 
 ## Repo structure
@@ -56,13 +57,14 @@ doer/
 |  |- inbox.md                    # operational (WK-2, shipped in 6.0.0)
 |  |- cost.md                     # operational (WK-3, shipped in 6.0.0)
 |  |- cost-rates.json             # seeded rates (WK-3, shipped in 6.0.0)
-|  |- helpers/                    # executable scripts (lock.sh, inbox.sh, cost.sh in 6.0.0)
+|  |- helpers/                    # executable scripts (lock.sh, inbox.sh, cost.sh, cost-transcript.sh, preferences.sh)
 |  |- advisor-personas/           # JSON personas for /wk:advise (WK-8, shipped in 6.0.0)
 |- scripts/refresh-rates.sh       # operational (WK-3, shipped in 6.0.0)
 |- lessons/                       # global, cross-project (5 files)
-|- preferences.md                 # personal config
 |- ROADMAP.md                     # design decisions + roadmap
 ```
+
+Personal preferences (locale, opt-in flags) live OUTSIDE the repo and outside the versioned plugin cache: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (since 6.2.0).
 
 ## For a Claude session that received this repo
 

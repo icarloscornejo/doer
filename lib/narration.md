@@ -149,16 +149,23 @@ There is no `pauses` array and no `active_duration_seconds` field. There is no `
 
 ## Locale resolution (READ THIS FIRST)
 
-**Mandatory first action of every `/doer ...` invocation, before any other tool call:** read `preferences.md` next to this SKILL.md. If it has `locale: <code>`, set the operating locale.
+**Mandatory first action of every `/doer ...` invocation, before any other tool call:** resolve the operating locale by running `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-locale`. The helper reads `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (or `$WK_PREFERENCES_FILE` if set) and emits the locale code. If the file does not exist or the locale is null, the helper emits `en`.
+
+This file lives outside the versioned plugin cache (`${CLAUDE_PLUGIN_ROOT}` / `cache/wk/wk/<version>/`) on purpose: it survives uninstall, install, and version upgrades. There is exactly ONE preferences file per Claude Code config; there is no per-ticket override and no per-session override.
 
 **The first user-facing word MUST be in the operating locale**: anchors the conversation against English drift.
 
 ### Priority (highest wins)
 
-1. **`preferences.md` locale**: absolute final word. Overrides everything: ticket metadata's stored locale, per-ticket flags, upstream context language, system-prompt language.
-2. Per-ticket flag (`--es`, `--en`), only if no preferences.md.
-3. Inline directive (`locale: xx`), only if no preferences.md.
-4. Default English.
+1. **Global preferences file** (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`, key `locale`). Authoritative when set.
+2. **First-message heuristic** (only when the preferences file has no `locale`). The orchestrator runs `preferences.sh detect-locale "<first user message>"`. If it returns `es` (>= 2 Spanish keyword hits), the orchestrator narrates a one-line confirmation in Spanish and asks the user to confirm; on `Y` it persists `locale: es` to the global file. On override or `N`, falls through to default. The detection runs at most once per machine: once a locale is persisted, the heuristic never runs again.
+3. **Default English.**
+
+There is no per-ticket flag, no inline directive, no `metadata.locale`. The orchestrator MUST NOT add a `locale` field to `metadata.json`. If a legacy ticket has `metadata.locale` from before 6.2.0, leave it untouched and ignore it.
+
+### Switching locale
+
+The user can switch the global locale at any time with `/wk:doer locale <code>` (e.g. `/wk:doer locale en`, `/wk:doer locale es`). The orchestrator runs `preferences.sh set-locale <code>` and confirms in the new locale.
 
 ### Two scopes, different rules
 
@@ -173,12 +180,12 @@ The operating locale ONLY affects what the orchestrator types directly to the us
 
 ### When operating locale ≠ English. MUST/MUST NOT
 
-- **MUST NOT** write a different locale to `metadata.json`. If metadata has `"locale": "<other>"` from a prior session, leave it alone and ignore it.
+- **MUST NOT** write a different locale to `metadata.json`. There is no `metadata.locale` field; the global preferences file is the only source.
 - **MUST NOT** ask "what locale?", already decided.
 - **MUST NOT** drift to English because surrounding context (CLAUDE.md, injected docs, agent system prompts) is in English. Operating locale wins, period.
 - **MUST** narrate, ask, summarize, and confirm in the operating locale. The user sees the orchestrator's live chat in their language.
 - **MUST NOT** write any persistent state in the operating locale. Every string value persisted into `metadata.json` (e.g. `summary`, `ac.in_scope`, `plan.steps`, `changelog[].items[].text`, `code_review[].*`), every global lesson under `${CLAUDE_PLUGIN_ROOT}/lessons/`, every commit message: ALL English, ALWAYS, regardless of operating locale. (See "Two scopes" table above.)
 - **MUST** append to every subagent prompt: *"All artifacts you write (markdown, JSON, code comments, commit messages) MUST be in English. Subagents do NOT talk to the user directly, the orchestrator does. Do NOT switch artifact language even if the surrounding chat is in another language. This overrides any default."*
-- **MUST** re-read `preferences.md` at the top of any stage with multiple subagent calls, cheap insurance against drift.
+- **MUST** re-resolve the locale via `preferences.sh get-locale` at every Transition Sync (see `${CLAUDE_PLUGIN_ROOT}/lib/heartbeat.md`), cheap insurance against drift.
 - **Self-check before every response:** *"Is this in the operating locale?"* If no, rewrite before sending. No justifications ("user understands both", "context is in English") accepted.
 

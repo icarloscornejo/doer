@@ -675,3 +675,50 @@ jq '.skill_version = "6.1.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 - `metadata.cost.transcript_reconciled` is created lazily on first reconcile (typically Stage 9). No back-fill needed.
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
+### Migration: From 6.1.0 -> 6.2.0
+
+`affected_stages: []` (no per-stage artifact changes; the only change is the location of preferences and the locale-resolution mechanism)
+
+**Plugin-wide changes:**
+
+- Locale and opt-in flags moved out of the versioned plugin cache. The previous `${CLAUDE_PLUGIN_ROOT}/preferences.md` (markdown, gitignored, lived next to `SKILL.md` and was wiped on every `uninstall + install` cycle) is replaced by `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (JSON, lives next to the active Claude Code config). The new path survives plugin upgrades.
+- New helper `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh` is the single read/write surface (`get-locale`, `set-locale`, `get-flag`, `set-flag`, `detect-locale`, `init`, `path`, `migrate-from-md`).
+- New command `/doer locale <code>` persists the global locale via `preferences.sh set-locale`.
+- Heuristic locale detection runs at most once per Claude Code config: when the global file has no `locale` key set, the orchestrator runs `preferences.sh detect-locale "<first user message>"` and confirms before persisting.
+- All `preferences.md`-referencing logic in `lib/narration.md`, `lib/heartbeat.md`, `lib/memory-paths.md`, and `skills/doer/SKILL.md` rewritten to call `preferences.sh` instead.
+- `metadata.json` schema is unchanged. There is intentionally NO `metadata.locale` field; the global preferences file is the only locale source.
+- `metadata.skill_version` bumps to `"6.2.0"`.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# Narrate before each step (per Core Principle 1).
+
+# 1. One-time global migration: import a legacy preferences.md into the new
+#    JSON file, if present in the active plugin cache. Idempotent: if the
+#    JSON already exists, the helper preserves existing keys and only fills
+#    missing ones from the markdown source. Safe to run on every ticket;
+#    the import only does work the first time.
+#    Narrate: "Migration 6.1.0 -> 6.2.0, step 1/2: importing legacy preferences.md if present."
+LEGACY_PREFS="${CLAUDE_PLUGIN_ROOT:-}/preferences.md"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$LEGACY_PREFS" ]; then
+  "${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" migrate-from-md "$LEGACY_PREFS"
+fi
+
+# 2. Bump skill_version to 6.2.0.
+#    Narrate: "Migration 6.1.0 -> 6.2.0, step 2/2: bumping skill_version to 6.2.0."
+jq '.skill_version = "6.2.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No metadata shape change. Phase 2 auto-reverify is a no-op for this bump (`affected_stages: []`).
+- The legacy `preferences.md` file in the plugin cache is left untouched. Subsequent plugin upgrades will replace the cache directory anyway, so the markdown file disappears naturally. The new JSON lives outside the cache and persists.
+- Tickets in flight continue from where they were. On the next `/wk:doer continue <ID>` the orchestrator runs the Migration Check, applies this block, and resumes. The first chat output uses the locale resolved from the new JSON file (which inherits from the legacy markdown if present, else falls through to the heuristic + confirmation).
+- Multiple Claude Code installs on the same machine (claude-tm, claude-sephora, claude-personal) each have their own `$CLAUDE_CONFIG_DIR` and therefore their own preferences file. Migrations run independently per install.
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.

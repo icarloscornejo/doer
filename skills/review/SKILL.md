@@ -21,7 +21,7 @@ User-facing skill for reviewing a pull request or merge request that lives outsi
 
 | Command | Description |
 |---------|-------------|
-| `/wk:review <pr-ref>` | Review using the default persona set from `preferences.md` (`review_default_personas`; defaults to `["security"]` if unset). |
+| `/wk:review <pr-ref>` | Review using the default persona set resolved via `preferences.sh get-flag review_default_personas` (defaults to `["security"]` if unset). |
 | `/wk:review <pr-ref> --personas <id1>,<id2>,...` | Override the persona set for this invocation. |
 | `/wk:review <pr-ref> --persona <id>` | Single-persona shortcut (equivalent to `--personas <id>`). |
 | `/wk:review <pr-ref> --post` | After generating the report, post it as a review comment via the platform CLI. |
@@ -135,7 +135,7 @@ Verify the required CLI is available (see "Required CLIs" above). Abort with the
 
 ### Step 2: Read preferences and resolve persona set
 
-Read `${CLAUDE_PLUGIN_ROOT}/preferences.md`. Extract `review_default_personas` (array of IDs). If the key is absent, default to `["security"]`.
+Run `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-flag review_default_personas`. The helper reads `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` and emits a comma-separated list of persona IDs. If the output is empty, default to `security`.
 
 If `--personas` or `--persona` was given on the command line, use that list instead (override).
 
@@ -354,7 +354,7 @@ Overall vote: request_changes
 /wk:review acme/frontend#101
 ```
 
-1. Platform: GitHub. No `--personas` flag. Read `preferences.md`: `review_default_personas: ["security"]`.
+1. Platform: GitHub. No `--personas` flag. Resolve via `preferences.sh get-flag review_default_personas` (returns `security`).
 2. Fetch PR context via `gh`.
 3. Dispatch one Agent (security persona).
 4. Security agent returns 2 findings: 1 medium, 1 low.
