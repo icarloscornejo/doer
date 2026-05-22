@@ -57,6 +57,7 @@ ensure_file() {
     cat > "$path" <<'JSON'
 {
   "locale": null,
+  "stage1_ac_self_review": true,
   "stage4_per_task_gate": false,
   "stage4_parallel_subagents": false,
   "stage5_advisor_personas": []

@@ -31,6 +31,7 @@ ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/   # PER-CLAUDE-CONFIG, lives outside the
 ```json
 {
   "locale": "es",
+  "stage1_ac_self_review": true,
   "stage4_per_task_gate": false,
   "stage4_parallel_subagents": false,
   "stage5_advisor_personas": []
@@ -70,8 +71,15 @@ All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.s
   "ac": {
     "in_scope": ["AC-1: ...", "AC-2: ..."],
     "out_of_scope": ["..."],
-    "open_questions_resolved": [{"question": "...", "answer": "..."}],
-    "applicable_lessons": ["<lesson-slug>"]
+    "open_questions_resolved": [{"question": "...", "answer": "...", "source": "self_review | dev"}],
+    "applicable_lessons": ["<lesson-slug>"],
+    "self_review": {
+      "ran": true,
+      "iteration": 1,
+      "findings": [{"id": "F-1", "kind": "affirmation | gap | blocker", "optional": false, "title": "...", "explain": "...", "suggested_fix": "..."}],
+      "dev_accepted": ["F-1"],
+      "dev_rejected": ["F-2"]
+    }
   },
 
   "plan": {
@@ -124,7 +132,9 @@ All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.s
 }
 ```
 
-**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.sh get-flag stage4_per_task_gate` returns `true`, `parallel_subagents` for 4 when `preferences.sh get-flag stage4_parallel_subagents` returns `true`, `ac_verdicts` for 7). `session_ids` and `session_ids_source` are written at intake and appended on every resume; owned by the orchestrator entry-point and resume flow. `cost.transcript_reconciled` is written by `cost-transcript.sh reconcile` at Stage 9 step 12.
+**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1; `ac.self_review` populated by Step 6.5 when `preferences.sh get-flag stage1_ac_self_review` returns empty or `true`), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.sh get-flag stage4_per_task_gate` returns `true`, `parallel_subagents` for 4 when `preferences.sh get-flag stage4_parallel_subagents` returns `true`, `ac_verdicts` for 7). `session_ids` and `session_ids_source` are written at intake and appended on every resume; owned by the orchestrator entry-point and resume flow. `cost.transcript_reconciled` is written by `cost-transcript.sh reconcile` at Stage 9 step 12.
+
+**`ac.self_review` field semantics (added in 6.3.0).** Stage 1 Step 6.5 dispatches a single `ac-reviewer` sub-agent (one round, no loop) that compares the AC draft built in Step 6 against `intake.description`, `intake.raw_acs`, and `intake.context`. Findings use a fixed three-tier taxonomy: `affirmation` (what is solid; mandatory output so the dev sees confirmation, not only negatives), `gap` (something missing or imprecise; carries `optional: true` for granularity preferences vs structural omissions), `blocker` (a direct contradiction with the description). Blocker findings are promoted into `ac.open_questions_resolved` with `source: "self_review"` and a proposed resolution; the dev still answers the single Stage 1 question. The orchestrator NEVER auto-applies fixes; the dev accepts or rejects findings by id and the decision is recorded as `dev_accepted` / `dev_rejected`. Failure modes (malformed JSON, timeout, empty findings, Agent error) are non-fatal: Stage 1 narrates one warning and persists `self_review = {ran: false, reason: "<one-line>"}`. When `preferences.sh get-flag stage1_ac_self_review` returns `false`, Step 6.5 is skipped silently and `self_review = {ran: false, reason: "flag disabled"}`.
 
 **`code_review[].source` field semantics (added in WK-11).** Each entry in `blockers`, `suggestions`, and `info` carries an optional `source` field: `"reviewer"` (default; from the Stage 5 reviewer LLM) or `"advisor:<persona-id>"` (from a persona invoked via `/wk:advise` when `preferences.sh get-flag stage5_advisor_personas` returns a non-empty list). Absence of the field is interpreted as `"reviewer"` for backward compatibility with pre-WK-11 tickets. The `advisor_personas_ran` field on iteration 1 lists which personas were dispatched; it is absent on iter 2/3 because personas do not re-run.
 

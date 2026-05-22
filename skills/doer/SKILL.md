@@ -540,7 +540,7 @@ Only after all required fields validate clean, write the final `status` and cont
 
 **Goal:** produce testable ACs in `metadata.ac` + detect/import any pre-existing work.
 
-**No subagent, orchestrator runs this directly.** No commit at end (only `.doer/` writes, which is gitignored).
+**Stage entry runs inline; Step 6.5 (AC self-review) optionally dispatches a single sub-agent via the Agent tool when `preferences.sh get-flag stage1_ac_self_review` returns empty or `true` (default on).** No commit at end (only `.doer/` writes, which is gitignored).
 
 ### Step 1: Load context
 
@@ -663,7 +663,154 @@ Then in both branches:
 
 ONE question for the entire Stage 1 contract. No item-by-item drilling.
 
-### Step 7: Write artifacts
+### Step 6.5: AC self-review (opt-in, default on)
+
+**Goal:** confront the draft built in Step 6 against the original intake (`description`, `raw_acs`, `context`) and surface affirmations, gaps, and blockers BEFORE the dev approves the block. The dev still answers ONE question for the entire Stage 1 contract; Step 6.5 only enriches the block presented in Step 6 by adding a "Self-review notes" section and (when applicable) promoting blocker findings into the Open Questions list.
+
+**A. Read the flag.**
+Run `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-flag stage1_ac_self_review`. The helper emits `"true"`, `"false"`, or empty (unset). Treat empty as `"true"` (the default in `ensure_file()` is `true`; pre-existing preferences files written before 6.3.0 will return empty and SHOULD opt in by default).
+- Output `"false"` → skip Step 6.5 entirely, set `metadata.ac.self_review = {"ran": false, "reason": "flag disabled"}`, proceed to Step 7.
+- Empty or `"true"` → continue to B.
+
+**B. Dispatch the `ac-reviewer` sub-agent.** MUST invoke via the Agent tool. The orchestrator MUST NOT inline this work. Single round, no loop, no retry on malformed output.
+
+**Doer agent:** general-purpose, prompted as "AC reviewer". Read budget: 0 source files (all context is inlined; the reviewer never opens the repo).
+
+#### AC reviewer prompt (skeleton)
+
+```
+You are the AC reviewer for ticket <TICKET-ID>.
+
+The orchestrator has inlined every input you need below. Do NOT read source files;
+you have a read budget of 0. Em-dashes are forbidden in your output.
+
+== metadata.intake ==
+<JSON dump of metadata.intake: description, raw_acs, context, prior_work>
+
+== metadata.testing_strategy ==
+<JSON dump of metadata.testing_strategy: mode, rationale, signals>
+
+== Draft built in Step 6 ==
+{
+  "in_scope":            ["AC-1: ...", "AC-2: ..."],
+  "out_of_scope":        ["..."],
+  "open_questions_resolved": [{"question": "...", "answer": "..."}]
+}
+
+== Applicable lessons (read inline if relevant; full text dumped here) ==
+<for each slug in metadata.ac.applicable_lessons, the file body of
+${CLAUDE_PLUGIN_ROOT}/lessons/{slug}.md>
+
+Your job: compare the draft against intake.description and intake.raw_acs and
+emit findings under a fixed three-tier taxonomy.
+
+Taxonomy (fixed; do not invent new kinds):
+- "affirmation": specific things in the draft that match the description well.
+  MANDATORY: emit at least one affirmation per AC ID present in `in_scope`.
+  This is non-negotiable. A reviewer that emits only negatives erodes dev trust.
+- "gap": something the description mentions or implies that the draft handles
+  imprecisely or omits. Set `optional: true` when the gap is a granularity or
+  preference matter (e.g. "AC-5 mixes two scenarios; could be split"); set
+  `optional: false` when the gap is structural (e.g. "description requires X,
+  no AC covers it").
+- "blocker": a DIRECT contradiction between the draft and intake.description.
+  Use sparingly. Promotion to Open Questions is automatic; suggested_fix MUST
+  be phrased as a concrete proposed resolution to that question.
+
+Output exactly this JSON object, no prose, no code fences:
+
+{
+  "findings": [
+    {
+      "id": "F-1",
+      "kind": "affirmation | gap | blocker",
+      "optional": false,
+      "title": "<one-line, <=80 chars>",
+      "explain": "<one to three sentences; cite which AC or which part of the
+                 description; no em-dashes>",
+      "suggested_fix": "<one to three sentences; for blocker, phrase as a
+                       proposed resolution; may be omitted on affirmation>"
+    }
+  ]
+}
+
+Constraints:
+- IDs are contiguous F-N, starting at F-1.
+- `optional` is required on every entry; affirmations and blockers MUST set it
+  to false.
+- Total findings <= 12. Prioritize signal over volume.
+- If the draft is genuinely solid and you cannot find any gap or blocker,
+  return only affirmations. Do NOT manufacture findings.
+- Do NOT propose changes to `out_of_scope` items unless the description
+  contradicts the exclusion.
+- Do NOT re-judge `open_questions_resolved` entries that already exist; the
+  dev resolved those upstream. You may add new Open Questions only by emitting
+  a `blocker` finding.
+```
+
+**C. Parse the findings JSON.** Validate the shape:
+- top-level object with a `findings` array (may be empty)
+- each entry has `id` (`F-N`, contiguous), `kind` ∈ {`affirmation`, `gap`, `blocker`}, `optional` (bool), `title`, `explain`
+- `suggested_fix` is required on `gap` and `blocker`, optional on `affirmation`
+
+If any invariant fails, treat as malformed (see Failure modes below).
+
+**D. Promote blockers into Open Questions.** For each finding with `kind: "blocker"`, append to the draft's `open_questions_resolved` list:
+```json
+{
+  "question": "<finding.title>: <finding.explain>",
+  "answer":   "<finding.suggested_fix>",
+  "source":   "self_review"
+}
+```
+The dev's existing Open Questions retain `source: "dev"` (or absent, interpreted as `"dev"` for backward compatibility with pre-6.3.0 tickets). Do NOT silently rewrite an existing question; if a blocker collides with an existing question, log it as a separate Open Question with the `self_review` source.
+
+**E. Re-present the Stage 1 block to the dev.** This REPLACES the Step 6 single question; do NOT ask twice. Show:
+
+```
+Draft for Stage 1 (testing strategy: <DIRECT | BDD>):
+
+## Acceptance Criteria
+- AC-1: ...
+- AC-2: ...
+
+## Out of Scope
+- ...
+
+## Open Questions (proposed resolutions)
+- Q: <existing dev Q> -> A: <existing dev A>
+- Q: <promoted blocker Q> -> A: <promoted blocker A>   [self-review]
+
+## Self-review notes
+Affirmations:
+- F-1: <title>
+- F-2: <title>
+Gaps:
+- F-3: <title>   [structural]
+- F-4: <title>   [optional]
+Blockers (already promoted to Open Questions above):
+- F-5 -> Q above
+
+Approve the whole block, or tell me what to edit.
+[Y / edit <section>:<change> / drop <F-id>[,<F-id>...] / redo]
+```
+
+The `drop <F-id>` action is new in 6.3.0: it removes a promoted blocker from `open_questions_resolved` and records the finding under `dev_rejected` for the persistence step. Edits to AC text and Out of Scope continue to use the existing `edit <section>:<change>` syntax.
+
+Iteration rules (mirror Step 6):
+- `Y` → accept the block as shown; record every promoted blocker as `dev_accepted` and every shown gap/affirmation that the dev did NOT explicitly drop as `dev_accepted`. Proceed to Step 7.
+- `edit ...` → apply edits, re-present the same block (findings are NOT re-generated; the original findings list stays visible until approval).
+- `drop F-N[,F-M]` → remove promoted entries, record those ids in `dev_rejected`, re-present.
+- `redo` → start over from Step 6 item 1; Step 6.5 will run again on the fresh draft.
+
+**F. Increment the agent counter.** Set `metadata.stages.1.agent_invocations = (metadata.stages.1.agent_invocations | 0) + 1`. The Stage Finalization Checklist still treats this field as optional for Stage 1, so when the flag is `false` no increment occurs and existing tickets without the field stay unchanged.
+
+**Failure modes (all non-fatal).** Step 6.5 MUST NEVER abort Stage 1.
+- Agent tool error or timeout → narrate one warning (`"AC self-review skipped: <reason>"`), set `metadata.ac.self_review = {"ran": false, "reason": "<reason>"}`, fall through to the original Step 6 single-question block (no Self-review notes section).
+- Malformed JSON / shape violation → same as above with `reason: "malformed output"`.
+- Empty `findings` array (zero items) → treat as a successful run with no findings; the dev still sees the standard Step 6 block plus a Self-review notes section reading `(no findings)`. Persist `metadata.ac.self_review = {"ran": true, "iteration": 1, "findings": [], "dev_accepted": [], "dev_rejected": []}`.
+
+
 
 Persist the confirmed Stage 1 output into `metadata.ac`:
 
@@ -671,12 +818,25 @@ Persist the confirmed Stage 1 output into `metadata.ac`:
 "ac": {
   "in_scope": ["AC-1: GIVEN ... WHEN ... THEN ...", "AC-2: ..."],
   "out_of_scope": ["<item>", "..."],
-  "open_questions_resolved": [{"question": "<Q>", "answer": "<A>"}],
-  "applicable_lessons": ["<lesson-slug>", "..."]
+  "open_questions_resolved": [{"question": "<Q>", "answer": "<A>", "source": "self_review | dev"}],
+  "applicable_lessons": ["<lesson-slug>", "..."],
+  "self_review": {
+    "ran": true,
+    "iteration": 1,
+    "findings": [
+      {"id": "F-1", "kind": "affirmation | gap | blocker", "optional": false, "title": "<one-line>", "explain": "<one to three sentences>", "suggested_fix": "<optional on affirmation>"}
+    ],
+    "dev_accepted": ["F-1"],
+    "dev_rejected": ["F-2"]
+  }
 }
 ```
 
 Each `in_scope` entry is a complete Given/When/Then string starting with the AC ID. `applicable_lessons` lists slugs of global lessons (`${CLAUDE_PLUGIN_ROOT}/lessons/{slug}.md`) whose `when_it_applies` matches this ticket; downstream agents read those lesson files when relevant.
+
+`open_questions_resolved[].source` is `"self_review"` for entries promoted by Step 6.5 from a blocker finding and `"dev"` for entries the dev wrote during Step 6. Absent field is interpreted as `"dev"` for backward compatibility with pre-6.3.0 tickets.
+
+`self_review` is populated by Step 6.5 when the flag is on. When the flag is off OR Step 6.5 was skipped or failed, `self_review = {"ran": false, "reason": "<one-line>"}`. `dev_accepted` and `dev_rejected` reflect the dev's decision recorded at Step 6.5 step E (see Step 6.5 above for the taxonomy and persistence rules).
 
 No sidecar `ac.md` file. No separate assumptions file (assumptions surface in Stage 2 inside `metadata.plan.assumptions`).
 

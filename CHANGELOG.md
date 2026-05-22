@@ -2,6 +2,33 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.3.0 (Stage 1 AC self-review)
+
+**Type:** MINOR (additive metadata field, additive opt-in flag, new sub-step in Stage 1; no existing field shape changed).
+
+### What changed
+
+- `skills/doer/SKILL.md` Stage 1 gains Step 6.5 between the existing Step 6 (AC confirmation) and Step 7 (Write artifacts). When `preferences.sh get-flag stage1_ac_self_review` returns empty or `true`, the orchestrator dispatches a single `ac-reviewer` sub-agent (general-purpose, read budget 0, single round, no loop) via the Agent tool. The reviewer compares the AC draft built in Step 6 against `intake.description`, `intake.raw_acs`, and `intake.context` and emits findings under a fixed three-tier taxonomy: `affirmation` (mandatory; at least one per AC ID), `gap` (with `optional: true` for granularity preferences vs structural omissions), `blocker` (direct contradiction with the description).
+- Blocker findings are promoted into `metadata.ac.open_questions_resolved[]` with `source: "self_review"` and a proposed resolution. Existing dev-authored Open Questions carry `source: "dev"` (or absent, interpreted as `"dev"` for backward compatibility). The dev still answers ONE question for the entire Stage 1 contract; Step 6.5 enriches the Step 6 block with a Self-review notes section, never asks a second question.
+- New dev action: `drop <F-id>[,<F-id>...]` removes a promoted blocker from Open Questions and records the finding under `metadata.ac.self_review.dev_rejected`. The existing `Y / edit / redo` actions are unchanged.
+- Orchestrator NEVER auto-applies suggested fixes. The dev keeps full agency over AC text, Out of Scope, and Open Questions. Findings + dev decisions persist into `metadata.ac.self_review = {ran, iteration, findings[], dev_accepted[], dev_rejected[]}`.
+- New opt-in flag `stage1_ac_self_review: true` (default ON) added to `lib/helpers/preferences.sh` `ensure_file()` defaults. Existing preferences files written before 6.3.0 do not contain the key; `get-flag` returns empty for them and the orchestrator treats empty as `true` (the default-on semantics). The dev can opt out at any time via `preferences.sh set-flag stage1_ac_self_review false`.
+- `lib/memory-paths.md` documents the new `metadata.ac.self_review` field, the `open_questions_resolved[].source` extension, and the failure-mode contract.
+- `metadata.stages.1.agent_invocations` increments by 1 on each Step 6.5 dispatch. The Stage Finalization Checklist still treats the field as optional for Stage 1, so existing tickets without the field stay valid.
+
+### Why
+
+The dev validated the value of an automated AC self-review by running it manually with another Claude instance against a real ticket. The output was high-signal: confirmed solid ACs, flagged a granularity preference, and surfaced a real gap (description mentioned session-only persistence with no AC for it). Doer's pipeline today produces ACs in Step 6 and goes straight to dev approval; nothing confronts the draft against the original description before the dev signs off. Shifting that confrontation left (Stage 1, before plan/tests/code investment) catches scope omissions and misalignments at the cheapest possible point.
+
+### Migration
+
+- `metadata.skill_version` bumps to `6.3.0`. Migration block at `lib/migrations.md` (6.2.0 -> 6.3.0) is a no-op for in-flight tickets: `metadata.ac.self_review` is purely additive (absent on pre-6.3.0 tickets) and the orchestrator interprets absence as "Stage 1 ran on an older skill version, no self-review evidence". `open_questions_resolved[].source` is also additive (absent treated as `"dev"`).
+- `affected_stages: [1]`. Phase 2 auto-reverify offers a spot-check on completed Stage 1 entries whose `verified_with < 6.3.0`; declining is safe because no runtime behavior of later stages depends on `ac.self_review`.
+
+### Smoke tests
+
+- `tests/helpers.sh` extends the `preferences.sh` JSON shape assertion to require `stage1_ac_self_review == true` after `init`, and adds an explicit `get-flag` round-trip case verifying the default-true behavior on a fresh preferences file.
+
 ## 6.2.0 (locale and preferences moved out of versioned plugin cache)
 
 **Type:** MINOR (new helper, new command, behavior change to locale resolution; no metadata shape change).

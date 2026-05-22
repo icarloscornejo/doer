@@ -428,11 +428,18 @@ test_preferences() {
   rm -f "$WK_PREFERENCES_FILE"
   bash "$PREFS_SH" init >/dev/null
   bash "$PREFS_SH" init >/dev/null
-  if jq -e '.locale == null and .stage4_per_task_gate == false and (.stage5_advisor_personas | length) == 0' \
+  if jq -e '.locale == null and .stage1_ac_self_review == true and .stage4_per_task_gate == false and (.stage5_advisor_personas | length) == 0' \
        "$WK_PREFERENCES_FILE" >/dev/null 2>&1; then
     pass "preferences init is idempotent"
   else
     fail "preferences init is idempotent"
+  fi
+
+  AC_FLAG="$(bash "$PREFS_SH" get-flag stage1_ac_self_review)"
+  if [ "$AC_FLAG" = "true" ]; then
+    pass "preferences default stage1_ac_self_review is true"
+  else
+    fail "preferences default stage1_ac_self_review is true" "got $AC_FLAG"
   fi
 
   unset WK_PREFERENCES_FILE
