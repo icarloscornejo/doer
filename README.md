@@ -23,8 +23,14 @@ The plugin ships five operational skills (see "Included skills" below). After in
 **Updates:**
 
 ```bash
+# 1. refresh the marketplace catalog (downloads new versions into the cache)
 claude plugin marketplace update wk
+
+# 2. upgrade the active install to the latest version (restart Claude Code afterwards)
+claude plugin update wk
 ```
+
+`marketplace update` only refreshes the catalog; it does NOT migrate the active install. Run `claude plugin update wk` and restart Claude Code to actually pick up the new version. Verify with `claude plugin list`.
 
 The Migration Check auto-applies any structural changes to in-flight tickets the next time they're touched.
 
