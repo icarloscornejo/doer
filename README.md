@@ -26,11 +26,15 @@ The plugin ships five operational skills (see "Included skills" below). After in
 # 1. refresh the marketplace catalog (downloads new versions into the cache)
 claude plugin marketplace update wk
 
-# 2. upgrade the active install to the latest version (restart Claude Code afterwards)
-claude plugin update wk
+# 2. uninstall + reinstall with the full plugin@marketplace id
+claude plugin uninstall wk
+claude plugin install wk@wk
+
+# 3. verify and restart Claude Code
+claude plugin list   # should show wk@wk at the new version
 ```
 
-`marketplace update` only refreshes the catalog; it does NOT migrate the active install. Run `claude plugin update wk` and restart Claude Code to actually pick up the new version. Verify with `claude plugin list`.
+`marketplace update` only refreshes the catalog; it does NOT migrate the active install. `claude plugin update wk` currently fails with "Plugin not found" because the CLI expects the short name on uninstall but the full `wk@wk` id on install/update lookup, and `update` doesn't reconcile them. The uninstall + reinstall flow above is the working path until that gap is fixed upstream. Restart Claude Code after reinstalling so the new version is loaded.
 
 The Migration Check auto-applies any structural changes to in-flight tickets the next time they're touched.
 
