@@ -1,6 +1,6 @@
 # Doer Work Kit (`wk`)
 
-**Ticket execution orchestrator for Claude Code.** Plugin version 6.0.0.
+**Ticket execution orchestrator for Claude Code.** Plugin version 6.1.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -233,9 +233,9 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install, e.g. ~/.claude/plugins/cach
 │   ├── memory-paths.md            # source of truth for state layout + metadata schema
 │   ├── lock.md, inbox.md, cost.md # per-ticket protocol specs
 │   ├── workspace-guard.md, heartbeat.md, narration.md, migrations.md
-│   ├── helpers/{lock,inbox,cost}.sh   # bash helpers consumed by the orchestrator
+│   ├── helpers/{lock,inbox,cost,cost-transcript}.sh   # bash helpers consumed by the orchestrator
 │   ├── advisor-personas/*.json    # 5 personas: security, performance, mobile, accessibility, api
-│   └── cost-rates.json            # token rates with TTL
+│   └── cost-rates.json            # token rates + cache_multipliers with TTL
 ├── scripts/refresh-rates.sh       # refresh cost-rates.json
 ├── lessons/{slug}.md              # GLOBAL, cross-project, gitignored
 └── preferences.md                 # local config (gitignored, optional)
@@ -266,7 +266,8 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install, e.g. ~/.claude/plugins/cach
 | `lessons_captured` | Stage 9 | Refs to global lessons added during this ticket |
 | `summary` | Stage 9 | One-paragraph wrapup |
 | `performance` | Stage 9 | Timing, agent invocation counts, convergence stats, reviewer ROI |
-| `cost` | Helper-managed (WK-3) | Token + USD totals per model, per stage, with `unknown_models[]` for lazy-fallback warnings. Maintained by `lib/helpers/cost.sh` from rates in `lib/cost-rates.json` |
+| `cost` | Helper-managed (WK-3, 6.1.0) | Token + USD totals per model, per stage, with `unknown_models[]` for lazy-fallback warnings. Maintained by `lib/helpers/cost.sh` from rates in `lib/cost-rates.json`. As of 6.1.0 also includes `transcript_reconciled` (orchestrator-side cost reconciled from Claude Code session JSONL via `lib/helpers/cost-transcript.sh`) and `delta_vs_recorded_usd` |
+| `session_ids`, `session_ids_source` | Intake / `/doer continue` (6.1.0) | Captured Claude Code session ids used to scope transcript reconciliation. Appended on every resume |
 | `inbox` | Inter-stage protocol (WK-2) | Per-ticket inbox with `blocker` / `advisory` / `fyi` messages; drained on stage entry, acked entries cleared at wrapup. Maintained by `lib/helpers/inbox.sh` |
 | `commits`, `workspace_guard`, `last_green_sha`, `last_green_test_command`, `runtime_build_command`, `lint_command`, `typecheck_command`, `test_command` | Workspace Guard / Stage 6 / Stage 7 | Bookkeeping for runtime verify, quality gate, and `/wk:publish` pre-flight |
 | `stages.<N>.{status, verified_with, ...}` | State machine | Per-stage status + stage-specific runtime fields (`retry_used` for 2/3, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha`/`per_task_gate` for 4 when `stage4_per_task_gate` is on, `parallel_subagents` for 4 when `stage4_parallel_subagents` is on, `ac_verdicts` for 7) |
@@ -384,7 +385,7 @@ The migration also runs Phase 2 auto-reverify: spot-checks completed stages whos
 - **In-flight tickets**: spot-checks fire automatically before resume.
 - **Closed tickets**: the orchestrator asks once whether to reverify.
 
-**Current version: 6.0.0** (see SKILL.md frontmatter). The 5.0.0 → 6.0.0 migration restructures the install from a single skill into a formal Claude Code plugin with five skills (`/wk:doer`, `/wk:load`, `/wk:advise`, `/wk:review`, `/wk:publish`) and rolls up the full WK-1 through WK-11 ticket series: per-ticket lock (WK-1), inter-stage inbox (WK-2), token-cost tracking (WK-3), pre-flight assumptions in Stage 2 (WK-4), opt-in per-task review gate in Stage 4 (WK-5), opt-in parallel subagents in Stage 4 (WK-6), tracker import (WK-7), advisor personas (WK-8), external PR/MR review (WK-9), publishing (WK-10), and the Stage 5 advisor-persona wiring (WK-11). The migration is idempotent and runs automatically the next time any in-flight ticket is touched. See [`CHANGELOG.md`](./CHANGELOG.md) for the per-ticket detail.
+**Current version: 6.1.0** (see SKILL.md frontmatter). 6.1.0 adds the **sub-agent delegation contract** (stages 2/3/4/5/7/8 MUST delegate LLM-heavy work via the Agent tool; the Stage Finalization Checklist enforces `agent_invocations >= 1` as a hard stop) and the **transcript-based cost backstop** (`lib/helpers/cost-transcript.sh reconcile` parses Claude Code session JSONL and records orchestrator-side token usage in `metadata.cost.transcript_reconciled`; Stage 9 narrates the delta vs. Agent-recorded cost). 6.0.0 (Phase 1) restructured the install into a formal Claude Code plugin with five skills (`/wk:doer`, `/wk:load`, `/wk:advise`, `/wk:review`, `/wk:publish`) and rolled up the full WK-1 through WK-11 ticket series: per-ticket lock (WK-1), inter-stage inbox (WK-2), token-cost tracking (WK-3), pre-flight assumptions in Stage 2 (WK-4), opt-in per-task review gate in Stage 4 (WK-5), opt-in parallel subagents in Stage 4 (WK-6), tracker import (WK-7), advisor personas (WK-8), external PR/MR review (WK-9), publishing (WK-10), and the Stage 5 advisor-persona wiring (WK-11). All migrations are idempotent and run automatically the next time any in-flight ticket is touched. See [`CHANGELOG.md`](./CHANGELOG.md) for per-version detail.
 
 ---
 

@@ -3,6 +3,11 @@
   "source": "https://claude.com/pricing#api",
   "fetched_at": "2026-05-20T00:00:00Z",
   "ttl_days": 7,
+  "cache_multipliers": {
+    "creation_5m": 1.25,
+    "creation_1h": 2.0,
+    "read": 0.1
+  },
   "rates": {
     "claude-opus-4-7": {
       "input_per_mtok": 15.00,

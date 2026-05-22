@@ -103,11 +103,13 @@ ${CLAUDE_PLUGIN_ROOT}/             # plugin install root (e.g. ~/.claude/plugins
   "typecheck_command": null,
   "test_command": null,
   "last_green_sha": null,
-  "last_green_test_command": null
+  "last_green_test_command": null,
+  "session_ids": ["<claude-code-session-uuid>"],
+  "session_ids_source": "env:CLAUDE_CODE_SESSION_ID | jsonl_fallback"
 }
 ```
 
-**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.md` enables `stage4_per_task_gate`, `parallel_subagents` for 4 when `preferences.md` enables `stage4_parallel_subagents`, `ac_verdicts` for 7).
+**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.md` enables `stage4_per_task_gate`, `parallel_subagents` for 4 when `preferences.md` enables `stage4_parallel_subagents`, `ac_verdicts` for 7). `session_ids` and `session_ids_source` are written at intake and appended on every resume; owned by the orchestrator entry-point and resume flow. `cost.transcript_reconciled` is written by `cost-transcript.sh reconcile` at Stage 9 step 12.
 
 **`code_review[].source` field semantics (added in WK-11).** Each entry in `blockers`, `suggestions`, and `info` carries an optional `source` field: `"reviewer"` (default; from the Stage 5 reviewer LLM) or `"advisor:<persona-id>"` (from a persona invoked via `/wk:advise` when `preferences.md` enables `stage5_advisor_personas`). Absence of the field is interpreted as `"reviewer"` for backward compatibility with pre-WK-11 tickets. The `advisor_personas_ran` field on iteration 1 lists which personas were dispatched; it is absent on iter 2/3 because personas do not re-run.
 

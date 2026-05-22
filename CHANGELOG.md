@@ -2,6 +2,34 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.1.0 (sub-agent delegation contract + transcript-based cost backstop)
+
+**Type:** MINOR (additive metadata fields, behavior reinforcement, new helper).
+
+### Sub-agent delegation contract
+
+- `skills/doer/SKILL.md` now requires the orchestrator to delegate LLM-heavy work via the Agent tool at every stage that produces artifacts. Stages 2 (planner), 3 (test-writer), 4 (doer / reviewer / fixer-reviewer / AUTO_FIX fixer / parallel subagents), 5 (advisor personas, PR-readiness reviewer), 7 (runtime-logger, log analyzer), and 8 (docs-updater) gained MUST / MUST NOT clauses at every delegation point.
+- New section "Sub-agent delegation contract (orchestrator MUST NOT execute LLM-heavy work inline)" added before the read-budgets table. Codifies that the orchestrator dispatches and validates; it does not produce artifacts.
+- Stage Finalization Checklist gains a hard-stop gate: `metadata.stages.<N>.agent_invocations >= 1` is required-when-complete for stages 2, 3, 4, 5, 7, 8. The orchestrator increments this counter after each successful Agent return.
+- Rationale: cost tracking via `cost.sh record` only fires on Agent returns. Tickets observed completing with `metadata.cost = null` traced back to the orchestrator drifting toward inline execution under context pressure. The MUST language plus the deterministic gate make the drift detectable and rejectable.
+
+### Transcript-based cost backstop
+
+- New helper `lib/helpers/cost-transcript.sh` with the `reconcile <TICKET-ID>` operation. Parses Claude Code session JSONL transcripts (`~/.claude/projects/<slug>/<sessionId>.jsonl` and the matching `subagents/agent-*.jsonl` files), filters by the ticket's time window, deduplicates by `message.id`, excludes compaction overhead, and writes orchestrator-side token usage to `metadata.cost.transcript_reconciled`. Best-effort: never blocks the pipeline.
+- `lib/cost-rates.json` gains a `cache_multipliers` block (`creation_5m: 1.25`, `creation_1h: 2.0`, `read: 0.1`) used by `cost-transcript.sh` to compute realistic cache pricing.
+- `lib/cost.md` documents the `transcript_reconciled` schema, the new `reconcile` operation, and the cache multiplier rule.
+- Stage 9 step 12 now runs `cost-transcript.sh reconcile` before the existing `cost.sh status` and narrates the delta between recorded (Agent-side) and reconciled (full session) cost. A large delta is a hint that the orchestrator drifted toward inline execution.
+- `metadata.json` schema gains `session_ids: []` and `session_ids_source: <"env" | "fallback" | null>`. Captured at intake from `$CLAUDE_CODE_SESSION_ID`; appended on every `/doer continue` if the new session id is not already present.
+
+### Smoke tests
+
+- `tests/helpers.sh` gains 7 smoke tests for `cost-transcript.sh` covering the happy path, deduplication, session-id tracking, missing-transcript fallback, empty `session_ids`, and `WK_COST_DISABLED`. All 24 tests pass.
+
+### Migration
+
+- `metadata.skill_version` bumps to `6.1.0`. Migration block at `lib/migrations.md` (6.0.0 -> 6.1.0) initializes `session_ids` / `session_ids_source` and back-fills `agent_invocations` on completed stages 2, 3, 4, 5, 7, 8 with `agent_invocations_backfilled: true` so the gate is forward-looking and does not retroactively block in-flight tickets.
+- `affected_stages: [2, 3, 4, 5, 7, 8]`. Phase 2 auto-reverify offers spot-checks on completed stages whose `verified_with < 6.1.0`; declining is safe because runtime artifacts are unchanged.
+
 ## 6.0.0 (plugin migration + WK-1 lock protocol + WK-2 inbox + WK-3 cost + WK-4 pre-flight assumptions + WK-5 per-task gate + WK-6 parallel subagents + WK-7 wk:load tracker import + WK-8 wk:advise persona reviewer + WK-9 wk:review external PR review + WK-10 wk:publish MR creation + WK-11 wire wk:advise into Stage 5)
 
 **Type:** MAJOR (structural; no runtime change to the 9-stage pipeline).

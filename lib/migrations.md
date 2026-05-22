@@ -597,3 +597,81 @@ jq '.skill_version = "6.0.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 - After 6.0.0 ships, future tickets (WK-2 through WK-10) will introduce more migrations as `lib/inbox`, `lib/cost`, satellite skills, and core enhancements land.
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
+### Migration: From 6.0.0 -> 6.1.0
+
+`affected_stages: [2, 3, 4, 5, 7, 8]`
+
+**Plugin-wide changes:**
+
+- Sub-agent delegation contract: stages 2, 3, 4, 5, 7, 8 MUST delegate LLM-heavy work via the Agent tool. The orchestrator MUST NOT execute planning, code-writing, test-writing, reviewing, runtime-logging, log analysis, or doc updates inline. Wording in `skills/doer/SKILL.md` reinforced with MUST / MUST NOT clauses at every delegation point and a new "Sub-agent delegation contract" section.
+- Stage Finalization Checklist gains a hard-stop gate: `metadata.stages.<N>.agent_invocations >= 1` is required-when-complete for stages 2, 3, 4, 5, 7, 8. The orchestrator increments this counter after each successful Agent return alongside the existing `cost.sh record` call.
+- Cost protocol gains a transcript-based reconciliation pass: `lib/helpers/cost-transcript.sh reconcile <ID>` parses the Claude Code session JSONL transcripts and records orchestrator-side token usage under `metadata.cost.transcript_reconciled`. Best-effort, never blocks. Stage 9 step 12 now runs reconcile before `cost.sh status`.
+- `lib/cost-rates.json` gains a `cache_multipliers` block (`creation_5m: 1.25`, `creation_1h: 2.0`, `read: 0.1`) used by `cost-transcript.sh`.
+- `metadata.json` schema gains three new fields: `session_ids: []` (array of Claude Code session ids captured at intake and at every `/doer continue`), `session_ids_source: <"env" | "fallback" | null>`, and `metadata.cost.transcript_reconciled: {}` (lazy; absent until first reconcile).
+- `metadata.skill_version` bumps to `"6.1.0"`.
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# Narrate before each step (per Core Principle 1).
+
+# 1. Initialize session_ids and session_ids_source if missing. Best-effort
+#    capture of the current session id; falls back to null if not available.
+#    Narrate: "Migration 6.0.0 -> 6.1.0, step 1/3: initializing session_ids."
+CURRENT_SESSION="${CLAUDE_CODE_SESSION_ID:-}"
+if [ -n "$CURRENT_SESSION" ]; then
+  jq --arg s "$CURRENT_SESSION" '
+    .session_ids = ((.session_ids // []) + [$s] | unique)
+    | .session_ids_source = (.session_ids_source // "env")
+  ' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+else
+  jq '
+    .session_ids = (.session_ids // [])
+    | .session_ids_source = (.session_ids_source // null)
+  ' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+fi
+
+# 2. Back-fill stages.<N>.agent_invocations for delegating stages already
+#    marked complete. Derive from metadata.performance.agents when possible
+#    (best-effort: total agent invocations on the ticket, attributed
+#    proportionally is unreliable, so we mark legacy stages as 1 when the
+#    ticket has any agent activity, else null with an explanatory note).
+#    The Agent-invocation gate only enforces on FUTURE transitions; legacy
+#    stages with null are accepted to avoid retroactive blocking.
+#    Narrate: "Migration 6.0.0 -> 6.1.0, step 2/3: back-filling agent_invocations on completed stages."
+jq '
+  (.performance.agents // {}) as $agents
+  | ([ $agents | to_entries[] | .value ] | add // 0) as $total
+  | .stages = (
+      .stages
+      | with_entries(
+          if (.key | tonumber? // -1) as $n
+             | ($n | IN(2, 3, 4, 5, 7, 8))
+             and (.value.status == "complete")
+             and (.value.agent_invocations == null or (.value | has("agent_invocations") | not))
+          then .value.agent_invocations =
+                 (if $total > 0 then 1 else null end)
+               | .value.agent_invocations_backfilled = true
+          else .
+          end
+        )
+    )
+' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+# 3. Bump skill_version to 6.1.0.
+#    Narrate: "Migration 6.0.0 -> 6.1.0, step 3/3: bumping skill_version to 6.1.0."
+jq '.skill_version = "6.1.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- The Agent-invocation gate is forward-looking. Legacy stages back-filled with `agent_invocations: null` (because the ticket had zero recorded agent activity) are NOT retroactively blocked from being `complete`; the gate only fires when a stage transitions to `complete` after this migration. The `agent_invocations_backfilled: true` marker lets a dev later distinguish back-filled values from real counts.
+- Phase 2 auto-reverify on stages 2, 3, 4, 5, 7, 8 will offer spot-checks for completed stages whose `verified_with < 6.1.0`. The dev may decline; declining is safe because runtime artifacts are unchanged. The reverify exists so that tickets that completed before this rule existed can be inspected for inline-execution drift if the dev wants.
+- Tickets in flight continue from where they were. On the next `/wk:doer continue <ID>` the orchestrator runs the Migration Check, applies this block, captures the current session id, and resumes.
+- `metadata.cost.transcript_reconciled` is created lazily on first reconcile (typically Stage 9). No back-fill needed.
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.

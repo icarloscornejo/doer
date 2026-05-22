@@ -9,7 +9,7 @@ description: >-
   in natural language (e.g. "continue", "pause", "keep going with ABC-123").
   Skips PRD, architecture design, ticket creation, PR assembly, and deployment.
   Keeps spec, plan, tests, code, review, docs, and lessons learned.
-version: 6.0.0
+version: 6.1.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -230,9 +230,35 @@ Ask the following questions **one at a time** via `AskUserQuestion`. Do not batc
      "code_review": [],
      "blocking_conditions": [],
      "commits": [],
-     "workspace_guard": null
+     "workspace_guard": null,
+     "session_ids": [],
+     "session_ids_source": null
    }
    ```
+
+   **Session ID capture (intake).** Immediately after writing `metadata.json`, capture the current session ID and append it:
+   ```bash
+   SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+   SOURCE="env:CLAUDE_CODE_SESSION_ID"
+   if [ -z "$SESSION_ID" ]; then
+     # Fallback: read most-recent sessionId value from the project JSONL directory.
+     PROJ_SLUG="$(pwd | sed 's|/|-|g')"
+     CLAUDE_CFG="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+     LATEST_JSONL="$(ls -t "${CLAUDE_CFG}/projects/${PROJ_SLUG}"/*.jsonl 2>/dev/null | grep -v 'agent-acompact' | head -1 || true)"
+     if [ -n "$LATEST_JSONL" ]; then
+       SESSION_ID="$(grep -o '"sessionId":"[^"]*"' "$LATEST_JSONL" 2>/dev/null | head -1 | sed 's|"sessionId":"||;s|"||g' || true)"
+     fi
+     SOURCE="jsonl_fallback"
+   fi
+   if [ -n "$SESSION_ID" ]; then
+     jq --arg s "$SESSION_ID" --arg src "$SOURCE" \
+       '.session_ids = [$s] | .session_ids_source = $src' \
+       ".doer/tickets/<TICKET-ID>/metadata.json" \
+       > ".doer/tickets/<TICKET-ID>/metadata.json.tmp" \
+       && mv ".doer/tickets/<TICKET-ID>/metadata.json.tmp" ".doer/tickets/<TICKET-ID>/metadata.json"
+   fi
+   ```
+   Narrate: "Session ID captured ($SOURCE)." If both env and fallback are empty, narrate: "Session ID not available; transcript cost reconciliation will be skipped at wrapup." and continue.
 
    The remaining top-level fields (`ac`, `plan`, `assumptions_validation`, `lessons_captured`, `summary`, `performance`, etc.) are populated by their owning stages and start absent.
 
@@ -335,6 +361,23 @@ Every stage that produces output (planner, test writer, code writer, code review
 
 One-line items only. No prose. Sub-agents reading the changelog look at the last 1-3 entries inline in their prompt. Terse means cheap to read AND cheap to write.
 
+### Sub-agent delegation contract (orchestrator MUST NOT execute LLM-heavy work inline)
+
+The orchestrator's job is to **dispatch and validate**, not to do the LLM-heavy work itself. The following stages MUST delegate via the Agent tool. The orchestrator MUST NOT inline the LLM work, regardless of ticket size or complexity:
+
+- Stage 2 (planner)
+- Stage 3 (test-writer; both BDD and direct-mode regression writer)
+- Stage 4 (doer iter 1, reviewer iter 1, fixer-reviewer iter 2+, AUTO_FIX fixer, parallel subagents per group)
+- Stage 5 (advisor personas, when enabled)
+- Stage 7 (runtime-logger and log-analyzer sub-agents, when run)
+- Stage 8 (docs-updater, when applicable)
+
+The orchestrator may inline: state reads/writes (metadata.json, git status, file existence checks), deterministic validation (jq queries, regex, file presence), narration, and stage transitions. Anything that would consume meaningful output tokens producing artifacts (code, prose, structured findings) MUST go through Agent.
+
+Rationale: (1) cost tracking via lib/helpers/cost.sh only fires on Agent returns; inline work is invisible to the protocol; (2) sub-agents have isolated context windows, which is necessary for read budgets to mean anything; (3) parallelism is impossible without delegation; (4) compaction-driven drift in long tickets has been observed to push the orchestrator toward inline execution. This rule exists to make that drift detectable and rejectable.
+
+---
+
 ### Read budgets (per iteration, per role)
 
 Sub-agent read budgets are SOFT limits expressed in their prompt. Goal: cap exploration cost without forbidding necessary reads. **No scratch files**: every piece of context the sub-agent needs arrives inline in the prompt (extracted from `metadata.ac`, `metadata.plan`, last N `metadata.changelog` entries, and `git diff <base>..HEAD`).
@@ -350,9 +393,9 @@ Add this line to every sub-agent prompt: *"Read budget: <N> source files. Stay w
 
 ### Iteration 1 (clean-slate, two agent calls)
 
-1. Invoke **doer** → produces artifact (the code/tests/etc. the stage owns) and returns a `changelog_appendix` object that the orchestrator persists into `metadata.changelog`.
-2. Invoke **reviewer** → returns findings JSON (BLOCKER / AUTO_FIX / SUGGESTION / INFO). Orchestrator persists as a new entry in `metadata.code_review`.
-3. **Apply AUTO_FIXes** (if any): invoke fixer pass with *"Apply each mechanically. No design changes. Return a changelog appendix with `{type: 'auto_fix', id: '<id>', text: '<change>'}` items."*
+1. MUST invoke a **doer** sub-agent via the Agent tool. It produces the artifact (the code/tests/etc. the stage owns) and returns a `changelog_appendix` object that the orchestrator persists into `metadata.changelog`. The orchestrator MUST NOT produce the artifact inline.
+2. MUST invoke a **reviewer** sub-agent via the Agent tool. It returns findings JSON (BLOCKER / AUTO_FIX / SUGGESTION / INFO). Orchestrator persists as a new entry in `metadata.code_review`. The orchestrator MUST NOT perform the review inline.
+3. **Apply AUTO_FIXes** (if any): MUST invoke a fixer sub-agent via the Agent tool with *"Apply each mechanically. No design changes. Return a changelog appendix with `{type: 'auto_fix', id: '<id>', text: '<change>'}` items."* The orchestrator MUST NOT apply AUTO_FIXes inline.
 4. Zero BLOCKERs → converged. Narrate `"Converged. N AUTO_FIXes applied. M SUGGESTIONs logged."`, auto-proceed.
 5. BLOCKERs > 0 → Iteration 2.
 
@@ -360,7 +403,7 @@ Add this line to every sub-agent prompt: *"Read budget: <N> source files. Stay w
 
 Iter 2+ is targeted fix verification. No need for fresh-eyes review on small changes the same agent just made. Halve the calls:
 
-1. Invoke **ONE combined "fixer-reviewer" agent** with the following payload **inlined in the prompt** (NOT as file reads):
+1. MUST invoke **ONE combined "fixer-reviewer" sub-agent via the Agent tool** with the following payload **inlined in the prompt** (NOT as file reads). The orchestrator MUST NOT perform fixing or reviewing inline:
    - `metadata.ac` (in_scope, out_of_scope)
    - `metadata.plan` (files, steps, tests)
    - Last 2 `metadata.changelog` entries (what changed and why)
@@ -418,14 +461,22 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | Stage | Always required | Required when status is `complete` | Required when status is `skipped` |
 |---|---|---|---|
 | 1 ac-confirm | `name`, `status`, `verified_with` | `completed_at` | `skipped_reason` |
-| 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used` | `skipped_reason` |
-| 3 tests | `name`, `status`, `verified_with`, `testing_strategy_mode` | `completed_at`, `retry_used` | `skipped_reason` |
-| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`. When `preferences.md` has `stage4_per_task_gate: true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `preferences.md` has `stage4_parallel_subagents: true` (and `stage4_per_task_gate: false`): also `pre_stage4_sha` (40-char) and `parallel_subagents.groups` (non-empty; one entry per dispatched group with `id`, `step_orders`, `dispatched`, `started_at`, `completed_at`). When `status = "blocked"` via reject (per-task gate) or via parallel error: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
-| 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`. When `preferences.md` has a non-empty `stage5_advisor_personas` list AND iter 1 actually dispatched personas: also `metadata.code_review[iteration=1].advisor_personas_ran` (non-empty list of persona ids that ran) | n/a |
+| 2 plan | `name`, `status`, `verified_with` | `completed_at`, `retry_used`, `agent_invocations` (integer >= 1) | `skipped_reason` |
+| 3 tests | `name`, `status`, `verified_with`, `testing_strategy_mode` | `completed_at`, `retry_used`, `agent_invocations` (integer >= 1) | `skipped_reason` |
+| 4 code | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`, `agent_invocations` (integer >= 1). When `preferences.md` has `stage4_per_task_gate: true`: also `pre_stage4_sha` (40-char) and `per_task_gate.decisions` (one entry per processed step). When `preferences.md` has `stage4_parallel_subagents: true` (and `stage4_per_task_gate: false`): also `pre_stage4_sha` (40-char) and `parallel_subagents.groups` (non-empty; one entry per dispatched group with `id`, `step_orders`, `dispatched`, `started_at`, `completed_at`). When `status = "blocked"` via reject (per-task gate) or via parallel error: `blocked_reason` is required instead of `iterations`/`loop_outcome`/`blockers_resolved_total` | n/a (Stage 4 is never skipped) |
+| 5 code-review | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `iterations`, `loop_outcome`, `blockers_resolved_total`, `agent_invocations` (integer >= 1). When `preferences.md` has a non-empty `stage5_advisor_personas` list AND iter 1 actually dispatched personas: also `metadata.code_review[iteration=1].advisor_personas_ran` (non-empty list of persona ids that ran) | n/a |
 | 6 quality-gate | `name`, `status`, `verified_with` | `started_at`, `completed_at`, AND either (`test_summary` if tests ran) OR (`skipped_reason = "no diff since last green"` if skip-safe path) | `skipped_reason` |
-| 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
-| 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at` | `skipped_reason` |
+| 7 runtime-verify | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `ac_verdicts`, `agent_invocations` (integer >= 1) | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
+| 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `agent_invocations` (integer >= 1) | `skipped_reason` |
 | 9 wrapup | `name`, `status`, `verified_with` | `completed_at`, `commit_message_presented`, `pr_description_presented` | n/a |
+
+**`agent_invocations` schema note.** `metadata.stages.<N>.agent_invocations` is an integer count of Agent tool calls dispatched for that stage. The orchestrator increments it after each successful Agent return, alongside the existing `cost.sh record` call. For stages `skipped`, `imported`, or `deferred`, the field is not required. For stages 1, 6, 9, the field is optional (those stages are state/coordination work with no LLM-heavy delegation).
+
+#### Agent-invocation gate
+
+Before transitioning a delegating stage (2, 3, 4, 5, 7, 8) to `complete`, the orchestrator MUST verify `metadata.stages.<N>.agent_invocations >= 1`. If 0 or absent: this is a hard stop. The orchestrator MUST NOT mark the stage `complete`. Narrate: *"Stage <N> finalization blocked: no Agent invocations recorded. The orchestrator must delegate LLM-heavy work; inline execution is not allowed."* Then either resume the stage with a proper Agent dispatch, or mark `blocked` with `blocked_reason: "no_agent_invocations"`.
+
+The `agent_invocations` counter is incremented by the orchestrator after each successful Agent return for the stage, alongside the existing cost.sh record call (see `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`).
 
 ### Top-level required fields when transitioning ticket to `status: "complete"`
 
@@ -604,11 +655,11 @@ Narrate: *"Stage 1 complete. Imported stages: {list}. Continuing to Stage {N}...
 
 **Goal:** produce a structured implementation plan persisted into `metadata.plan`.
 
-**No loop. No reviewer LLM.** A single planner agent produces the plan, then deterministic checks validate structure and coverage. If checks fail, the planner is invoked **once more** (single retry) with the BLOCKERs inline. Second failure aborts the stage and hands control to the dev.
+**No loop. No reviewer LLM.** The orchestrator MUST invoke a single planner sub-agent via the Agent tool to produce the plan; the orchestrator MUST NOT write the plan inline. Deterministic checks validate structure and coverage. If checks fail, the planner sub-agent MUST be invoked **once more** (single retry) via the Agent tool with the BLOCKERs inline. Second failure aborts the stage and hands control to the dev.
 
 **Why no loop:** the plan reviewer judged an LLM artifact before any evidence existed (no tests, no code). Most of its useful output (file existence, AC coverage, assumption presence) is mechanical and is now caught by deterministic checks. Semantic plan critique is moved downstream where the reviewer has real evidence to look at (Stage 4 / 5).
 
-**Doer agent:** general-purpose, prompted as "implementation planner".
+**Doer agent:** general-purpose, prompted as "implementation planner". MUST be invoked via the Agent tool.
 
 ### Planner prompt (skeleton)
 
@@ -798,7 +849,7 @@ If checks pass (first try or after retry):
 
 **Goal:** write tests appropriate to the ticket's `testing_strategy`. Mode is determined at intake and stored in `metadata.testing_strategy.mode`.
 
-**No loop. No reviewer LLM.** A single test-writer agent produces the tests (when applicable for the branch), then deterministic checks validate. If checks fail, the writer is invoked **once more** (single retry) with the BLOCKERs inline. Second failure aborts the stage.
+**No loop. No reviewer LLM.** The orchestrator MUST invoke a single test-writer sub-agent via the Agent tool to produce the tests (when applicable for the branch); the orchestrator MUST NOT write the tests inline. Deterministic checks validate. If checks fail, the test-writer sub-agent MUST be invoked **once more** (single retry) via the Agent tool with the BLOCKERs inline. Second failure aborts the stage.
 
 **Why no loop:** "are all ACs covered?" and "do the tests actually fail (or pass, in `direct` mode)?" are mechanical questions. The semantic critique (brittle assertions, over-mocking) is moved into the Stage 4 reviewer where the diff makes it obvious.
 
@@ -826,7 +877,7 @@ The `direct` branch DEFERS Stage 3 at first entry, lets Stage 4 commit the chang
 
 **Second entry to Stage 3 (status = `deferred`, returning from Stage 4):**
 
-The orchestrator advances to this entry from Stage 4 (see Stage 4's "Direct return" subsection). On entry, set `metadata.stages.3.status = "in_progress"` and invoke the regression test writer:
+The orchestrator advances to this entry from Stage 4 (see Stage 4's "Direct return" subsection). On entry, set `metadata.stages.3.status = "in_progress"` and MUST invoke a regression test writer sub-agent via the Agent tool. The orchestrator MUST NOT write the regression tests inline:
 
 ```
 You are the regression test writer for ticket <TICKET-ID>. The change is
@@ -901,6 +952,8 @@ All artifacts you write (tests, code comments, JSON values) MUST be in English.
 ### Branch: `bdd`
 
 Given/When/Then scenarios derived from each AC, expressed as failing executable tests. Stage 4 implements code derived from the scenarios.
+
+The orchestrator MUST invoke a single BDD scenario + test writer sub-agent via the Agent tool. The orchestrator MUST NOT write the BDD tests inline.
 
 **BDD scenario + test writer prompt (skeleton):**
 
@@ -1099,6 +1152,8 @@ Active ONLY when `preferences.md` has `stage4_parallel_subagents: true` AND `sta
 
 ### Code writer prompt (skeleton)
 
+The orchestrator MUST invoke the code writer as a sub-agent via the Agent tool for every iteration (iter 1 full-plan writer, per-task-gate single-step writer, parallel subagents per group). The orchestrator MUST NOT write implementation code inline.
+
 ```
 You are the code writer for ticket <TICKET-ID>.
 
@@ -1195,6 +1250,8 @@ Iterate `metadata.plan.files[]` to extract the expected change list. Compare wit
 
 ### Code reviewer prompt (skeleton)
 
+The orchestrator MUST invoke the code reviewer as a sub-agent via the Agent tool. The orchestrator MUST NOT perform the code review inline.
+
 ```
 You are the code reviewer for ticket <TICKET-ID>.
 
@@ -1271,7 +1328,7 @@ Run BEFORE the deterministic Pre-reviewer Checks A/B/C, but ONLY in iteration 1 
 
 **Step 2. Validate persona ids.** For each id in the list, verify `${CLAUDE_PLUGIN_ROOT}/lib/advisor-personas/<id>.json` exists. Drop missing ids with one narrated warning per missing id (`"Persona '<id>' not found in lib/advisor-personas/. Skipping."`). If the list is empty after validation, skip this block.
 
-**Step 3. Dispatch.** Invoke `/wk:advise --target ticket:<TICKET-ID> --personas <comma-list>` (or the equivalent Agent dispatch using the persona JSON files inline; see `skills/advise/SKILL.md` for the prompt template). The skill writes one file per persona at `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json`. Wait for all persona Agents to return before proceeding.
+**Step 3. Dispatch.** MUST invoke `/wk:advise --target ticket:<TICKET-ID> --personas <comma-list>` via the Agent tool (or the equivalent Agent dispatch using the persona JSON files inline; see `skills/advise/SKILL.md` for the prompt template). The orchestrator MUST NOT perform advisor reviews inline. The skill writes one file per persona at `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json`. Wait for all persona Agents to return before proceeding.
 
 **Step 4. Ingest findings.** For each `.doer/tickets/<TICKET-ID>/advisor-findings/<persona-id>.json` written this iteration, parse the `findings[]` array and route each entry by `severity`:
 
@@ -1331,7 +1388,7 @@ Any match → SUGGESTION (the dev may have intentional reasons; do not auto-fix)
 
 If Check A (secrets) produced any BLOCKERs, end the iteration and hand them to the iter-N+1 fixer (the dev cannot proceed with secrets in the diff). Skip the reviewer LLM for that iteration.
 
-Otherwise, invoke the reviewer LLM with a TIGHT scope. Stage 4's reviewer already validated correctness; do not duplicate that work here:
+Otherwise, MUST invoke the PR-readiness reviewer as a sub-agent via the Agent tool with a TIGHT scope. The orchestrator MUST NOT perform the PR-readiness review inline. Stage 4's reviewer already validated correctness; do not duplicate that work here:
 
 ```
 You are the PR-readiness reviewer for ticket <TICKET-ID>.
@@ -1511,7 +1568,7 @@ The orchestrator instructs the logger agent to use the language's basic stdout/c
 
 ### Step 1: Inject logs
 
-Invoke a general-purpose agent:
+MUST invoke a general-purpose runtime-logger sub-agent via the Agent tool. The orchestrator MUST NOT inject the debug logs inline:
 
 ```
 You are the runtime-logger agent for ticket <TICKET-ID>.
@@ -1610,7 +1667,7 @@ Paste filtered output here when ready.
 
 ### Step 4: Analyze logs
 
-When the dev pastes the log output, pass it **directly in the prompt** to the analyzer (no intermediate `runtime-log-output.txt`, the logs may be huge, no point persisting them):
+When the dev pastes the log output, MUST invoke a runtime-log analyzer sub-agent via the Agent tool, passing the log output **directly in the prompt** (no intermediate `runtime-log-output.txt`, the logs may be huge, no point persisting them). The orchestrator MUST NOT analyze the logs inline:
 
 ```
 You are the runtime-log analyzer for ticket <TICKET-ID>.
@@ -1799,6 +1856,8 @@ metadata.stages.8.skipped_reason = "no stale doc references, no new public surfa
 Continue to Stage 9.
 
 ### Invoke docs-updater (only if there is an explicit list)
+
+The orchestrator MUST invoke a docs-updater sub-agent via the Agent tool. The orchestrator MUST NOT update the documentation inline.
 
 ```
 You are the docs-updater agent for ticket <TICKET-ID>.
@@ -2108,11 +2167,14 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     ```
     Pending messages at wrapup are an anomaly; the orchestrator MUST surface them via `AskUserQuestion` and ack them out of band before continuing. Acked messages are cleared so `metadata.inbox` does not grow unbounded across reverify cycles.
 
-12. **Surface ticket cost.** Run:
+12. **Surface ticket cost.** Run the transcript reconciliation first (best-effort), then surface the status:
     ```bash
+    ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost-transcript.sh reconcile "<TICKET-ID>"
     ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh status "<TICKET-ID>"
     ```
-    Narrate the one-paragraph summary inline. Best-effort: if cost was never recorded (e.g. `WK_COST_DISABLED=1` or rates missing) the helper prints `"No cost recorded for this ticket yet."` and the orchestrator continues. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+    Narrate the one-paragraph summary from `cost.sh status` inline. Then check `metadata.cost.transcript_reconciled` (if present) and narrate: the total from Agent-return records, the total from the transcript reconciliation, and the delta. If `delta_vs_recorded_usd` is greater than 20% of the recorded total, also narrate: "The delta suggests significant orchestrator inline work not captured by Agent return records (a signal of drift toward inline execution). Consider refreshing the SKILL if this recurs."
+
+    Best-effort: if cost was never recorded (e.g. `WK_COST_DISABLED=1` or rates missing) the helper prints `"No cost recorded for this ticket yet."` and the orchestrator continues. If `transcript_reconciled` is absent (e.g. no session IDs were captured or JSONL files were not found), skip the delta narration without error. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
 
     Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
 
@@ -2181,8 +2243,33 @@ This is the path that runs when `/doer <TICKET-ID>` detects `./.doer/tickets/<TI
    - `blocked` (Stages 2 and 3 only) → re-run ONLY the deterministic checks for that stage (no new agent invocation). See "Resuming from `blocked`" subsection in the stage's docs. If checks pass, mark complete and proceed.
    - `deferred` (Stage 3 only, `direct` testing strategy) → enter the Stage 3 `direct` second-visit branch (regression test writer). See "Branch: `direct` (deferred path)" in the Stage 3 docs.
    - `complete | skipped | imported` → unexpected here (current_stage should not point at one of these). Treat as data drift: advance current_stage to the next pending stage and continue.
-7. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}{, status: {status}}." Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent, do NOT ask for further confirmation).
-8. Proceed.
+7. **Append current session ID to `metadata.session_ids`.** Best-effort; do not block resume on failure.
+   ```bash
+   SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+   SOURCE="env:CLAUDE_CODE_SESSION_ID"
+   if [ -z "$SESSION_ID" ]; then
+     PROJ_SLUG="$(pwd | sed 's|/|-|g')"
+     CLAUDE_CFG="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+     LATEST_JSONL="$(ls -t "${CLAUDE_CFG}/projects/${PROJ_SLUG}"/*.jsonl 2>/dev/null | grep -v 'agent-acompact' | head -1 || true)"
+     if [ -n "$LATEST_JSONL" ]; then
+       SESSION_ID="$(grep -o '"sessionId":"[^"]*"' "$LATEST_JSONL" 2>/dev/null | head -1 | sed 's|"sessionId":"||;s|"||g' || true)"
+     fi
+     SOURCE="jsonl_fallback"
+   fi
+   if [ -n "$SESSION_ID" ]; then
+     # Append only if not already present in the array.
+     ALREADY=$(jq -r --arg s "$SESSION_ID" '.session_ids // [] | map(select(. == $s)) | length' \
+       ".doer/tickets/<TICKET-ID>/metadata.json" 2>/dev/null || echo 0)
+     if [ "$ALREADY" = "0" ]; then
+       jq --arg s "$SESSION_ID" '.session_ids = ((.session_ids // []) + [$s])' \
+         ".doer/tickets/<TICKET-ID>/metadata.json" \
+         > ".doer/tickets/<TICKET-ID>/metadata.json.tmp" \
+         && mv ".doer/tickets/<TICKET-ID>/metadata.json.tmp" ".doer/tickets/<TICKET-ID>/metadata.json"
+     fi
+   fi
+   ```
+8. Narrate: "Resuming <TICKET-ID> at Stage {N} ({name}){, iteration {i}}{, status: {status}}." Then proceed (the user invoked `/doer continue` explicitly, so resume is the implicit intent, do NOT ask for further confirmation).
+9. Proceed.
 
 ---
 

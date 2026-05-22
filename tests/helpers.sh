@@ -13,7 +13,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCK_SH="${REPO_ROOT}/lib/helpers/lock.sh"
 INBOX_SH="${REPO_ROOT}/lib/helpers/inbox.sh"
 COST_SH="${REPO_ROOT}/lib/helpers/cost.sh"
+COST_TRANSCRIPT_SH="${REPO_ROOT}/lib/helpers/cost-transcript.sh"
 EXTRACT_SH="${REPO_ROOT}/skills/load/lib/extract-acs.sh"
+FIXTURES="${REPO_ROOT}/tests/fixtures/transcripts"
 
 PASS=0
 FAIL=0
@@ -238,9 +240,140 @@ MD
   else fail "extract-acs returns empty when no AC section" "out=$OUT"; fi
 }
 
+# ---------------------------------------------------------------------------
+# cost-transcript.sh
+# ---------------------------------------------------------------------------
+test_cost_transcript() {
+  echo "## cost-transcript.sh"
+
+  # --- rates file with cache_multipliers ---
+  new_workdir
+  cat > rates.json <<'JSON'
+{
+  "currency": "USD",
+  "fetched_at": "2026-05-22T00:00:00Z",
+  "ttl_days": 7,
+  "cache_multipliers": {
+    "creation_5m": 1.25,
+    "creation_1h": 2.0,
+    "read": 0.1
+  },
+  "rates": {
+    "claude-sonnet-4-6": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}
+  },
+  "lazy_fallback": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}
+}
+JSON
+  export WK_COST_RATES_FILE="$PWD/rates.json"
+
+  mk_meta TEST-TR-1
+
+  # Write session_ids into metadata.
+  jq '.session_ids = ["abc123"] | .session_ids_source = "env:CLAUDE_CODE_SESSION_ID"' \
+    .doer/tickets/TEST-TR-1/metadata.json > .doer/tickets/TEST-TR-1/metadata.json.tmp \
+    && mv .doer/tickets/TEST-TR-1/metadata.json.tmp .doer/tickets/TEST-TR-1/metadata.json
+
+  # Set up fake transcript directory structure.
+  mkdir -p "transcripts/abc123"
+  cp "${FIXTURES}/session-abc123.jsonl" "transcripts/abc123.jsonl"
+
+  # Run reconcile using override.
+  WK_TRANSCRIPT_DIR="$PWD/transcripts" \
+  WK_COST_RATES_FILE="$WK_COST_RATES_FILE" \
+    bash "$COST_TRANSCRIPT_SH" reconcile TEST-TR-1 2>/dev/null
+
+  # Verify transcript_reconciled was written.
+  HAS=$(jq '.cost.transcript_reconciled | type' .doer/tickets/TEST-TR-1/metadata.json)
+  if [ "$HAS" = '"object"' ]; then
+    pass "cost-transcript reconcile writes transcript_reconciled"
+  else
+    fail "cost-transcript reconcile writes transcript_reconciled" "got $HAS"
+  fi
+
+  # Verify deduplication: msg-001 appears twice in fixture; only one should be counted.
+  IN_TOK=$(jq '.cost.transcript_reconciled.total_input_tokens' .doer/tickets/TEST-TR-1/metadata.json)
+  # msg-001: 100 input, msg-002: 80 input. Total = 180 (not 280 if dup was counted).
+  if [ "$IN_TOK" = "180" ]; then
+    pass "cost-transcript deduplicates by message id"
+  else
+    fail "cost-transcript deduplicates by message id" "got ${IN_TOK}, expected 180"
+  fi
+
+  # Verify total_usd > 0.
+  USD=$(jq '.cost.transcript_reconciled.total_usd' .doer/tickets/TEST-TR-1/metadata.json)
+  if jq -n --argjson u "$USD" '$u > 0' >/dev/null 2>&1; then
+    pass "cost-transcript reconcile computes total_usd > 0"
+  else
+    fail "cost-transcript reconcile computes total_usd > 0" "got $USD"
+  fi
+
+  # Verify session_ids_processed is populated.
+  SESS_COUNT=$(jq '.cost.transcript_reconciled.session_ids_processed | length' \
+    .doer/tickets/TEST-TR-1/metadata.json)
+  if [ "$SESS_COUNT" = "1" ]; then
+    pass "cost-transcript records session_ids_processed"
+  else
+    fail "cost-transcript records session_ids_processed" "count=$SESS_COUNT"
+  fi
+
+  # --- best-effort: missing session JSONL does not abort ---
+  new_workdir
+  cat > rates.json <<'JSON'
+{
+  "currency": "USD",
+  "fetched_at": "2026-05-22T00:00:00Z",
+  "ttl_days": 7,
+  "cache_multipliers": {"creation_5m": 1.25, "creation_1h": 2.0, "read": 0.1},
+  "rates": {},
+  "lazy_fallback": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}
+}
+JSON
+  mk_meta TEST-TR-2
+  jq '.session_ids = ["missing-session"]' \
+    .doer/tickets/TEST-TR-2/metadata.json > .doer/tickets/TEST-TR-2/metadata.json.tmp \
+    && mv .doer/tickets/TEST-TR-2/metadata.json.tmp .doer/tickets/TEST-TR-2/metadata.json
+
+  mkdir -p "transcripts"
+  # No JSONL for missing-session.
+  if WK_TRANSCRIPT_DIR="$PWD/transcripts" WK_COST_RATES_FILE="$PWD/rates.json" \
+     bash "$COST_TRANSCRIPT_SH" reconcile TEST-TR-2 >/dev/null 2>&1; then
+    pass "cost-transcript exits 0 when session JSONL is missing"
+  else
+    fail "cost-transcript exits 0 when session JSONL is missing"
+  fi
+
+  # --- best-effort: no session_ids in metadata ---
+  new_workdir
+  mk_meta TEST-TR-3
+  if WK_TRANSCRIPT_DIR="$PWD/transcripts" WK_COST_RATES_FILE="$PWD/rates.json" \
+     bash "$COST_TRANSCRIPT_SH" reconcile TEST-TR-3 >/dev/null 2>&1; then
+    pass "cost-transcript exits 0 when session_ids is empty"
+  else
+    fail "cost-transcript exits 0 when session_ids is empty"
+  fi
+
+  # --- WK_COST_DISABLED=1 is a no-op ---
+  new_workdir
+  mk_meta TEST-TR-4
+  jq '.session_ids = ["abc123"]' \
+    .doer/tickets/TEST-TR-4/metadata.json > .doer/tickets/TEST-TR-4/metadata.json.tmp \
+    && mv .doer/tickets/TEST-TR-4/metadata.json.tmp .doer/tickets/TEST-TR-4/metadata.json
+  WK_COST_DISABLED=1 WK_TRANSCRIPT_DIR="$PWD/transcripts" WK_COST_RATES_FILE="$PWD/rates.json" \
+    bash "$COST_TRANSCRIPT_SH" reconcile TEST-TR-4 >/dev/null 2>&1
+  HAS=$(jq '.cost.transcript_reconciled // "absent"' .doer/tickets/TEST-TR-4/metadata.json)
+  if [ "$HAS" = '"absent"' ]; then
+    pass "cost-transcript honours WK_COST_DISABLED"
+  else
+    fail "cost-transcript honours WK_COST_DISABLED" "got $HAS"
+  fi
+
+  unset WK_COST_RATES_FILE
+}
+
 test_lock
 test_inbox
 test_cost
+test_cost_transcript
 test_extract_acs
 
 echo
