@@ -27,43 +27,16 @@ Run `/wk:publish` after `/wk:doer` reports `status: complete` on the ticket. Do 
 
 ## Invocation Forms
 
-```
-/wk:publish <TICKET-ID>
-```
-Push the branch and create a PR/MR with the default base branch (`main`).
+| Flag | Effect |
+|------|--------|
+| (none) | Push branch, create PR/MR against `main`. |
+| `--draft` | Create a draft PR/MR. |
+| `--base <branch>` | Override merge target (default `main`). |
+| `--transition <state>` | After PR/MR creation, transition the linked Jira ticket. Requires `metadata.intake.tracker.kind == "jira"`. |
+| `--dry-run` | Print the plan (branch push, title, body, Jira call) without executing any write. |
+| `--reuse` | Update the existing PR/MR (when `metadata.publish` already present) instead of creating a new one. See `${CLAUDE_PLUGIN_ROOT}/skills/publish/reuse.md`. |
 
-```
-/wk:publish <TICKET-ID> --draft
-```
-Create a draft PR/MR. Useful when you want reviewers to see the work but the ticket is not ready for merge.
-
-```
-/wk:publish <TICKET-ID> --base <branch>
-```
-Override the merge target. Default is `main`. Use this when the ticket targets a release branch or a long-lived feature branch.
-
-```
-/wk:publish <TICKET-ID> --transition <state>
-```
-After creating the PR/MR, also transition the linked Jira ticket to the named state (e.g. `--transition "In Review"`). Requires `metadata.intake.tracker.kind == "jira"`. Errors otherwise.
-
-```
-/wk:publish <TICKET-ID> --dry-run
-```
-Print what would be done (branch push, PR/MR title, body preview, Jira transition if applicable) without executing any write operation.
-
-```
-/wk:publish <TICKET-ID> --reuse
-```
-If the branch is already published and a PR/MR already exists (`metadata.publish` present), update the existing PR/MR body and title to match the latest metadata instead of creating a new one.
-
-**Combined flags are allowed.** Examples:
-
-```
-/wk:publish ABC-123 --draft --base release/2.0
-/wk:publish ABC-123 --reuse --transition "In Review"
-/wk:publish ABC-123 --dry-run --transition "In Review"
-```
+Flags combine freely. Examples: `--draft --base release/2.0`, `--reuse --transition "In Review"`, `--dry-run --transition "In Review"`.
 
 ---
 
@@ -73,13 +46,12 @@ Run all checks in order. Abort on the first failure with a clear error message n
 
 ### Check 1. Workspace guard
 
-The current working directory MUST contain a `.git/` directory and MUST NOT be `~` or `/`. Refer to `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md` for the canonical guard protocol.
+Run the canonical guard from `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md`. The minimum invariants `/wk:publish` enforces:
 
-```bash
-[ -d .git ] || { echo "ABORT: not a git repository (no .git/ in cwd)"; exit 1; }
-[ "$(pwd)" != "$HOME" ] || { echo "ABORT: cwd is home directory. Navigate to the target repo."; exit 1; }
-[ "$(pwd)" != "/" ] || { echo "ABORT: cwd is filesystem root."; exit 1; }
-```
+- cwd contains a `.git/` directory.
+- cwd is NOT `$HOME` and NOT `/`.
+
+Abort on the first failed invariant with the standard messages from the guard protocol.
 
 ### Check 2. Metadata invariants
 
@@ -188,12 +160,7 @@ ABORT: branch <branch> already exists on remote but --reuse was not passed.
 Use --reuse to update the existing PR/MR, or delete the remote branch and re-run.
 ```
 
-If `--reuse` IS set and the branch already exists, a plain `git push` (non-force) is still used. If the push is rejected (diverged history), abort and ask the dev to resolve the divergence manually:
-
-```
-ABORT: push rejected; local branch and remote branch have diverged.
-Resolve manually (rebase, reset, or force-push if appropriate), then re-run /wk:publish --reuse.
-```
+For the `--reuse` push behavior (non-force, divergence handling), see `reuse.md`.
 
 ### Step 3. Compose the PR/MR body
 
@@ -233,26 +200,18 @@ Use `Write` to produce the temp file. Never leave the temp file on disk after th
 
 ### Step 5. Issue the create command
 
-**GitHub (cloud or enterprise):**
-
+GitHub:
 ```bash
-gh pr create \
-  --base <base> \
-  --head <branch> \
+gh pr create --base <base> --head <branch> \
   --title "[<TICKET-ID>] <title>" \
-  --body-file /tmp/wk-publish-<TICKET-ID>.md \
-  [--draft]
+  --body-file /tmp/wk-publish-<TICKET-ID>.md [--draft]
 ```
 
-**GitLab (cloud or self-hosted):**
-
+GitLab:
 ```bash
-glab mr create \
-  --target-branch <base> \
-  --source-branch <branch> \
+glab mr create --target-branch <base> --source-branch <branch> \
   --title "[<TICKET-ID>] <title>" \
-  --description-file /tmp/wk-publish-<TICKET-ID>.md \
-  [--draft]
+  --description-file /tmp/wk-publish-<TICKET-ID>.md [--draft]
 ```
 
 Capture the full URL from stdout.
@@ -284,39 +243,11 @@ Jira transition: <pending | skipped>
 
 ---
 
-## --reuse: Updating an Existing PR/MR
+## --reuse Flow
 
-When `--reuse` is passed and `metadata.publish` already exists:
+When `--reuse` is passed, follow the protocol in `${CLAUDE_PLUGIN_ROOT}/skills/publish/reuse.md`. It owns: skipping the already-published guard, the non-force push step, the GitHub/GitLab update commands, and the `metadata.publish` update fields (`reused: true`, `last_updated_at`).
 
-1. Skip the "abort if already published" guard.
-2. Push the branch (same push step; non-force).
-3. Recompose the body using the same template (metadata may have changed since the last publish run).
-4. Update the existing PR/MR:
-
-   **GitHub:**
-   ```bash
-   gh pr edit "<URL or branch>" \
-     --title "[<TICKET-ID>] <title>" \
-     --body-file /tmp/wk-publish-<TICKET-ID>.md
-   ```
-
-   **GitLab:**
-   ```bash
-   glab mr update "<MR IID>" \
-     --title "[<TICKET-ID>] <title>" \
-     --description-file /tmp/wk-publish-<TICKET-ID>.md
-   ```
-
-5. Update `metadata.publish`:
-   - Keep `url`, `platform`, `branch`, `base`, `draft`, `created_at` unchanged.
-   - Set `reused: true`.
-   - Set (or overwrite) `last_updated_at: "<ISO8601>"`.
-
-6. Narrate:
-   ```
-   PR/MR updated: <URL>
-   Body and title refreshed from latest metadata.
-   ```
+If `--reuse` is passed but `metadata.publish` does NOT exist, treat the run as a first-time publish.
 
 ---
 
@@ -326,108 +257,15 @@ Only runs when ALL of the following are true:
 - `--transition <state>` was passed.
 - `metadata.intake.tracker.kind == "jira"` (provenance from `/wk:load` or manually set in metadata).
 
-If `--transition` is passed but `metadata.intake.tracker.kind` is NOT `"jira"`, abort the transition with a clear message. Do NOT roll back the PR/MR already created:
+When both conditions hold, read `${CLAUDE_PLUGIN_ROOT}/lib/jira-transition.md` and follow that protocol. It owns: env-var requirements, transition ID resolution, the POST call, success/failure persistence into `metadata.publish.jira_transition`, and the narration templates.
+
+If `--transition` is passed but `metadata.intake.tracker.kind` is NOT `"jira"`, skip the transition step (PR/MR stays live) and narrate:
 
 ```
 PR/MR created successfully: <URL>
 WARN: Jira transition requested but intake.tracker.kind is not "jira" (got: "<actual kind>").
 Skipping transition. The PR/MR is live.
 ```
-
-### Resolve the transition ID
-
-Required environment variables:
-- `WK_JIRA_EMAIL`: Jira account email.
-- `WK_JIRA_TOKEN`: Jira API token (not password).
-- `WK_JIRA_BASE_URL`: Jira base URL (e.g. `https://myorg.atlassian.net`).
-
-If any variable is unset, abort the transition step only (PR/MR is already created):
-
-```
-PR/MR created successfully: <URL>
-ABORT (Jira transition only): WK_JIRA_EMAIL, WK_JIRA_TOKEN, and WK_JIRA_BASE_URL must be set.
-Set them and re-run /wk:publish <TICKET-ID> --transition "<state>" --reuse to retry.
-```
-
-Fetch available transitions:
-
-```bash
-JIRA_ID=$(echo "<metadata.ticket_id>" | sed 's/^WK-//')  # use the raw ticket id for Jira
-curl -s \
-  -u "${WK_JIRA_EMAIL}:${WK_JIRA_TOKEN}" \
-  "${WK_JIRA_BASE_URL}/rest/api/3/issue/<jira-id>/transitions" \
-  | jq '.transitions[] | {id: .id, name: .name}'
-```
-
-Find the transition whose `name` matches the requested state (case-insensitive):
-
-```bash
-TRANSITION_ID=$(curl -s \
-  -u "${WK_JIRA_EMAIL}:${WK_JIRA_TOKEN}" \
-  "${WK_JIRA_BASE_URL}/rest/api/3/issue/<jira-id>/transitions" \
-  | jq -r --arg state "<requested state lowercased>" \
-    '.transitions[] | select((.name | ascii_downcase) == $state) | .id')
-```
-
-If no matching transition is found, fail the transition step only:
-
-```
-PR/MR created successfully: <URL>
-WARN: no Jira transition named "<state>" found on ticket <jira-id>.
-Available transitions: <comma-separated list of .name values>.
-Skipping. Re-run /wk:publish --reuse --transition "<correct name>" to retry.
-```
-
-### POST the transition
-
-```bash
-HTTP_STATUS=$(curl -s -o /tmp/jira-transition-response.json -w "%{http_code}" \
-  -X POST \
-  -u "${WK_JIRA_EMAIL}:${WK_JIRA_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "{\"transition\": {\"id\": \"${TRANSITION_ID}\"}}" \
-  "${WK_JIRA_BASE_URL}/rest/api/3/issue/<jira-id>/transitions")
-```
-
-A `204` response indicates success. Any other status code is a failure.
-
-### On success
-
-Persist into `metadata.publish.jira_transition`:
-
-```json
-"jira_transition": {
-  "to_state": "<requested state as passed>",
-  "transition_id": "<id>",
-  "transitioned_at": "<ISO8601>"
-}
-```
-
-Narrate:
-
-```
-Jira ticket <jira-id> transitioned to "<state>".
-```
-
-### On failure
-
-Persist into `metadata.publish.jira_transition`:
-
-```json
-"jira_transition": {
-  "error": "HTTP <status>: <first 200 chars of response body>"
-}
-```
-
-Narrate:
-
-```
-PR/MR created successfully: <URL>
-ERROR (Jira transition): HTTP <status>. See metadata.publish.jira_transition.error.
-Re-run /wk:publish <TICKET-ID> --reuse --transition "<state>" after resolving auth.
-```
-
-Exit with a non-zero code so the dev knows the Jira step failed and the PR/MR was not rolled back.
 
 ---
 
@@ -475,169 +313,18 @@ The skill is safe to re-run with `--reuse`. Without `--reuse`, it aborts if `met
 
 ## --dry-run Mode
 
-When `--dry-run` is passed, skip all write operations and print a preview:
+Skip all write operations (push, create, edit, Jira POST) and print a preview block: branch and target, title, base, draft flag, full composed body, and the Jira step status (`Would transition <jira-id> to '<state>'` or `Not requested`).
 
-```
-DRY RUN: no changes will be made.
-
-Would push branch: <branch> -> origin
-Would create PR/MR on: <platform> (<origin URL>)
-Title: [<TICKET-ID>] <title>
-Base: <base>
-Draft: <yes | no>
-
---- PR/MR body preview ---
-<full composed body>
---------------------------
-
-Jira transition: <"Would transition <jira-id> to '<state>'" | "Not requested">
-```
-
-Dry-run does NOT write `metadata.publish`. It is safe to run repeatedly.
+Dry-run does NOT write `metadata.publish`. Safe to run repeatedly.
 
 ---
 
 ## Edge Cases
 
-### Detached HEAD
-
-If `git rev-parse --abbrev-ref HEAD` returns `HEAD` (detached), abort at Check 3:
-
-```
-ABORT: repository is in detached HEAD state. Check out the feature branch first:
-  git checkout <branch from metadata.branch>
-Then re-run /wk:publish.
-```
-
-### No remote configured
-
-If `git remote get-url origin` fails, abort at the platform detection step:
-
-```
-ABORT: no remote named 'origin' found.
-Add the remote: git remote add origin <URL>
-Then re-run /wk:publish.
-```
-
-### Required CLI not installed
-
-If `gh` or `glab` is not on PATH, abort after platform detection:
-
-```
-ABORT: platform detected as GitHub but 'gh' is not installed.
-Install it from https://cli.github.com/ and run 'gh auth login', then re-run.
-
-ABORT: platform detected as GitLab but 'glab' is not installed.
-Install it from https://gitlab.com/gitlab-org/cli and run 'glab auth login', then re-run.
-```
-
-### Authentication failure
-
-If `gh auth status` or `glab auth status` exits non-zero, abort:
-
-```
-ABORT: gh authentication check failed. Run 'gh auth login' and re-run /wk:publish.
-ABORT: glab authentication check failed. Run 'glab auth login' and re-run /wk:publish.
-```
-
-Authentication failure for the Jira API (HTTP 401 or 403 on the transitions call) does NOT roll back the PR/MR. The error is recorded in `metadata.publish.jira_transition.error` and the dev is instructed to re-run with `--reuse --transition`.
-
-### metadata.json missing
-
-```
-ABORT: .doer/tickets/<TICKET-ID>/metadata.json not found.
-Has the ticket been started with /wk:doer? Expected path: .doer/tickets/<TICKET-ID>/metadata.json
-```
-
-### Ticket not complete
-
-```
-ABORT: ticket <TICKET-ID> status is "<current status>", not "complete".
-Finish all 9 doer stages (/wk:doer <TICKET-ID>) before publishing.
-```
+Abort conditions for detached HEAD, missing remote, missing CLI, auth failure, missing `metadata.json`, and incomplete ticket are documented in `${CLAUDE_PLUGIN_ROOT}/skills/publish/edge-cases.md`. Read on demand when a run aborts.
 
 ---
 
 ## Worked Examples
 
-### Example 1. GitHub draft PR
-
-Developer finishes ticket `FEAT-42` on branch `feature/add-dark-mode`. No Jira link.
-
-```
-/wk:publish FEAT-42 --draft
-```
-
-Execution:
-1. Check 1: `.git/` present, cwd is not `~` or `/`. Pass.
-2. Check 2: `metadata.json` exists, `status == "complete"`, `branch == "feature/add-dark-mode"`, `summary` is non-empty, `last_green_sha` is 40 chars and matches `git rev-parse feature/add-dark-mode`. Pass.
-3. Check 3: current HEAD matches `last_green_sha`. Pass.
-4. Check 4: `git ls-remote origin HEAD` succeeds. Pass.
-5. Platform detection: `origin` URL contains `github.com`. Platform is GitHub.
-6. `gh auth status` succeeds.
-7. No `metadata.publish` exists. Proceeding.
-8. `git push -u origin feature/add-dark-mode` succeeds.
-9. Body composed and written to `/tmp/wk-publish-FEAT-42.md`.
-10. `gh pr create --base main --head feature/add-dark-mode --title "[FEAT-42] Add dark mode" --body-file /tmp/wk-publish-FEAT-42.md --draft` returns `https://github.com/org/repo/pull/88`.
-11. `metadata.publish` persisted with `platform: "github"`, `url`, `draft: true`.
-12. Temp file removed.
-
-Narration:
-```
-PR created: https://github.com/org/repo/pull/88
-Branch: feature/add-dark-mode -> main
-Draft: yes
-Jira transition: skipped (not requested)
-```
-
-### Example 2. GitLab MR with custom base
-
-Developer finishes ticket `BE-7` targeting the `develop` branch on a self-hosted GitLab instance.
-
-```
-/wk:publish BE-7 --base develop
-```
-
-Execution:
-1. Checks 1-4 pass.
-2. Platform detection: `origin` URL is `git@gitlab.mycompany.com:backend/api.git`. Pattern matches GitLab self-hosted. Platform is GitLab.
-3. `glab auth status` succeeds.
-4. No `metadata.publish` exists. Proceeding.
-5. `git push -u origin feature/be-7-fix-auth` succeeds.
-6. Body composed. `glab mr create --target-branch develop --source-branch feature/be-7-fix-auth --title "[BE-7] Fix auth token expiry" --description-file /tmp/wk-publish-BE-7.md` returns `https://gitlab.mycompany.com/backend/api/-/merge_requests/14`.
-7. `metadata.publish` persisted with `platform: "gitlab"`, `base: "develop"`, `draft: false`.
-
-Narration:
-```
-MR created: https://gitlab.mycompany.com/backend/api/-/merge_requests/14
-Branch: feature/be-7-fix-auth -> develop
-Draft: no
-Jira transition: skipped (not requested)
-```
-
-### Example 3. GitHub PR with Jira transition
-
-Developer finishes ticket `PLAT-99` linked to Jira via `/wk:load` (`metadata.intake.tracker.kind == "jira"`). Wants to transition the ticket to "In Review" after PR creation.
-
-```
-/wk:publish PLAT-99 --transition "In Review"
-```
-
-Execution:
-1. Checks 1-4 pass.
-2. Platform is GitHub. `gh auth status` succeeds.
-3. PR created at `https://github.com/org/platform/pull/212`. `metadata.publish` persisted.
-4. `--transition "In Review"` is set and `metadata.intake.tracker.kind == "jira"`. Proceeding with Jira transition.
-5. `WK_JIRA_EMAIL`, `WK_JIRA_TOKEN`, `WK_JIRA_BASE_URL` are all set. Proceeding.
-6. Fetch transitions for `PLAT-99`. Match `"In Review"` (case-insensitive) to transition ID `31`.
-7. POST transition. HTTP 204. Success.
-8. `metadata.publish.jira_transition` persisted.
-9. Temp file removed.
-
-Narration:
-```
-PR created: https://github.com/org/platform/pull/212
-Branch: feature/plat-99-logging -> main
-Draft: no
-Jira transition: PLAT-99 transitioned to "In Review".
-```
+Three end-to-end runs (GitHub draft PR, GitLab MR with custom base, GitHub PR with Jira transition) live in `${CLAUDE_PLUGIN_ROOT}/skills/publish/examples.md`. Read on demand only when verifying expected behavior.

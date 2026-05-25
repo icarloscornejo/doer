@@ -2,6 +2,30 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.3.1 (protocol and docs slimming)
+
+**Type:** PATCH (file reorganization plus README/AGENTS slim; no orchestrator behavior change, no `metadata.json` shape change).
+
+### What changed
+
+- `skills/publish/SKILL.md` slimmed from 469 to 330 lines. The `--reuse` flow and abort scenarios moved to `skills/publish/{reuse.md, edge-cases.md}` and are loaded on demand from the dispatcher. Invocation Forms collapsed to a table; create commands compacted.
+- `skills/doer/stages/01-ac-confirm.md` slimmed from 326 to 172 lines. The full Step 6.5 AC self-review protocol (taxonomy, sub-agent prompt, finding promotion, dev iteration, failure modes) moved to `skills/doer/stages/01-ac-self-review.md`. The dispatcher keeps a one-paragraph contract pointer.
+- `lib/migrations.md` slimmed from 724 to 340 lines. All migration blocks from `1.x -> 2.0.0` through `4.0.1 -> 5.0.0` (eight blocks) archived to `lib/migrations/legacy.md`. The Migration Check loads `legacy.md` ONLY when `metadata.skill_version < 5.0.0` and walks its blocks until the ticket version reaches `5.0.0`, then resumes against the live blocks.
+- `README.md` slimmed from 423 to 321 lines. Per-version changelog paragraph removed (CHANGELOG.md is the source of truth), `metadata.json` schema table replaced by a pointer to `lib/memory-paths.md`, ancillary mermaid diagrams replaced with tables/bullets, locale and opt-in feature sections compacted.
+- `AGENTS.md` repo tree updated to reflect the current state (stages directory, per-skill auxiliary files, new `lib/` files). Legacy `WK-N` framing dropped from the "add a feature" guidance.
+- `preferences.md` (the legacy 6.2.0 markdown shim, replaced by `${CLAUDE_CONFIG_DIR}/wk/preferences.json`) and `ROADMAP.md` (closed WK-1 through WK-11, no pending tickets) deleted from the repo.
+- `lib/debugging.md` brought under version control. Already referenced by Stage 4, Stage 5, Stage 7, the doer dispatcher, and AGENTS.md prior to this version; the file body is unchanged from how those references already use it.
+- `metadata.skill_version` bumps to `6.3.1`.
+
+### Why
+
+Three skills (`publish`, `01-ac-confirm`, `migrations`) had grown above the recommended 300-line cap, with the heaviest content (rarely-combined flows, opt-in protocols, archived migrations) loaded eagerly even when the dispatcher never needed it. The README also duplicated CHANGELOG content and several large mermaid diagrams that were less scannable than tables. Splitting them along the existing "rarely used together" / "load on demand" boundary keeps the dispatchers lean without changing any contract.
+
+### Migration
+
+- Migration block `lib/migrations.md` 6.3.0 -> 6.3.1 is a single `jq` skill_version bump. `affected_stages: []`, so Phase 2 auto-reverify is a no-op for this version.
+- Subagents that previously read inline Step 6.5 / `--reuse` / pre-5.0.0 migration blocks now follow pointers; protocols are byte-equivalent to the prior versions, just relocated.
+
 ## 6.3.0 (Stage 1 AC self-review)
 
 **Type:** MINOR (additive metadata field, additive opt-in flag, new sub-step in Stage 1; no existing field shape changed).

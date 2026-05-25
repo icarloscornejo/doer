@@ -25,7 +25,7 @@ After installing, the 5 skills are available:
 /wk:publish ABC-123    # create PR/MR + transition Jira (opt-in, operational)
 ```
 
-All 4 satellite skills (`load`, `advise`, `review`, `publish`) shipped in 6.0.0 via tickets WK-7 through WK-10 and are operational. See ROADMAP.md and CHANGELOG.md for details.
+All 4 satellite skills (`load`, `advise`, `review`, `publish`) shipped in 6.0.0 via tickets WK-7 through WK-10 and are operational. See `CHANGELOG.md` for per-version detail.
 
 ## Initial setup
 
@@ -39,29 +39,37 @@ After installing:
 
 ```
 doer/
-|- .claude-plugin/plugin.json     # official manifest
-|- .claude-plugin/marketplace.json
-|- skills/                        # 5 skills
-|  |- doer/                       # orchestrator (operational)
-|  |- load/                       # operational (WK-7, shipped in 6.0.0)
-|  |- advise/                     # operational (WK-8, shipped in 6.0.0)
-|  |- review/                     # operational (WK-9, shipped in 6.0.0)
-|  |- publish/                    # operational (WK-10, shipped in 6.0.0)
-|- lib/                           # shared protocols
-|  |- heartbeat.md                # anti-compaction
-|  |- migrations.md               # versioning + auto-migrate
-|  |- narration.md                # Core Principle 1, em-dash rule, locale
-|  |- workspace-guard.md          # install check + .doer/ exclude
-|  |- memory-paths.md             # canonical paths + metadata.json schema
-|  |- lock.md                     # operational (WK-1, shipped in 6.0.0)
-|  |- inbox.md                    # operational (WK-2, shipped in 6.0.0)
-|  |- cost.md                     # operational (WK-3, shipped in 6.0.0)
-|  |- cost-rates.json             # seeded rates (WK-3, shipped in 6.0.0)
-|  |- helpers/                    # executable scripts (lock.sh, inbox.sh, cost.sh, cost-transcript.sh, preferences.sh)
-|  |- advisor-personas/           # JSON personas for /wk:advise (WK-8, shipped in 6.0.0)
-|- scripts/refresh-rates.sh       # operational (WK-3, shipped in 6.0.0)
-|- lessons/                       # global, cross-project (5 files)
-|- ROADMAP.md                     # design decisions + roadmap
+|- .claude-plugin/{plugin,marketplace}.json
+|- skills/                              # 5 user-invocable skills
+|  |- doer/SKILL.md                     # 9-stage orchestrator (lean dispatcher)
+|  |  |- stages/                        # per-stage protocols loaded on demand
+|  |  |  |- 01-ac-confirm.md ... 09-wrapup.md
+|  |  |  |- _intake.md, _resume.md, _commands.md
+|  |- load/{SKILL.md, examples.md, lib/extract-acs.sh}
+|  |- advise/SKILL.md
+|  |- review/{SKILL.md, examples.md}
+|  |- publish/{SKILL.md, examples.md, reuse.md, edge-cases.md}
+|- lib/                                 # shared protocols
+|  |- principles.md                     # Core principles
+|  |- narration.md                      # locale + em-dash rule
+|  |- workspace-guard.md                # install check + .doer/ exclude
+|  |- memory-paths.md                   # canonical paths + metadata.json schema
+|  |- heartbeat.md                      # anti-compaction
+|  |- stage-checklist.md                # Stage Finalization Checklist
+|  |- loop.md                           # doer/reviewer convergence pattern
+|  |- debugging.md                      # root-cause protocol for fixers
+|  |- migrations.md                     # active migrations (>=5.0.0) + protocol header
+|  |- migrations/legacy.md              # archived migrations (1.x -> 5.0.0), lazy-loaded
+|  |- lock.md, inbox.md, cost.md        # per-ticket coordination
+|  |- jira-transition.md                # Jira REST sub-protocol (loaded by /wk:publish)
+|  |- cost-rates.json
+|  |- helpers/                          # executable: lock.sh, inbox.sh, cost.sh,
+|  |                                    #   cost-transcript.sh, preferences.sh
+|  |- advisor-personas/                 # JSON personas for /wk:advise and /wk:review
+|- scripts/refresh-rates.sh
+|- lessons/                             # global, cross-project (5 files)
+|- tests/{helpers.sh, fixtures/}
+|- AGENTS.md, README.md, CHANGELOG.md, LICENSE
 ```
 
 Personal preferences (locale, opt-in flags) live OUTSIDE the repo and outside the versioned plugin cache: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (since 6.2.0).
@@ -70,9 +78,9 @@ Personal preferences (locale, opt-in flags) live OUTSIDE the repo and outside th
 
 If the user pastes the URL of this repo and says "install this", run the ritual above.
 
-If they ask "help me use it", read `skills/doer/SKILL.md` (it is the orchestrator and contains the full 9-stage flow).
+If they ask "help me use it", read `skills/doer/SKILL.md` (lean dispatcher; it points to per-stage protocols under `skills/doer/stages/`).
 
-If they ask "add a feature to the plugin", check `ROADMAP.md` for the planned `WK-N` ticket order.
+If they ask "add a feature to the plugin", read `CHANGELOG.md` for the most recent shipped version, then propose a new minor/major version with a descriptive slug (NOT a `WK-N` ticket, the WK-1..WK-11 series is closed).
 
 ## License
 

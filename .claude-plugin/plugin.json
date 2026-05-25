@@ -1,7 +1,7 @@
 {
   "name": "wk",
   "displayName": "Doer Work Kit",
-  "version": "6.3.0",
+  "version": "6.3.1",
   "description": "Ticket execution orchestrator. Takes a pre-defined ticket from acceptance criteria to implementation-ready code on a feature branch. Includes satellite skills for tracker import, advisor review, MR review, and publishing.",
   "author": {
     "name": "Carlos Cornejo"
