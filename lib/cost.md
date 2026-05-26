@@ -25,8 +25,12 @@ Lives at `metadata.cost` (top-level object in `./.doer/tickets/<TICKET-ID>/metad
     "claude-sonnet-4-6": { ... }
   },
   "by_stage": {
-    "4": {"calls": 7, "usd": 0.5},
-    "5": {"calls": 5, "usd": 0.42}
+    "4": {"calls": 7, "input_tokens": 120000, "output_tokens": 30000, "usd": 0.5},
+    "5": {"calls": 5, "input_tokens": 80000,  "output_tokens": 20000, "usd": 0.42}
+  },
+  "by_agent": {
+    "code-writer":   {"calls": 3, "input_tokens": 80000, "output_tokens": 20000, "usd": 0.54},
+    "code-reviewer": {"calls": 2, "input_tokens": 60000, "output_tokens": 15000, "usd": 0.41}
   },
   "unknown_models": [
     {"model": "claude-future-model-1", "calls": 2, "first_seen": "<ISO8601>"}
@@ -55,7 +59,9 @@ Lives at `metadata.cost` (top-level object in `./.doer/tickets/<TICKET-ID>/metad
 ```
 
 - `total_usd` is rounded to 6 decimals on every write.
-- `by_model` and `by_stage` are append-update; `unknown_models` lists any model id not present in `cost-rates.json` at record time.
+- `by_model`, `by_stage`, and `by_agent` are append-update; `unknown_models` lists any model id not present in `cost-rates.json` at record time.
+- `by_stage` tracks `input_tokens`, `output_tokens`, `calls`, and `usd` per stage number (key `"unassigned"` if `--stage` is omitted).
+- `by_agent` tracks `input_tokens`, `output_tokens`, `calls`, and `usd` per agent name passed via `--agent`. Only populated when `--agent` is provided.
 - `transcript_reconciled` is written by `cost-transcript.sh reconcile` (best-effort, does not touch other fields). `delta_vs_recorded_usd` = transcript total minus `total_usd` recorded via Agent returns; a large positive delta indicates significant orchestrator inline work not captured by the standard `record` flow.
 - `cache_creation_tokens` in `transcript_reconciled` aggregates `cache_creation_input_tokens` from the transcript regardless of the 5m vs 1h tier split, because the billing distinction is resolved from `usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` when available.
 
@@ -117,7 +123,7 @@ The orchestrator MUST call these via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh`
 |-----------|-----------|----------|
 | `record <ID>` | `--model <id> --input <tokens> --output <tokens> [--stage <N>] [--agent <name>]` | Update `metadata.cost` totals + `by_model[<id>]` + `by_stage[<N>]`. Unknown models use the `lazy_fallback` rate, append to `unknown_models`, and warn once per model to stderr. |
 | `total <ID>` | (none) | Print `metadata.cost` as JSON. Empty object if nothing has been recorded yet. |
-| `status <ID>` | (none) | Print a human-readable one-paragraph summary: total tokens, total USD, top-3 models, top-3 stages, any unknown models, rate file age. |
+| `status <ID>` | (none) | Print a human-readable tabular summary: total tokens + USD, breakdown by stage (sorted by stage number), by agent (sorted by USD desc), by model (sorted by USD desc), unknown models, rates age warning if stale, transcript reconciliation delta if available. |
 
 For transcript reconciliation (reads `~/.claude/projects/` JSONL files), use `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost-transcript.sh`:
 
@@ -149,7 +155,8 @@ The fallback rate is intentionally close to mid-tier Sonnet pricing; it errs sli
 
 ## Configuration
 
-- `WK_COST_DISABLED=1` skips all `record` calls (useful in tests).
+- `WK_COST_DISABLED=1` skips all `record` and `reconcile` calls. **Test use only.** Cost tracking is always-on by default and must remain so in all developer environments — there is no valid reason to disable it in production use. Only the test suite sets this flag.
+- `WK_COST_RATES_FILE=<path>` overrides the rates file location (also for tests).
 - No other env vars.
 
 ## What this protocol does NOT do

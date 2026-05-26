@@ -130,6 +130,7 @@ case "$CMD" in
         total_usd: 0,
         by_model: {},
         by_stage: {},
+        by_agent: {},
         unknown_models: []
       })
       | .cost.total_input_tokens  += ${IN_TOK}
@@ -143,10 +144,23 @@ case "$CMD" in
           | .usd = ((.usd + ${USD}) * 1000000 | round / 1000000)
         )
       | .cost.by_stage[\"${STAGE_KEY}\"] = (
-          (.cost.by_stage[\"${STAGE_KEY}\"] // {calls:0, usd:0})
+          (.cost.by_stage[\"${STAGE_KEY}\"] // {calls:0, input_tokens:0, output_tokens:0, usd:0})
           | .calls += 1
+          | .input_tokens  += ${IN_TOK}
+          | .output_tokens += ${OUT_TOK}
           | .usd = ((.usd + ${USD}) * 1000000 | round / 1000000)
         )
+      $(if [ -n "$AGENT" ]; then
+          printf '%s' "
+          | .cost.by_agent[\"${AGENT}\"] = (
+              (.cost.by_agent[\"${AGENT}\"] // {calls:0, input_tokens:0, output_tokens:0, usd:0})
+              | .calls += 1
+              | .input_tokens  += ${IN_TOK}
+              | .output_tokens += ${OUT_TOK}
+              | .usd = ((.usd + ${USD}) * 1000000 | round / 1000000)
+            )
+          "
+        fi)
       $(if [ "$UNKNOWN" = "1" ]; then
           printf '%s' "
           | (if (.cost.unknown_models | map(.model) | index(\"${MODEL}\")) == null
@@ -164,31 +178,52 @@ case "$CMD" in
 
   status)
     RATES_FILE=$(resolve_rates_file) || true
+    RATES_AGE_WARNING=""
     if [ -n "$RATES_FILE" ]; then
       FETCHED_AT=$(jq -r '.fetched_at' "$RATES_FILE")
       TTL_DAYS=$(jq -r '.ttl_days' "$RATES_FILE")
       FETCHED_EPOCH=$(iso_to_epoch "$FETCHED_AT" 2>/dev/null || echo 0)
       AGE_DAYS=$(( ( $(now_epoch) - FETCHED_EPOCH ) / 86400 ))
       if [ "$AGE_DAYS" -ge "$TTL_DAYS" ]; then
-        echo "cost.sh: rates file is ${AGE_DAYS}d old (TTL ${TTL_DAYS}d). Refresh with scripts/refresh-rates.sh." >&2
+        RATES_AGE_WARNING="[WARN] Rates file is ${AGE_DAYS}d old (TTL ${TTL_DAYS}d). Run: scripts/refresh-rates.sh"
       fi
     fi
 
-    jq -r '
+    jq -r --arg warn "$RATES_AGE_WARNING" '
+      def fmt_tok(n): if n >= 1000000 then "\(n/1000000 * 10 | round / 10)M" elif n >= 1000 then "\(n/1000 * 10 | round / 10)k" else "\(n)" end;
+      def fmt_usd(v): "$\(v * 100 | round / 100)";
       if (.cost // null) == null then
         "No cost recorded for this ticket yet."
       else
         (.cost) as $c
-        | ($c.by_model // {} | to_entries | sort_by(-.value.usd) | .[0:3]
-            | map("\(.key)=$\(.value.usd)") | join(", ")) as $top_models
-        | ($c.by_stage // {} | to_entries | sort_by(-.value.usd) | .[0:3]
-            | map("stage \(.key)=$\(.value.usd)") | join(", ")) as $top_stages
-        | ($c.unknown_models // [] | map(.model) | join(", ")) as $unknown
-        | "Cost: $\($c.total_usd) USD (input \($c.total_input_tokens) tok, output \($c.total_output_tokens) tok). "
-          + (if $top_models == "" then "" else "Top models: \($top_models). " end)
-          + (if $top_stages == "" then "" else "Top stages: \($top_stages). " end)
-          + (if $unknown == "" then "" else "Unknown models seen: \($unknown). " end)
-          + "Rates fetched_at \($c.rates_fetched_at)."
+        | "\n=== Cost Summary ===\n"
+        + "Total: \(fmt_usd($c.total_usd))  |  input \(fmt_tok($c.total_input_tokens)) tok  |  output \(fmt_tok($c.total_output_tokens)) tok\n"
+        + "\n--- By Stage ---\n"
+        + ($c.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
+            | map("  Stage \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+            | if length == 0 then "  (none)" else join("\n") end)
+        + "\n\n--- By Agent ---\n"
+        + ($c.by_agent // {} | to_entries | sort_by(-.value.usd)
+            | map("  \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+            | if length == 0 then "  (none recorded)" else join("\n") end)
+        + "\n\n--- By Model ---\n"
+        + ($c.by_model // {} | to_entries | sort_by(-.value.usd)
+            | map("  \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens)) / out \(fmt_tok(.value.output_tokens)))")
+            | if length == 0 then "  (none)" else join("\n") end)
+        + (if ($c.unknown_models // []) | length > 0
+           then "\n\n[WARN] Unknown models (used lazy_fallback rates): " + ($c.unknown_models | map(.model) | join(", "))
+           else "" end)
+        + (if ($c.transcript_reconciled // null) != null
+           then
+             ($c.transcript_reconciled) as $tr
+             | "\n\n--- Transcript Reconciliation ---\n"
+             + "  Recorded (Agent returns): \(fmt_usd($c.total_usd))\n"
+             + "  Transcript (incl. cache):  \(fmt_usd($tr.total_usd))\n"
+             + "  Delta: \(fmt_usd($tr.delta_vs_recorded_usd))"
+             + (if ($tr.warnings // []) | length > 0 then "\n  Warnings: " + ($tr.warnings | join("; ")) else "" end)
+           else "" end)
+        + "\n\nRates from: \($c.rates_fetched_at)"
+        + (if $warn != "" then "\n\($warn)" else "" end)
       end
     ' "$META"
     ;;

@@ -2,6 +2,40 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.4.0 (auto-squash, cost breakdown, version check)
+
+**Type:** MINOR (three new dev-facing behaviors; no breaking changes, no `metadata.json` schema incompatibilities with 6.3.x tickets).
+
+### What changed
+
+**Auto-squash at wrapup (Stage 9, Step 7)**
+- After presenting the recommended commit message, doer now asks: *"Want me to squash all branch commits into one now?"*
+- On `Yes`: creates a backup ref, runs `git reset --soft <base> && git commit --no-verify -m "<message>"`, verifies exactly 1 commit remains, narrates the backup ref for rollback.
+- On `No`: behavior unchanged — dev squashes manually with the recommended message.
+- If only 1 commit exists already, skips the squash silently.
+- Persists `metadata.stages.9.squash_performed` and `squash_backup_ref` for audit.
+- Closing narration branches: if squash was done, says "1 commit (squashed)" and drops the manual squash instruction.
+
+**Full cost breakdown by stage, agent, and model (always-on)**
+- `cost.sh record` now persists `input_tokens` and `output_tokens` inside `by_stage` entries (previously only `calls` and `usd`).
+- New `by_agent` bucket: when `--agent <name>` is passed, accumulates `calls`, `input_tokens`, `output_tokens`, and `usd` per agent role.
+- `cost.sh status` replaced one-paragraph prose with a structured report: `=== Cost Summary ===` + sections `--- By Stage ---`, `--- By Agent ---`, `--- By Model ---`, transcript reconciliation delta (if available), and stale-rates warning.
+- Stage 9 Step 12 now prints the full `cost.sh status` output verbatim instead of paraphrasing it.
+- `narration.md` updated: `--agent` is now required on every `cost.sh record` call, with canonical role names (`planner`, `code-writer`, `code-reviewer`, etc.).
+- `WK_COST_DISABLED=1` explicitly documented as test-only. Cost tracking is always-on by default and must not be disabled in developer environments.
+
+**Version check at startup**
+- New Entry-point Step 2 in `skills/doer/SKILL.md`: on every `/wk:doer` invocation, fetches `.claude-plugin/plugin.json` from `origin/main` via `curl` (5s timeout, best-effort).
+- If a newer version is available, narrates a one-line banner at the top of the response with update instructions, in the dev's locale (EN/ES).
+- Network failure or timeout: silent, never blocks ticket work.
+- README updated: `/plugins` panel "Update now" is now the recommended update path (Option A); CLI sequence is Option B.
+
+### Migration
+
+No metadata changes. In-flight 6.3.x tickets resume without modification.
+
+`metadata.skill_version` bumps to `6.4.0` on next stage transition.
+
 ## 6.3.1 (protocol and docs slimming)
 
 **Type:** PATCH (file reorganization plus README/AGENTS slim; no orchestrator behavior change, no `metadata.json` shape change).

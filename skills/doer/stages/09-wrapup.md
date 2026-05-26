@@ -158,6 +158,44 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
    After presenting, write `metadata.stages.9.commit_message_presented = true` into `metadata.json`.
 
+   **Offer to squash now.** Immediately after presenting the message, ask via `AskUserQuestion`:
+
+   *"Want me to squash all branch commits into one now using the message above? I'll create a backup ref first so you can roll back."*
+
+   Options: `Yes` / `No, I'll squash manually`.
+
+   **If the dev says Yes:**
+
+   a. Count commits to squash:
+      ```bash
+      git log <base>..HEAD --oneline
+      ```
+      If there is only 1 commit, narrate: *"Only one commit on the branch — nothing to squash. Continuing."* and skip to step 8.
+
+   b. Create a backup ref:
+      ```bash
+      BACKUP_REF="refs/doer-backup/<TICKET-ID>-pre-squash-$(date +%s)"
+      git update-ref "$BACKUP_REF" HEAD
+      ```
+
+   c. Squash all commits since `<base>` into one using soft-reset + commit:
+      ```bash
+      git reset --soft <base>
+      git commit --no-verify -m "<recommended message>"
+      ```
+
+   d. Verify the result:
+      ```bash
+      git log <base>..HEAD --oneline
+      ```
+      Must show exactly 1 commit with the chosen message. If not, narrate the discrepancy and ask the dev how to proceed before continuing.
+
+   e. Narrate: *"Squashed to 1 commit: `<message>`. Backup ref: `$BACKUP_REF` (rollback: `git reset --hard $BACKUP_REF`)."*
+
+   f. Write `metadata.stages.9.squash_performed = true` and `metadata.stages.9.squash_backup_ref = "<BACKUP_REF>"` into `metadata.json`.
+
+   **If the dev says No:** write `metadata.stages.9.squash_performed = false` into `metadata.json` and continue to step 8 unchanged.
+
 8. **Help with the PR description.**
 
    First, auto-detect a template in the repo. Standard locations (in priority order):
@@ -252,15 +290,20 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     ```
     Pending messages at wrapup are an anomaly; the orchestrator MUST surface them via `AskUserQuestion` and ack them out of band before continuing. Acked messages are cleared so `metadata.inbox` does not grow unbounded across reverify cycles.
 
-12. **Surface ticket cost.** Run the transcript reconciliation first (best-effort), then surface the status:
+12. **Surface ticket cost.** Run the transcript reconciliation first (best-effort), then the status report:
     ```bash
     ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost-transcript.sh reconcile "<TICKET-ID>"
     ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh status "<TICKET-ID>"
     ```
-    Narrate the one-paragraph summary from `cost.sh status` inline. Then check `metadata.cost.transcript_reconciled` (if present) and narrate: the total from Agent-return records, the total from the transcript reconciliation, and the delta. If `delta_vs_recorded_usd` is greater than 20% of the recorded total, also narrate: "The delta suggests significant orchestrator inline work not captured by Agent return records (a signal of drift toward inline execution). Consider refreshing the SKILL if this recurs."
+    Print the full output of `cost.sh status` verbatim — it now produces a structured breakdown by stage, agent, and model. Do NOT paraphrase or summarize it.
 
-    Best-effort: if cost was never recorded (e.g. `WK_COST_DISABLED=1` or rates missing) the helper prints `"No cost recorded for this ticket yet."` and the orchestrator continues. If `transcript_reconciled` is absent (e.g. no session IDs were captured or JSONL files were not found), skip the delta narration without error. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+    If `delta_vs_recorded_usd` (from `metadata.cost.transcript_reconciled`) is greater than 20% of the recorded total, add a one-line note: *"Delta >20% — significant orchestrator inline work not captured by Agent return records. Consider refreshing the SKILL if this recurs."*
 
-    Then narrate: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
+    Best-effort: if `cost.sh status` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means `cost.sh record` was never called (e.g. no Agent invocations exposed token counts). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+
+    Then narrate, branching on whether the squash was performed:
+
+    - If `metadata.stages.9.squash_performed == true`: *"Ticket <TICKET-ID> complete. 1 commit on `<branch>` (squashed). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, paste the PR description above, then push and open the PR manually."*
+    - Otherwise: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*
 
 Run the Stage Finalization Checklist (`${CLAUDE_PLUGIN_ROOT}/lib/stage-checklist.md`) before marking the ticket complete.

@@ -11,7 +11,7 @@ description: >-
   "keep going with ABC-123"). Skips PRD, architecture design, ticket creation,
   PR assembly, and deployment. Keeps spec, plan, tests, code, review, docs,
   and lessons learned.
-version: 6.3.1
+version: 6.4.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -111,7 +111,26 @@ If `DETECTED == "en"`, proceed in English silently.
 
 The resolved locale binds the entire chat output for this invocation.
 
-### 2. Acquire per-ticket lock
+### 2. Check for plugin updates (non-blocking)
+
+Fetch the latest published version from GitHub and compare it to the installed version. Best-effort: if the network call fails or takes more than 5 seconds, skip silently with no narration.
+
+```bash
+INSTALLED_VERSION="$(grep '^version:' "${CLAUDE_PLUGIN_ROOT}/skills/doer/SKILL.md" | head -1 | awk '{print $2}')"
+LATEST_VERSION="$(curl -sf --max-time 5 \
+  "https://raw.githubusercontent.com/icarloscornejo/doer/main/.claude-plugin/plugin.json" \
+  | jq -r '.version // empty' 2>/dev/null || true)"
+```
+
+If `LATEST_VERSION` is non-empty AND `LATEST_VERSION != INSTALLED_VERSION`:
+
+Narrate once at the top of the response (in the resolved locale):
+- **English:** *"[wk update available: v<LATEST_VERSION>] You are running v<INSTALLED_VERSION>. Update from the /plugins panel or run: `claude plugin marketplace update wk && claude plugin uninstall wk && claude plugin install wk@wk` then restart Claude Code."*
+- **Spanish:** *"[wk actualización disponible: v<LATEST_VERSION>] Tienes instalada la v<INSTALLED_VERSION>. Actualiza desde el panel /plugins o ejecuta: `claude plugin marketplace update wk && claude plugin uninstall wk && claude plugin install wk@wk` y reinicia Claude Code."*
+
+Then proceed normally — this check NEVER blocks ticket work.
+
+### 3. Acquire per-ticket lock
 
 For every command that operates on a specific `<TICKET-ID>` (start, resume, status, verify, cleanup-history), acquire the lock per `${CLAUDE_PLUGIN_ROOT}/lib/lock.md` before touching `metadata.json`. Release at end of stage 9 step 10 (or on any error path that stops the orchestrator). `status` and `list` are read-only and skip the lock.
 

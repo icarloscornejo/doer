@@ -1,6 +1,6 @@
 # Doer Work Kit (`wk`)
 
-**Ticket execution orchestrator for Claude Code.** Plugin version 6.3.1.
+**Ticket execution orchestrator for Claude Code.** Plugin version 6.4.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
@@ -20,7 +20,11 @@ claude plugin list
 
 The plugin ships five operational skills (see "Included skills" below). After install, set your locale with `/wk:doer locale es` (or any ISO 639-1 code). The setting persists at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` and survives plugin upgrades.
 
-**Updates** (uninstall + reinstall is the working flow; `claude plugin update wk` is broken upstream):
+**Updates** — doer notifies you at the start of each session when a newer version is published. To update:
+
+**Option A — GUI (recommended):** open the `/plugins` panel in Claude Code, find `wk`, and click **Update now**.
+
+**Option B — CLI** (`claude plugin update wk` is broken upstream; use this instead):
 
 ```bash
 claude plugin marketplace update wk
