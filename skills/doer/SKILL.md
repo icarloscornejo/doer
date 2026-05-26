@@ -125,8 +125,8 @@ LATEST_VERSION="$(curl -sf --max-time 5 \
 If `LATEST_VERSION` is non-empty AND `LATEST_VERSION != INSTALLED_VERSION`:
 
 Narrate once at the top of the response (in the resolved locale):
-- **English:** *"[wk update available: v<LATEST_VERSION>] You are running v<INSTALLED_VERSION>. Update from the /plugins panel or run: `claude plugin marketplace update wk && claude plugin uninstall wk && claude plugin install wk@wk` then restart Claude Code."*
-- **Spanish:** *"[wk actualización disponible: v<LATEST_VERSION>] Tienes instalada la v<INSTALLED_VERSION>. Actualiza desde el panel /plugins o ejecuta: `claude plugin marketplace update wk && claude plugin uninstall wk && claude plugin install wk@wk` y reinicia Claude Code."*
+- **English:** *"[wk update available: v<LATEST_VERSION>] You are running v<INSTALLED_VERSION>. Update from the /plugins panel or run: `claude plugin update wk@wk` then restart Claude Code."*
+- **Spanish:** *"[wk actualización disponible: v<LATEST_VERSION>] Tienes instalada la v<INSTALLED_VERSION>. Actualiza desde el panel /plugins o ejecuta: `claude plugin update wk@wk` y reinicia Claude Code."*
 
 Then proceed normally — this check NEVER blocks ticket work.
 

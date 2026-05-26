@@ -24,12 +24,10 @@ The plugin ships five operational skills (see "Included skills" below). After in
 
 **Option A — GUI (recommended):** open the `/plugins` panel in Claude Code, find `wk`, and click **Update now**.
 
-**Option B — CLI** (`claude plugin update wk` is broken upstream; use this instead):
+**Option B — CLI** (use the full plugin id `wk@wk`, not the short name `wk`):
 
 ```bash
-claude plugin marketplace update wk
-claude plugin uninstall wk
-claude plugin install wk@wk
+claude plugin update wk@wk
 # restart Claude Code so the new version loads
 ```
 
