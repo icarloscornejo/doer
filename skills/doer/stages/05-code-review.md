@@ -115,6 +115,21 @@ ${CLAUDE_PLUGIN_ROOT}/lib/loop.md for classification rules.
 Read budget: 3 files max beyond what's in the diff.
 ```
 
+## Record cost (after every Stage 5 Agent return)
+
+This rule applies to EVERY Agent dispatched in Stage 5: each advisor persona Agent (when `stage5_advisor_personas` is set), the iter 1 PR-readiness reviewer, the iter 2+ combined fixer-reviewer, and any AUTO_FIX fixer. After each Agent return, the return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
+  --model <model-id-from-Agent-return> \
+  --input <usage.input_tokens> \
+  --output <usage.output_tokens> \
+  --stage 5 \
+  --agent <role>
+```
+
+Where `<role>` is `code-reviewer` for the PR-readiness reviewer, `code-fixer-reviewer` for the iter 2+ combined Agent, `auto-fix-fixer` for the AUTO_FIX pass, and `advisor:<persona-id>` for each advisor persona Agent (e.g. `advisor:security`, `advisor:performance`). Increment `metadata.stages.5.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+
 ## Debugging discipline (when fixing failures)
 
 When the iter 2+ combined fixer-reviewer (or any AUTO_FIX fixer) is responding to a BLOCKER that indicates incorrect behavior (not style, formatting, or pure mechanical cleanup), the prompt MUST include this instruction verbatim:

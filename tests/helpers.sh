@@ -371,6 +371,85 @@ JSON
   unset WK_COST_RATES_FILE
 }
 
+test_cost_status_orchestrator_only() {
+  echo "## cost.sh status (orchestrator-only)"
+
+  new_workdir
+  cat > rates.json <<'JSON'
+{
+  "currency": "USD",
+  "fetched_at": "2026-05-20T00:00:00Z",
+  "ttl_days": 7,
+  "rates": {"claude-opus-4-7": {"input_per_mtok": 15.0, "output_per_mtok": 75.0}},
+  "lazy_fallback": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}
+}
+JSON
+  export WK_COST_RATES_FILE="$PWD/rates.json"
+
+  mkdir -p .doer/tickets/TEST-OO/
+  cat > .doer/tickets/TEST-OO/metadata.json <<'JSON'
+{
+  "ticket_id": "TEST-OO",
+  "cost": {
+    "currency": "USD",
+    "rates_fetched_at": "2026-05-20T00:00:00Z",
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "total_usd": 0,
+    "by_model": {},
+    "by_stage": {},
+    "by_agent": {},
+    "unknown_models": [],
+    "transcript_reconciled": {
+      "reconciled_at": "2026-05-26T00:00:00Z",
+      "session_ids_processed": ["s1"],
+      "total_input_tokens": 12345,
+      "total_output_tokens": 6789,
+      "total_cache_creation_tokens": 1000,
+      "total_cache_read_tokens": 500,
+      "total_usd": 0.5,
+      "by_model": {
+        "claude-opus-4-7": {"input_tokens": 12345, "output_tokens": 6789, "cache_creation_tokens": 1000, "cache_read_tokens": 500, "usd": 0.5}
+      },
+      "delta_vs_recorded_usd": 0.5,
+      "warnings": []
+    }
+  }
+}
+JSON
+
+  OUT=$(bash "$COST_SH" status TEST-OO)
+  if echo "$OUT" | grep -q "Cost Summary (orchestrator-only)" \
+     && echo "$OUT" | grep -q "Per-Agent records: none captured" \
+     && echo "$OUT" | grep -q "Transcript total" \
+     && echo "$OUT" | grep -q "claude-opus-4-7"; then
+    pass "cost status renders orchestrator-only summary when total_usd is 0"
+  else
+    fail "cost status renders orchestrator-only summary when total_usd is 0" "out=$OUT"
+  fi
+
+  if echo "$OUT" | grep -q "No cost recorded for this ticket yet"; then
+    fail "cost status does not print 'No cost recorded' when transcript exists"
+  else
+    pass "cost status does not print 'No cost recorded' when transcript exists"
+  fi
+
+  # Sanity: the regular path still renders when total_usd > 0.
+  jq '.cost.total_usd = 1.23 | .cost.total_input_tokens = 50000 | .cost.total_output_tokens = 10000 | .cost.by_stage = {"4": {"calls": 1, "input_tokens": 50000, "output_tokens": 10000, "usd": 1.23}}' \
+    .doer/tickets/TEST-OO/metadata.json > .doer/tickets/TEST-OO/metadata.json.tmp \
+    && mv .doer/tickets/TEST-OO/metadata.json.tmp .doer/tickets/TEST-OO/metadata.json
+  OUT=$(bash "$COST_SH" status TEST-OO)
+  if echo "$OUT" | grep -q "=== Cost Summary ===" \
+     && echo "$OUT" | grep -q "Transcript Reconciliation" \
+     && ! echo "$OUT" | grep -q "orchestrator-only"; then
+    pass "cost status renders normal breakdown when total_usd > 0"
+  else
+    fail "cost status renders normal breakdown when total_usd > 0" "out=$OUT"
+  fi
+
+  unset WK_COST_RATES_FILE
+}
+
 test_preferences() {
   echo "## preferences.sh"
 
@@ -449,6 +528,7 @@ test_lock
 test_inbox
 test_cost
 test_cost_transcript
+test_cost_status_orchestrator_only
 test_preferences
 test_extract_acs
 

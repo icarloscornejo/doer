@@ -83,9 +83,9 @@ Mark imported stages in `metadata.json`:
 
 If a plan was imported but isn't written down, prompt the user to paste/summarize it. Either way, persist the result into `metadata.plan` using the schema documented in `${CLAUDE_PLUGIN_ROOT}/lib/memory-paths.md` (or orchestrator drafts the structured plan from the summary + diff and the user confirms). Same pattern for imported tests/code (note their file paths in `metadata.stages.<N>.imported_paths`).
 
-## Step 6: AC confirmation (single combined check)
+## Step 6: AC draft (build only, do NOT present yet)
 
-Build the full draft (ACs + Out of Scope + Open Questions) BEFORE asking anything. Present everything as one block, ask ONE question, iterate.
+Build the full draft (ACs + Out of Scope + Open Questions) in memory. Do NOT present to the dev or ask any question here — Step 6.5 owns the single user-facing question.
 
 **Branch on `metadata.testing_strategy.mode` before building the AC list:**
 
@@ -102,36 +102,16 @@ Then in both branches:
 1. Build the AC list per the branch above.
 2. Build the **Out of Scope** list (items the dev should NOT confuse for in-scope).
 3. Build the **Open Questions** list with proposed resolutions for each.
-4. Present the entire draft as one block:
 
-   ```
-   Draft for Stage 1 (testing strategy: <DIRECT | BDD>):
-
-   ## Acceptance Criteria
-   - AC-1: <branch-appropriate format>
-   - AC-2: ...
-
-   ## Out of Scope
-   - <item 1>
-   - <item 2>
-
-   ## Open Questions (proposed resolutions)
-   - Q: <question> -> A: <proposed answer>
-
-   Approve the whole block, or tell me what to edit. [Y / edit <section>:<change> / redo]
-   ```
-
-5. If the user replies `Y` → accept all and proceed to Step 6.5.
-6. If the user gives edits → apply them and re-present the block (loop until approved).
-7. If the user says `redo` → start over from item 1.
-
-ONE question for the entire Stage 1 contract. No item-by-item drilling.
+Hold this draft in memory and proceed immediately to Step 6.5.
 
 ## Step 6.5: AC self-review (opt-in, default on)
 
-After Step 6 produces an approved-by-the-dev draft, BEFORE persisting in Step 7, run the AC self-review protocol at `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/01-ac-self-review.md`. It owns: reading the `stage1_ac_self_review` flag, dispatching the `ac-reviewer` sub-agent (via Agent tool, single round, no loop), parsing/validating findings, promoting blockers to Open Questions, re-presenting the block with Self-review notes, incrementing `metadata.stages.1.agent_invocations`, and the non-fatal failure modes.
+Run the AC self-review protocol at `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/01-ac-self-review.md` against the draft built in Step 6 BEFORE presenting anything to the dev. It owns: reading the `stage1_ac_self_review` flag, dispatching the `ac-reviewer` sub-agent (via Agent tool, single round, no loop), parsing/validating findings, promoting blockers to Open Questions, presenting the enriched block to the dev with Self-review notes, collecting the dev's single approval, incrementing `metadata.stages.1.agent_invocations`, and the non-fatal failure modes.
 
-When the flag is `false` OR the protocol fails, fall through to the original Step 6 block and proceed to Step 7. Step 6.5 MUST NEVER abort Stage 1.
+ONE question for the entire Stage 1 contract, asked by Step 6.5 (not Step 6). No item-by-item drilling.
+
+When the flag is `false` OR the protocol fails, Step 6.5 falls back to presenting the original Step 6 draft block (without Self-review notes) and asks the dev to approve. Step 6.5 MUST NEVER abort Stage 1.
 
 ## Step 7: Persist `metadata.ac`
 

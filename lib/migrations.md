@@ -375,3 +375,48 @@ jq '.skill_version = "6.3.1"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 - Subagents that previously read the inline Step 6.5 / `--reuse` / pre-5.0.0 migration blocks now follow the pointers; the protocols themselves are byte-equivalent to the prior versions, just relocated.
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
+### Migration: From 6.3.1 -> 6.4.0
+
+`affected_stages: []` (no metadata shape change; additive behavior + new `squash_performed` / `squash_backup_ref` optional fields written only by Stage 9)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Bump skill_version to 6.4.0. No metadata rewrite needed.
+#    Narrate: "Migration 6.3.1 -> 6.4.0, step 1/1: bumping skill_version to 6.4.0."
+jq '.skill_version = "6.4.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No data backfill. The new `metadata.stages.9.squash_performed` and `squash_backup_ref` fields are only written when Stage 9 runs the auto-squash prompt. Pre-6.4.0 tickets that already completed Stage 9 do not need them.
+- Phase 2 auto-reverify is a no-op (`affected_stages: []`).
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
+### Migration: From 6.4.0 -> 6.5.0
+
+`affected_stages: []` (no metadata shape change; protocol changes are in orchestrator instructions only)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Bump skill_version to 6.5.0. No metadata rewrite needed.
+#    Narrate: "Migration 6.4.0 -> 6.5.0, step 1/1: bumping skill_version to 6.5.0."
+jq '.skill_version = "6.5.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No data backfill. The per-stage cost recording instructions (Stages 1–5, 7, 8) are orchestrator-side; they take effect on the next Agent dispatch in any stage. In-flight tickets that already completed stages before 6.5.0 will simply have no `cost.sh record` entries for those stages, which is already the normal pre-6.5.0 behavior.
+- The `cost.sh status` orchestrator-only render path activates automatically when `total_usd == 0` but a transcript exists; no migration step required.
+- Phase 2 auto-reverify is a no-op (`affected_stages: []`).
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.

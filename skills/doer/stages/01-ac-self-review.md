@@ -1,13 +1,13 @@
 # Stage 1 - Step 6.5: AC self-review (opt-in, default on)
 
-**Goal:** confront the draft built in Step 6 against the original intake (`description`, `raw_acs`, `context`) and surface affirmations, gaps, and blockers BEFORE the dev approves the block. The dev still answers ONE question for the entire Stage 1 contract; Step 6.5 only enriches the block presented in Step 6 by adding a "Self-review notes" section and (when applicable) promoting blocker findings into the Open Questions list.
+**Goal:** confront the draft built in Step 6 against the original intake (`description`, `raw_acs`, `context`) and surface affirmations, gaps, and blockers BEFORE the dev sees the block. Step 6.5 is the ONLY place where the block is presented to the dev and the single approval question is asked. Step 6 builds the draft silently; Step 6.5 enriches it with Self-review notes (and promotes blocker findings into Open Questions) before showing it.
 
 **Step 6.5 MUST NEVER abort Stage 1.** Single round, no loop, no retry on malformed output. See Failure modes at the bottom.
 
 ## A. Read the flag
 
 Run `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-flag stage1_ac_self_review`. The helper emits `"true"`, `"false"`, or empty (unset). Treat empty as `"true"` (the default in `ensure_file()` is `true`; pre-existing preferences files written before 6.3.0 will return empty and SHOULD opt in by default).
-- Output `"false"` → skip Step 6.5 entirely, set `metadata.ac.self_review = {"ran": false, "reason": "flag disabled"}`, proceed to Step 7.
+- Output `"false"` → skip to the **Fallback path** at the bottom of this file (present the Step 6 draft without Self-review notes and collect the single dev approval), set `metadata.ac.self_review = {"ran": false, "reason": "flag disabled"}`, then proceed to Step 7.
 - Empty or `"true"` → continue to B.
 
 ## B. Dispatch the `ac-reviewer` sub-agent
@@ -153,9 +153,49 @@ Iteration rules (mirror Step 6):
 
 Set `metadata.stages.1.agent_invocations = (metadata.stages.1.agent_invocations | 0) + 1`. The Stage Finalization Checklist still treats this field as optional for Stage 1, so when the flag is `false` no increment occurs and existing tickets without the field stay unchanged.
 
+## F.1. Record cost (after the ac-reviewer Agent return)
+
+The Agent return exposes the model id and a usage block with `input_tokens` and `output_tokens`. After the Agent returns, run, best-effort:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
+  --model <model-id-from-Agent-return> \
+  --input <usage.input_tokens> \
+  --output <usage.output_tokens> \
+  --stage 1 \
+  --agent ac-reviewer
+```
+
+If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks Stage 1 (the surrounding rule that Step 6.5 MUST NEVER abort still applies). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+
 ## Failure modes (all non-fatal)
 
 Step 6.5 MUST NEVER abort Stage 1.
-- Agent tool error or timeout → narrate one warning (`"AC self-review skipped: <reason>"`), set `metadata.ac.self_review = {"ran": false, "reason": "<reason>"}`, fall through to the original Step 6 single-question block (no Self-review notes section).
+- Agent tool error or timeout → narrate one warning (`"AC self-review skipped: <reason>"`), set `metadata.ac.self_review = {"ran": false, "reason": "<reason>"}`, fall through to the **Fallback path** below.
 - Malformed JSON / shape violation → same as above with `reason: "malformed output"`.
-- Empty `findings` array (zero items) → treat as a successful run with no findings; the dev still sees the standard Step 6 block plus a Self-review notes section reading `(no findings)`. Persist `metadata.ac.self_review = {"ran": true, "iteration": 1, "findings": [], "dev_accepted": [], "dev_rejected": []}`.
+- Empty `findings` array (zero items) → treat as a successful run with no findings; present the standard block plus a Self-review notes section reading `(no findings)`. Persist `metadata.ac.self_review = {"ran": true, "iteration": 1, "findings": [], "dev_accepted": [], "dev_rejected": []}`.
+
+## Fallback path (flag disabled or failure)
+
+Present the Step 6 draft as-is (no Self-review notes section) and ask the ONE approval question:
+
+```
+Draft for Stage 1 (testing strategy: <DIRECT | BDD>):
+
+## Acceptance Criteria
+- AC-1: <branch-appropriate format>
+- AC-2: ...
+
+## Out of Scope
+- <item 1>
+
+## Open Questions (proposed resolutions)
+- Q: <question> -> A: <proposed answer>
+
+Approve the whole block, or tell me what to edit. [Y / edit <section>:<change> / redo]
+```
+
+Iteration rules:
+- `Y` → proceed to Step 7.
+- `edit ...` → apply edits, re-present.
+- `redo` → start over from Step 6 item 1 in `01-ac-confirm.md`.

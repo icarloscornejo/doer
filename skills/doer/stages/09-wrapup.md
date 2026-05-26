@@ -106,7 +106,7 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
    No sidecar file. Everything is in `metadata.json` and the dev (or `/doer status`) reads it from there.
 
-4. **Update `metadata.json`:** `status: "complete"`, `completed_at: <ISO8601>`. Set `metadata.stages.9.status = "complete"`, `metadata.stages.9.verified_with = <SKILL version>`.
+4. **Update `metadata.json` baseline fields (NOT yet complete).** Write `status: "complete"`, `completed_at: <ISO8601>`, and `metadata.stages.9.verified_with = <SKILL version>`. Do NOT write `metadata.stages.9.status = "complete"` here — that field is written LAST, at the end of the Stage Finalization Checklist after step 9 confirms both flags. Writing it here would misrepresent steps 5-9 as already done.
 
 5. **PR-ready history cleanup**: remove `.doer/` from prior commits on the feature branch:
    ```bash
@@ -295,13 +295,23 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost-transcript.sh reconcile "<TICKET-ID>"
     ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh status "<TICKET-ID>"
     ```
-    Print the full output of `cost.sh status` verbatim — it now produces a structured breakdown by stage, agent, and model. Do NOT paraphrase or summarize it.
 
-    If `delta_vs_recorded_usd` (from `metadata.cost.transcript_reconciled`) is greater than 20% of the recorded total, add a one-line note: *"Delta >20% — significant orchestrator inline work not captured by Agent return records. Consider refreshing the SKILL if this recurs."*
+    Before printing the status output, narrate this two-layer framing verbatim (the dev needs the model to read the breakdown correctly):
 
-    Best-effort: if `cost.sh status` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means `cost.sh record` was never called (e.g. no Agent invocations exposed token counts). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+    > *"Cost tracking has two layers. The per-stage, per-agent, per-model breakdown below comes from `cost.sh record` calls after each sub-agent return. The Transcript Reconciliation total includes those PLUS the orchestrator's own tokens (read from session JSONLs) and any cache costs. The Delta line is the orchestrator-only portion."*
 
-    Then narrate, branching on whether the squash was performed:
+    Then print the full output of `cost.sh status` verbatim. Do NOT paraphrase or summarize it. The helper now handles three render paths:
+    - Recorded sub-agent total > 0: full breakdown plus a Transcript Reconciliation block.
+    - Recorded total == 0 but transcript total > 0: a degraded "orchestrator-only" summary (still useful).
+    - Both zero: the literal `"No cost recorded for this ticket yet."` (rare; means both layers failed).
+
+    After printing the status output, branch on the deltas (read `metadata.cost.transcript_reconciled` directly via `jq` to avoid re-parsing the helper's text):
+    - If `delta_vs_recorded_usd / total_usd > 0.5` (orchestrator-side work was a large share of recorded sub-agent cost), narrate one extra line: *"Orchestrator-side work was a large share of this ticket. Look at where stages dispatched cheap to sub-agents but did expensive inline reasoning."*
+    - Else if `delta_vs_recorded_usd / total_usd > 0.2` (the prior threshold), narrate: *"Delta >20%: notable orchestrator inline work not captured by Agent return records. Consider refreshing the SKILL if this recurs."*
+
+    Best-effort: if `cost.sh status` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means BOTH `cost.sh record` was never called (no Agent invocations exposed token counts) AND the transcript reconciler had nothing to read (likely empty `metadata.session_ids`). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+
+    Then narrate the closing sentence. This is NOT freeform — present it VERBATIM, branching ONLY on `squash_performed`. Do NOT substitute, reorder, expand, or summarize this sentence:
 
     - If `metadata.stages.9.squash_performed == true`: *"Ticket <TICKET-ID> complete. 1 commit on `<branch>` (squashed). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, paste the PR description above, then push and open the PR manually."*
     - Otherwise: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*

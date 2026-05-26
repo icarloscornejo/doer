@@ -220,6 +220,21 @@ Branches:
 - **NEED_MORE_DATA** → keep logs, loop back to Step 3
 - **Override** → honor dev's choice, record reason
 
+## Record cost (after every Stage 7 Agent return)
+
+This rule applies to EVERY Agent dispatched in Stage 7: the runtime-logger (Step 1), the runtime-log analyzer (Step 4), and any cleanup Agent (Step 5 residual or drift removal). After each Agent return, the return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
+  --model <model-id-from-Agent-return> \
+  --input <usage.input_tokens> \
+  --output <usage.output_tokens> \
+  --stage 7 \
+  --agent <role>
+```
+
+Where `<role>` is `runtime-logger` (Step 1 and the Step 5 residual remover), `log-analyzer` (Step 4), or `runtime-cleanup` (Step 5 drift remover). Increment `metadata.stages.7.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+
 ## Step 5: Cleanup
 
 ```bash

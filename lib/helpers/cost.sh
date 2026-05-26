@@ -192,39 +192,51 @@ case "$CMD" in
     jq -r --arg warn "$RATES_AGE_WARNING" '
       def fmt_tok(n): if n >= 1000000 then "\(n/1000000 * 10 | round / 10)M" elif n >= 1000 then "\(n/1000 * 10 | round / 10)k" else "\(n)" end;
       def fmt_usd(v): "$\(v * 100 | round / 100)";
-      if (.cost // null) == null then
-        "No cost recorded for this ticket yet."
-      else
-        (.cost) as $c
-        | "\n=== Cost Summary ===\n"
-        + "Total: \(fmt_usd($c.total_usd))  |  input \(fmt_tok($c.total_input_tokens)) tok  |  output \(fmt_tok($c.total_output_tokens)) tok\n"
-        + "\n--- By Stage ---\n"
-        + ($c.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
-            | map("  Stage \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
-            | if length == 0 then "  (none)" else join("\n") end)
-        + "\n\n--- By Agent ---\n"
-        + ($c.by_agent // {} | to_entries | sort_by(-.value.usd)
-            | map("  \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
-            | if length == 0 then "  (none recorded)" else join("\n") end)
-        + "\n\n--- By Model ---\n"
-        + ($c.by_model // {} | to_entries | sort_by(-.value.usd)
-            | map("  \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens)) / out \(fmt_tok(.value.output_tokens)))")
-            | if length == 0 then "  (none)" else join("\n") end)
-        + (if ($c.unknown_models // []) | length > 0
-           then "\n\n[WARN] Unknown models (used lazy_fallback rates): " + ($c.unknown_models | map(.model) | join(", "))
-           else "" end)
-        + (if ($c.transcript_reconciled // null) != null
-           then
-             ($c.transcript_reconciled) as $tr
-             | "\n\n--- Transcript Reconciliation ---\n"
-             + "  Recorded (Agent returns): \(fmt_usd($c.total_usd))\n"
-             + "  Transcript (incl. cache):  \(fmt_usd($tr.total_usd))\n"
-             + "  Delta: \(fmt_usd($tr.delta_vs_recorded_usd))"
-             + (if ($tr.warnings // []) | length > 0 then "\n  Warnings: " + ($tr.warnings | join("; ")) else "" end)
-           else "" end)
-        + "\n\nRates from: \($c.rates_fetched_at)"
-        + (if $warn != "" then "\n\($warn)" else "" end)
-      end
+      (.cost // null) as $c
+      | (if $c == null then null else ($c.transcript_reconciled // null) end) as $tr
+      | (($c // {}).total_usd // 0) as $rec
+      | if $c == null then
+          "No cost recorded for this ticket yet."
+        elif $rec == 0 and $tr != null and ($tr.total_usd // 0) > 0 then
+          "\n=== Cost Summary (orchestrator-only) ===\n"
+          + "Per-Agent records: none captured (cost.sh record was not called).\n"
+          + "Transcript total (orchestrator + sub-agents + cache): \(fmt_usd($tr.total_usd))\n"
+          + "  input \(fmt_tok($tr.total_input_tokens // 0)) tok / output \(fmt_tok($tr.total_output_tokens // 0)) tok / cache_creation \(fmt_tok($tr.total_cache_creation_tokens // 0)) / cache_read \(fmt_tok($tr.total_cache_read_tokens // 0))\n"
+          + "\n--- By Model (transcript) ---\n"
+          + ($tr.by_model // {} | to_entries | sort_by(-.value.usd)
+              | map("  \(.key): \(fmt_usd(.value.usd))  (in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)) / cc \(fmt_tok(.value.cache_creation_tokens // 0)) / cr \(fmt_tok(.value.cache_read_tokens // 0)))")
+              | if length == 0 then "  (none)" else join("\n") end)
+          + (if ($tr.warnings // []) | length > 0 then "\n\n[WARN] " + ($tr.warnings | join("; ")) else "" end)
+          + "\n\n[INFO] No per-stage / per-agent breakdown is available because cost.sh record was not called for any Agent return. The transcript total above is the authoritative cost figure."
+          + (if $warn != "" then "\n\($warn)" else "" end)
+        else
+          "\n=== Cost Summary ===\n"
+          + "Total: \(fmt_usd($c.total_usd))  |  input \(fmt_tok($c.total_input_tokens)) tok  |  output \(fmt_tok($c.total_output_tokens)) tok\n"
+          + "\n--- By Stage ---\n"
+          + ($c.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
+              | map("  Stage \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+              | if length == 0 then "  (none)" else join("\n") end)
+          + "\n\n--- By Agent ---\n"
+          + ($c.by_agent // {} | to_entries | sort_by(-.value.usd)
+              | map("  \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+              | if length == 0 then "  (none recorded)" else join("\n") end)
+          + "\n\n--- By Model ---\n"
+          + ($c.by_model // {} | to_entries | sort_by(-.value.usd)
+              | map("  \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens)) / out \(fmt_tok(.value.output_tokens)))")
+              | if length == 0 then "  (none)" else join("\n") end)
+          + (if ($c.unknown_models // []) | length > 0
+             then "\n\n[WARN] Unknown models (used lazy_fallback rates): " + ($c.unknown_models | map(.model) | join(", "))
+             else "" end)
+          + (if $tr != null
+             then "\n\n--- Transcript Reconciliation ---\n"
+                  + "  Recorded (Agent returns): \(fmt_usd($c.total_usd))\n"
+                  + "  Transcript (incl. cache):  \(fmt_usd($tr.total_usd))\n"
+                  + "  Delta: \(fmt_usd($tr.delta_vs_recorded_usd))"
+                  + (if ($tr.warnings // []) | length > 0 then "\n  Warnings: " + ($tr.warnings | join("; ")) else "" end)
+             else "" end)
+          + "\n\nRates from: \($c.rates_fetched_at)"
+          + (if $warn != "" then "\n\($warn)" else "" end)
+        end
     ' "$META"
     ;;
 

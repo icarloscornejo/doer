@@ -28,6 +28,14 @@ Before transitioning a delegating stage (2, 3, 4, 5, 7, 8) to `complete`, the or
 
 The `agent_invocations` counter is incremented by the orchestrator after each successful Agent return for the stage, alongside the existing cost.sh record call (see `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`).
 
+### Cost-tracking soft gate (warn, never block)
+
+For delegating stages (2, 3, 4, 5, 7, 8), after the agent-invocation gate passes, the orchestrator MUST also compare `metadata.stages.<N>.agent_invocations` against `metadata.cost.by_stage["<N>"].calls`. If `agent_invocations >= 1` but `cost.by_stage["<N>"].calls` is `0` or absent, narrate verbatim:
+
+> *"Stage <N> finalization warning: <K> Agent invocations recorded but zero cost.sh record entries for this stage. The orchestrator dispatched LLM-heavy work without recording cost. The transcript reconciler at Stage 9 will partially recover this, but per-stage breakdown will be empty for Stage <N>."*
+
+This is a warning, not a block. Cost tracking is best-effort by design (see `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`); a hard block would propagate cost-helper failure modes (missing rates file, malformed Agent return) into stage finalization, which is worse UX than the current silence. The warning preserves the best-effort contract while making per-stage drift visible at finalization rather than only at Stage 9 wrapup. The orchestrator continues with finalization after narrating.
+
 ## Top-level required fields when transitioning ticket to `status: "complete"`
 
 When Stage 9 marks the ticket complete, the checklist also verifies:

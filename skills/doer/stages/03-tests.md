@@ -183,6 +183,21 @@ All artifacts you write (tests, code comments, JSON values) MUST be in English.
    ```
 5. Narrate `"Stage 3 complete (BDD): N scenario tests added, all failing as expected. Continuing to Stage 4."` Auto-proceed: Read `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/04-code.md` and ONLY that file.
 
+## Record cost (after every test-writer Agent return)
+
+After EACH test-writer Agent return (`bdd` or `direct` branch, initial dispatch and the optional retry), the Agent return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
+  --model <model-id-from-Agent-return> \
+  --input <usage.input_tokens> \
+  --output <usage.output_tokens> \
+  --stage 3 \
+  --agent test-writer
+```
+
+Increment `metadata.stages.3.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+
 ## Single retry policy (all branches)
 
 If the deterministic checks for the active branch produce any BLOCKERs:

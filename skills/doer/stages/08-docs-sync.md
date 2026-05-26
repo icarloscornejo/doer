@@ -127,6 +127,21 @@ Output JSON: {"changelog_appendix": {"stage": 8, "iteration": 1, "kind": "initia
 "items": [{"type": "step", "text": "<one-line summary of doc edit>"}, ...]}}.
 ```
 
+## Record cost (after the docs-updater Agent return)
+
+After the docs-updater Agent returns, the return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
+  --model <model-id-from-Agent-return> \
+  --input <usage.input_tokens> \
+  --output <usage.output_tokens> \
+  --stage 8 \
+  --agent docs-writer
+```
+
+Increment `metadata.stages.8.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+
 ## Commit
 
 ```bash

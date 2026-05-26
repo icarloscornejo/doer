@@ -77,6 +77,19 @@ The orchestrator may inline: state reads/writes (metadata.json, git status, file
 
 Rationale: (1) cost tracking via lib/helpers/cost.sh only fires on Agent returns; inline work is invisible to the protocol; (2) sub-agents have isolated context windows, which is necessary for read budgets to mean anything; (3) parallelism is impossible without delegation; (4) compaction-driven drift in long tickets has been observed to push the orchestrator toward inline execution. This rule exists to make that drift detectable and rejectable.
 
+**Record cost on every Agent return.** After each Agent dispatched by the loop (doer iter 1, reviewer iter 1, AUTO_FIX fixer, iter 2+ combined fixer-reviewer), the orchestrator MUST run, best-effort:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
+  --model <model-id-from-Agent-return> \
+  --input <usage.input_tokens> \
+  --output <usage.output_tokens> \
+  --stage <N> \
+  --agent <role>
+```
+
+The orchestrator MUST also increment `metadata.stages.<N>.agent_invocations` in the same step. If the return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The helper is best-effort and never blocks the loop. The owning stage spec names the canonical `<role>` strings (e.g. `code-writer`, `code-reviewer`, `code-fixer-reviewer`, `auto-fix-fixer`, `advisor:<persona-id>`). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+
 ## Read budgets (per iteration, per role)
 
 Sub-agent read budgets are SOFT limits expressed in their prompt. Goal: cap exploration cost without forbidding necessary reads. **No scratch files**: every piece of context the sub-agent needs arrives inline in the prompt (extracted from `metadata.ac`, `metadata.plan`, last N `metadata.changelog` entries, and `git diff <base>..HEAD`).

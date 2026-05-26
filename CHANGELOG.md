@@ -2,6 +2,34 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.5.0 (per-stage cost recording, orchestrator-only status view, Stage 1 silent draft)
+
+**Type:** MINOR (additive protocol changes; no `metadata.json` schema incompatibilities with 6.4.x tickets).
+
+### What changed
+
+**Per-stage cost recording (Stages 1–5, 7, 8)**
+- Each delegating stage (1–5, 7, 8) now has an explicit "Record cost" section mandating `cost.sh record` after every Agent return, with canonical `<role>` strings per stage (`ac-reviewer`, `planner`, `test-writer`, `code-writer`, `code-reviewer`, `code-fixer-reviewer`, `auto-fix-fixer`, `runtime-logger`, `log-analyzer`, `runtime-cleanup`, `docs-writer`, `advisor:<persona-id>`).
+- `lib/loop.md` promotes the record rule to orchestrator-level, applying to every Agent dispatched by the loop.
+- `lib/stage-checklist.md` adds a soft gate at finalization: when `agent_invocations >= 1` but `cost.by_stage[N].calls == 0`, the orchestrator narrates a warning. Never blocks.
+
+**`cost.sh status` orchestrator-only render path**
+- When the recorded sub-agent total is `0` but a transcript total exists, `cost.sh status` now renders a degraded "orchestrator-only" summary instead of the misleading `"No cost recorded for this ticket yet."`. Shows transcript totals, by-model breakdown (with cache token columns), and an `[INFO]` note explaining why per-stage breakdown is absent.
+- The `"No cost recorded"` message is now reserved for the rare case where both layers (recorded sub-agents AND transcript reconciler) have zero data.
+- Stage 9 wrapup gains a two-layer framing narration (verbatim, before the status output) and tiered delta thresholds: >50% triggers a note about orchestrator-heavy inline work; >20% triggers the prior "notable orchestrator inline work" note.
+
+**Stage 1 silent draft**
+- Step 6 now builds the AC draft (ACs + Out of Scope + Open Questions) silently in memory. It does NOT present anything to the dev.
+- Step 6.5 is the sole point of presentation and the single approval question, whether self-review ran successfully or fell back.
+- `01-ac-self-review.md` gains a formal "Fallback path" section (flag disabled or failure) with the standard presentation block and iteration rules.
+- Code-writer prompt (Stage 4) now explicitly bans `AC-N` identifiers (e.g. `AC-1`, `AC-3`) from source files, inline comments, KDoc, and test names.
+
+### Migration
+
+No metadata changes. In-flight 6.4.x tickets resume without modification.
+
+`metadata.skill_version` bumps to `6.5.0` on next stage transition.
+
 ## 6.4.0 (auto-squash, cost breakdown, version check)
 
 **Type:** MINOR (three new dev-facing behaviors; no breaking changes, no `metadata.json` schema incompatibilities with 6.3.x tickets).

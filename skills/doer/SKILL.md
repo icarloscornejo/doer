@@ -11,7 +11,7 @@ description: >-
   "keep going with ABC-123"). Skips PRD, architecture design, ticket creation,
   PR assembly, and deployment. Keeps spec, plan, tests, code, review, docs,
   and lessons learned.
-version: 6.4.0
+version: 6.5.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -116,7 +116,7 @@ The resolved locale binds the entire chat output for this invocation.
 Fetch the latest published version from GitHub and compare it to the installed version. Best-effort: if the network call fails or takes more than 5 seconds, skip silently with no narration.
 
 ```bash
-INSTALLED_VERSION="$(grep '^version:' "${CLAUDE_PLUGIN_ROOT}/skills/doer/SKILL.md" | head -1 | awk '{print $2}')"
+INSTALLED_VERSION="$(ls -d "${CLAUDE_CONFIG_DIR:-${HOME}/.claude-tm}/plugins/cache/wk/wk/"*/ 2>/dev/null | sort -V | tail -1 | xargs basename)"
 LATEST_VERSION="$(curl -sf --max-time 5 \
   "https://raw.githubusercontent.com/icarloscornejo/doer/main/.claude-plugin/plugin.json" \
   | jq -r '.version // empty' 2>/dev/null || true)"
