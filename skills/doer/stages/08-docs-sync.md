@@ -31,7 +31,11 @@ ADDED=$(git diff <base>..HEAD | grep -E '^\+' | grep -oE '\b(fun|def|function|cl
 
 # Doc files to scan:
 DOC_FILES=$(find . -type f \( -name 'README*' -o -name 'CHANGELOG*' -o -path '*/docs/*' -o -path '*/documentation/*' \) ! -path '*/node_modules/*' ! -path '*/.git/*' ! -path '*/.doer/*')
+```
 
+**N×M cap:** before running the grep loop, count `N_IDENTS=$(echo "$REMOVED" | wc -w)` and `N_DOCS=$(echo "$DOC_FILES" | wc -l)`. If `N_IDENTS * N_DOCS > 20`, sample instead of full sweep: take the top 4 identifiers by length (longer names are more specific and less likely to false-positive) and the top 5 doc files by recency (`git log --name-only`). Narrate the cap: *"Pre-check B: N×M = <product> exceeds threshold. Sampling top 4 identifiers × top 5 doc files."* This prevents dozens of inline Bash calls on large repos.
+
+```bash
 # For each removed identifier, grep doc files:
 for ident in $REMOVED; do
   for doc in $DOC_FILES; do

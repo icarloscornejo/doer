@@ -2,6 +2,47 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.5.1 (orchestrator cost reduction, transcript reconciler fixes)
+
+**Type:** PATCH (behavioral improvements; no `metadata.json` schema incompatibilities).
+
+### What changed
+
+**Transcript reconciler: two bugs fixed (`cost-transcript.sh`)**
+- Slug bug: `sed 's|/|-|g'` did not replace spaces, producing `-TM Core App` instead of `-TM-Core-App`. Fixed to `s|[/ ]|-|g`. Added fallback that scans `sessions-index.json` for `projectPath` match when slug still diverges.
+- Format bug: new Claude Code stores sessions as `<SID>/subagents/agent-*.jsonl` directories with no root JSONL. Reconciler now supports both layouts (legacy flat file and current directory format).
+
+**Stage 3 direct mode: `last_green_sha` stale fix (`03-tests.md`)**
+- After the regression test commit in `direct` mode, Stage 3 now updates `metadata.last_green_sha` to the new HEAD. Previously Stage 4 set it before Stage 3's commit existed, causing Stage 6 to always re-run the full test suite on `direct` tickets.
+
+**Stage 9 wrapup: two inline steps delegated to sub-agents (`09-wrapup.md`)**
+- Step 3 (summary + performance): delegated to a `summary-writer` sub-agent with read budget 0. Reduces the heaviest inline step in wrapup.
+- Step 8 (PR description): delegated to a `pr-description-writer` sub-agent with read budget 0. Runs after template detection; all inputs (metadata.ac, changelog, ac_verdicts, template) inlined in prompt.
+
+**Stage 9 wrapup: performance table now includes token/cost columns (`09-wrapup.md`)**
+- Performance table gains `Tokens (in/out)` and `Cost` columns sourced from `metadata.cost.by_stage`.
+- Two footer rows added: `Orchestrator` (delta from transcript reconciliation) and `TOTAL` (grand total from `transcript_reconciled.total_usd`).
+
+**Stage 8 docs-sync: Pre-check B N×M cap (`08-docs-sync.md`)**
+- If `N_identifiers × N_doc_files > 20`, samples top 4 identifiers × top 5 doc files by recency instead of full sweep. Narrates the cap. Prevents unbounded Bash calls on large repos.
+
+**Stage 1 AC confirm: selective lesson loading (`01-ac-confirm.md`)**
+- Replaces unconditional `Read lessons/*.md` glob with a targeted `grep -l` filtered by ticket keywords. Reads at most 5 matching files. Prevents N reads growing unbounded as the global lesson pool grows.
+
+**Stage 1 AC confirm: edit/redo round cap (`01-ac-confirm.md`)**
+- Limits the dev edit/redo loop to 3 rounds. After the 3rd round, accepts current block and narrates next steps.
+
+**Stage 2 plan: Check D batched assumption execution (`02-plan.md`)**
+- Replaces N sequential `bash -c` calls (one per assumption) with a single Python3 script that runs all checks with timeout and returns JSON. Reduces N inline Bash roundtrips to 1.
+
+### Migration
+
+No metadata changes. In-flight 6.5.0 tickets resume without modification.
+
+`metadata.skill_version` bumps to `6.5.1` on next stage transition.
+
+---
+
 ## 6.5.0 (per-stage cost recording, orchestrator-only status view, Stage 1 silent draft)
 
 **Type:** MINOR (additive protocol changes; no `metadata.json` schema incompatibilities with 6.4.x tickets).

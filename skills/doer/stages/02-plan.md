@@ -125,7 +125,51 @@ For each entry in `metadata.ac.in_scope`, extract the `AC-N` ID prefix and verif
 
 ### Check D. Pre-flight assumption execution
 
-For each `metadata.plan.assumptions[i]` whose `check` is non-null, run the command from the repo root via `bash -c "<check>"` (timeout 10s per check). Record results into `metadata.plan.assumptions[i].validation`:
+Run ALL verifiable assumptions in a single batched script rather than one Bash call per assumption. This reduces N inline roundtrips to 1:
+
+```bash
+python3 -c "
+import subprocess, json, sys, datetime
+
+assumptions = <JSON array of metadata.plan.assumptions with check != null>
+
+results = []
+for a in assumptions:
+    check = a.get('check')
+    if not check:
+        results.append({'id': a['id'], 'status': 'skipped', 'exit_code': None, 'stdout_excerpt': '', 'stderr_excerpt': ''})
+        continue
+    try:
+        r = subprocess.run(['bash', '-c', check], capture_output=True, text=True, timeout=10)
+        results.append({
+            'id': a['id'],
+            'status': 'pass' if r.returncode == 0 else 'fail',
+            'exit_code': r.returncode,
+            'stdout_excerpt': r.stdout[:200].replace('\n', ' '),
+            'stderr_excerpt': r.stderr[:200].replace('\n', ' ')
+        })
+    except subprocess.TimeoutExpired:
+        results.append({'id': a['id'], 'status': 'fail', 'exit_code': -1, 'stdout_excerpt': '', 'stderr_excerpt': 'timeout after 10s'})
+
+print(json.dumps(results))
+" 2>/dev/null
+```
+
+Parse the JSON output and write each result into `metadata.plan.assumptions[i].validation`:
+
+```json
+{
+  "validation": {
+    "ran_at": "<ISO8601>",
+    "exit_code": <int>,
+    "status": "pass | fail | skipped",
+    "stdout_excerpt": "<first 200 chars, single line>",
+    "stderr_excerpt": "<first 200 chars, single line>"
+  }
+}
+```
+
+For each `metadata.plan.assumptions[i]` whose `check` is non-null, the validation result comes from the batch above. Record results into `metadata.plan.assumptions[i].validation`:
 
 ```json
 {

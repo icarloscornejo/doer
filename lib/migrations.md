@@ -398,6 +398,29 @@ jq '.skill_version = "6.4.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
 
+### Migration: From 6.5.0 -> 6.5.1
+
+`affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and helpers)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Bump skill_version to 6.5.1. No metadata rewrite needed.
+#    Narrate: "Migration 6.5.0 -> 6.5.1, step 1/1: bumping skill_version to 6.5.1."
+jq '.skill_version = "6.5.1"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No data backfill. All changes are orchestrator-side behavioral improvements; they take effect on the next stage dispatch.
+- In-flight `direct` mode tickets that already passed Stage 3 may have a stale `last_green_sha`; Stage 6 will re-run tests once on next touch, then the fix takes effect from the next ticket onward.
+- Phase 2 auto-reverify is a no-op (`affected_stages: []`).
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
 ### Migration: From 6.4.0 -> 6.5.0
 
 `affected_stages: []` (no metadata shape change; protocol changes are in orchestrator instructions only)

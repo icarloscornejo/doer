@@ -102,8 +102,13 @@ All artifacts you write (tests, code comments, JSON values) MUST be in English.
    git add -A
    git commit --no-verify -m "doer(<TICKET-ID>): regression tests (direct)"
    ```
-5. Set `metadata.current_stage = 5` (Stage 4 already complete; jump straight to Stage 5).
-6. Narrate `"Stage 3 complete (direct): N regression tests added, all passing. Continuing to Stage 5."` Auto-proceed: Read `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/05-code-review.md` and ONLY that file.
+5. Update `last_green_sha` to the new HEAD so Stage 6 can skip re-running the test suite:
+   ```bash
+   git rev-parse HEAD
+   ```
+   Write `metadata.last_green_sha = <new HEAD sha>`. This is mandatory in `direct` mode: Stage 4 set `last_green_sha` before this commit existed, so without this update Stage 6 always sees a stale SHA and re-runs the full test suite unnecessarily.
+6. Set `metadata.current_stage = 5` (Stage 4 already complete; jump straight to Stage 5).
+7. Narrate `"Stage 3 complete (direct): N regression tests added, all passing. Continuing to Stage 5."` Auto-proceed: Read `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/05-code-review.md` and ONLY that file.
 
 ## Branch: `bdd`
 

@@ -81,7 +81,56 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    ]
    ```
 
-3. **Persist summary + performance into `metadata.json`.** Pull data from `metadata.json` itself (stage timestamps, iteration counts, retry flags), `git log/diff` (commits/LOC), and the repo test command (pass/fail). Write into:
+3. **Persist summary + performance into `metadata.json`.** Delegate to a summary + performance writer sub-agent via the Agent tool. The orchestrator MUST NOT build the summary or performance object inline — this is the heaviest inline step in Stage 9 and runs with the largest accumulated context. The sub-agent has read budget 0; all inputs are inlined in the prompt.
+
+   Sub-agent prompt skeleton:
+
+   ```
+   You are the summary and performance writer for ticket <TICKET-ID>.
+   Read budget: 0 source files. All inputs are inlined below.
+
+   == metadata.json (full dump) ==
+   <full JSON dump of metadata.json>
+
+   == git log <base>..HEAD --oneline ==
+   <output>
+
+   == git diff --stat <base>..HEAD ==
+   <output>
+
+   Produce a JSON object with exactly two keys:
+
+   {
+     "summary": "<one-paragraph plain prose: what the ticket delivered, what was actually changed, any notable surprises. No em-dashes.>",
+     "performance": {
+       "started":    "<ISO8601, from metadata.created_at>",
+       "completed":  "<ISO8601, now>",
+       "wall_clock": "<duration string>",
+       "active":     "<duration string; equals wall_clock>",
+       "stages": [
+         {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "<HH:MM:SS>"},
+         {"n": 2, "name": "plan",       "status": "complete", "duration": "...", "retry_used": false},
+         {"n": 4, "name": "code",       "status": "complete", "duration": "...", "iterations": 2, "blockers_resolved": 1},
+         ...
+       ],
+       "code": {"commits": N, "files": {"total": N, "src": N, "tests": N, "docs": N}, "loc": {"add": N, "rem": N}, "tests_passing": "<X/Y>"},
+       "agents": {"<agent-name>": <invocation-count>, ...},
+       "convergence": {"iter1": N, "iter2+": N, "max_iter_hit": N, "avg": N},
+       "reviewer_roi": "<X>/<Y> looped stages converged on iter 1 with zero BLOCKERs (<%>%). Use this over time to decide if the reviewer should become opt-in."
+     }
+   }
+
+   Derive durations from stage completed_at minus the previous stage completed_at (or metadata.created_at for Stage 1). Derive LOC from the git diff --stat output. Derive agent counts from metadata.stages.*.agent_invocations. Output only the JSON object, no preamble.
+   ```
+
+   After the sub-agent returns, write the `summary` and `performance` fields into `metadata.json`. Record cost best-effort:
+   ```bash
+   ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
+     --model <model-id> --input <usage.input_tokens> --output <usage.output_tokens> \
+     --stage 9 --agent summary-writer
+   ```
+
+   The schema written into `metadata.json` is:
 
    ```json
    "summary": "<one-paragraph plain prose: what the ticket delivered, what was actually changed, any notable surprises>",
@@ -196,9 +245,46 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
    **If the dev says No:** write `metadata.stages.9.squash_performed = false` into `metadata.json` and continue to step 8 unchanged.
 
-8. **Help with the PR description.**
+8. **Help with the PR description.** Delegate to a PR description writer sub-agent via the Agent tool. The orchestrator MUST NOT generate the PR description inline — it has the largest context in the session and running this step inline is expensive.
 
-   First, auto-detect a template in the repo. Standard locations (in priority order):
+   Sub-agent prompt skeleton:
+
+   ```
+   You are the PR description writer for ticket <TICKET-ID>.
+   Read budget: 0 source files. All inputs are inlined below.
+
+   == metadata.ac ==
+   <JSON dump of metadata.ac>
+
+   == metadata.changelog ==
+   <JSON dump of metadata.changelog>
+
+   == metadata.stages.7.ac_verdicts ==
+   <JSON dump of metadata.stages.7.ac_verdicts, or "Stage 7 skipped" if absent>
+
+   == metadata.lessons_captured ==
+   <JSON dump of metadata.lessons_captured, or [] if empty>
+
+   == metadata.assumptions_validation ==
+   <JSON dump of metadata.assumptions_validation, or [] if empty>
+
+   == metadata.ticket_id ==
+   <TICKET-ID>
+
+   == metadata.title ==
+   <ticket title>
+
+   == PR template ==
+   <template content if detected; "default" if no template was found>
+
+   Instructions:
+   - If a template was provided: fill every section using the inlined metadata above. Preserve all headings, HTML comments, /label and /cc directives verbatim. Write "> N/A for this ticket." for sections that do not apply.
+   - If "default": generate a generic structure with sections: Summary, Changes, How to test, Verification, Notes (omit Notes if empty).
+   - No em-dashes anywhere. Plain prose plus bullets. Terse — reviewers read fast.
+   - Output ONLY the filled PR description as a markdown string. No preamble, no explanation.
+   ```
+
+   Before dispatching the sub-agent, auto-detect a template in the repo. Standard locations (in priority order):
 
    ```
    .github/PULL_REQUEST_TEMPLATE.md
@@ -310,6 +396,32 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     - Else if `delta_vs_recorded_usd / total_usd > 0.2` (the prior threshold), narrate: *"Delta >20%: notable orchestrator inline work not captured by Agent return records. Consider refreshing the SKILL if this recurs."*
 
     Best-effort: if `cost.sh status` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means BOTH `cost.sh record` was never called (no Agent invocations exposed token counts) AND the transcript reconciler had nothing to read (likely empty `metadata.session_ids`). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+
+    **Present summary and performance inline.** After the cost output, present the following directly in the chat (read from `metadata.json`). This is MANDATORY — do not skip or defer to the closing sentence:
+
+    ```
+    Summary
+
+    <metadata.summary — the one-paragraph prose written in step 3>
+
+    ---
+    Performance
+
+    <stages table: for each entry in metadata.performance.stages, one row with these columns:
+      Stage | Status | Duration | Tokens (in/out) | Cost | Notes
+    Pull Tokens and Cost from metadata.cost.by_stage[<stage number>]: format tokens as "<input_tokens>/<output_tokens>" and cost as "$<usd>". If a stage has no entry in by_stage (e.g. skipped stages with no agent calls), show "-" in both columns.
+    After the per-stage rows, add two footer rows:
+      - "Orchestrator" row: tokens from transcript_reconciled (total_input_tokens - metadata.cost.total_input_tokens) / (total_output_tokens - metadata.cost.total_output_tokens), cost from transcript_reconciled.delta_vs_recorded_usd. If transcript_reconciled is absent or delta is 0, show "-".
+      - "TOTAL" row (bold): sum of all sub-agent tokens + orchestrator tokens, cost from transcript_reconciled.total_usd (or metadata.cost.total_usd if reconciliation was not run).>
+
+    Code: <metadata.performance.code.files.total> files, +<loc.add> / -<loc.rem> LOC (<src> src, <tests> test)
+
+    Agents: <comma-separated "name: N" pairs from metadata.performance.agents>
+
+    Convergence: <from metadata.performance.convergence — X/Y stages converged on iter 1, zero BLOCKERs or equivalent>
+
+    Cost: <brief line from cost output — approx USD + model + token counts>
+    ```
 
     Then narrate the closing sentence. This is NOT freeform — present it VERBATIM, branching ONLY on `squash_performed`. Do NOT substitute, reorder, expand, or summarize this sentence:
 

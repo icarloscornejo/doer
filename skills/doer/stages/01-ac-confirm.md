@@ -9,7 +9,13 @@
 ## Step 1: Load context
 
 1. Read `metadata.json`. Pull `title`, `intake.description`, `intake.raw_acs`, `intake.context`, and `intake.prior_work` (all captured during intake).
-2. Read `${CLAUDE_PLUGIN_ROOT}/lessons/*.md` (global, cross-project, see `${CLAUDE_PLUGIN_ROOT}/lib/memory-paths.md` for path resolution). Note any whose `when_it_applies` matches this ticket.
+2. Load lessons selectively — do NOT read all lesson files unconditionally. First run:
+   ```bash
+   grep -l "when_it_applies" ${CLAUDE_PLUGIN_ROOT}/lessons/*.md 2>/dev/null \
+     | xargs grep -l "<keyword from ticket title or type>" 2>/dev/null \
+     | head -5
+   ```
+   Read only the files that match. If no lessons directory exists or grep returns nothing, skip silently. This replaces the prior `Read ${CLAUDE_PLUGIN_ROOT}/lessons/*.md` glob — reading all lessons unconditionally scales poorly as the global pool grows.
 
 ## Step 2: Branch on prior work (no question, read metadata)
 
@@ -110,6 +116,8 @@ Hold this draft in memory and proceed immediately to Step 6.5.
 Run the AC self-review protocol at `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/01-ac-self-review.md` against the draft built in Step 6 BEFORE presenting anything to the dev. It owns: reading the `stage1_ac_self_review` flag, dispatching the `ac-reviewer` sub-agent (via Agent tool, single round, no loop), parsing/validating findings, promoting blockers to Open Questions, presenting the enriched block to the dev with Self-review notes, collecting the dev's single approval, incrementing `metadata.stages.1.agent_invocations`, and the non-fatal failure modes.
 
 ONE question for the entire Stage 1 contract, asked by Step 6.5 (not Step 6). No item-by-item drilling.
+
+**Edit/redo round limit:** after the dev approves or requests changes, accept at most **3 edit/redo rounds** (replies containing `edit ...` or `redo`). After the 3rd round, present the current block as final and proceed without asking again. Narrate: *"Accepting current block after 3 rounds. Edit metadata.ac directly if further changes are needed."* This cap prevents unbounded context growth from repeated inline re-presentations.
 
 When the flag is `false` OR the protocol fails, Step 6.5 falls back to presenting the original Step 6 draft block (without Self-review notes) and asks the dev to approve. Step 6.5 MUST NEVER abort Stage 1.
 

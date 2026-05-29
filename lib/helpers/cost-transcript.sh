@@ -87,13 +87,45 @@ resolve_transcript_base() {
   fi
   local claude_cfg
   claude_cfg="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+  local projects_dir="${claude_cfg}/projects"
+
+  # Claude Code slugifies the project path by replacing '/' and spaces with '-'.
   local proj_slug
-  proj_slug="$(pwd | sed 's|/|-|g')"
-  local base="${claude_cfg}/projects/${proj_slug}"
+  proj_slug="$(pwd | sed 's|[/ ]|-|g')"
+  local base="${projects_dir}/${proj_slug}"
   if [ -d "$base" ]; then
     printf '%s\n' "$base"
     return 0
   fi
+
+  # Fallback: scan projects/ for a directory whose sessions-index.json
+  # lists a projectPath matching the current directory. Handles edge cases
+  # where the slug algorithm diverges (e.g. unicode, symlinked paths).
+  local cwd
+  cwd="$(pwd)"
+  if [ -d "$projects_dir" ]; then
+    local candidate
+    candidate="$(
+      find "$projects_dir" -maxdepth 2 -name 'sessions-index.json' -print0 2>/dev/null \
+        | xargs -0 grep -l "\"projectPath\"" 2>/dev/null \
+        | while IFS= read -r idx; do
+            if python3 -c "
+import json, sys
+with open('$idx') as f:
+    d = json.load(f)
+if d.get('originalPath','') == '$cwd' or any(e.get('projectPath','') == '$cwd' for e in d.get('entries',[])):
+    print(sys.argv[1])
+" "$(dirname "$idx")" 2>/dev/null; then
+              break
+            fi
+          done
+    )"
+    if [ -n "$candidate" ] && [ -d "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
   return 1
 }
 
@@ -155,33 +187,44 @@ case "$CMD" in
     }
 
     for SID in $SESSION_IDS; do
+      # Support two Claude Code storage layouts:
+      #   Legacy: <base>/<SID>.jsonl  (single flat file)
+      #   Current: <base>/<SID>/subagents/agent-*.jsonl  (directory, no root JSONL)
       MAIN_JSONL="${TRANSCRIPT_BASE}/${SID}.jsonl"
-      if [ ! -f "$MAIN_JSONL" ]; then
-        echo "cost-transcript.sh: JSONL not found for session ${SID} at ${MAIN_JSONL}; skipping." >&2
-        echo "JSONL not found for session ${SID}" >> "$WARNINGS_FILE"
-        continue
+      SESSION_DIR="${TRANSCRIPT_BASE}/${SID}"
+      SUBAGENT_DIR="${SESSION_DIR}/subagents"
+
+      FOUND_ANYTHING=0
+
+      # Legacy layout: root JSONL exists.
+      if [ -f "$MAIN_JSONL" ]; then
+        FOUND_ANYTHING=1
+        process_jsonl_file "$MAIN_JSONL" "$RATES_FILE" \
+          "$CACHE_CREATION_5M_MULT" "$CACHE_CREATION_1H_MULT" "$CACHE_READ_MULT" \
+          >> "$ACCUM_FILE"
       fi
 
-      PROCESSED_SESSIONS="${PROCESSED_SESSIONS} ${SID}"
-
-      # Process main orchestrator JSONL.
-      process_jsonl_file "$MAIN_JSONL" "$RATES_FILE" \
-        "$CACHE_CREATION_5M_MULT" "$CACHE_CREATION_1H_MULT" "$CACHE_READ_MULT" \
-        >> "$ACCUM_FILE"
-
-      # Process sub-agent JSONLs (exclude acompact).
-      SUBAGENT_DIR="${TRANSCRIPT_BASE}/${SID}/subagents"
+      # Both layouts: process sub-agent JSONLs under <SID>/subagents/ (exclude acompact).
       if [ -d "$SUBAGENT_DIR" ]; then
         for SA_FILE in "${SUBAGENT_DIR}"/agent-*.jsonl; do
           [ -f "$SA_FILE" ] || continue
           case "$(basename "$SA_FILE")" in
             agent-acompact-*) continue ;;
           esac
+          FOUND_ANYTHING=1
           process_jsonl_file "$SA_FILE" "$RATES_FILE" \
             "$CACHE_CREATION_5M_MULT" "$CACHE_CREATION_1H_MULT" "$CACHE_READ_MULT" \
             >> "$ACCUM_FILE"
         done
       fi
+
+      if [ "$FOUND_ANYTHING" -eq 0 ]; then
+        echo "cost-transcript.sh: no JSONL found for session ${SID} (tried ${MAIN_JSONL} and ${SUBAGENT_DIR}/agent-*.jsonl); skipping." >&2
+        echo "No JSONL found for session ${SID}" >> "$WARNINGS_FILE"
+        continue
+      fi
+
+      PROCESSED_SESSIONS="${PROCESSED_SESSIONS} ${SID}"
     done
 
     if [ ! -s "$ACCUM_FILE" ]; then
