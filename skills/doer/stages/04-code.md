@@ -164,20 +164,15 @@ All artifacts you write (code comments, JSON values, commit messages) MUST be in
 NEVER include AC-N identifiers (e.g. AC-1, AC-3) anywhere in source or test files -- not in inline comments, not in KDoc, not in test names. These are internal doer orchestration labels with no meaning to future codebase readers. Given/When/Then KDoc on test functions is encouraged but must be written in plain business language only, with no AC-N references.
 ```
 
-## Record cost (after every Stage 4 Agent return)
+## Cost attribution (Agent `description` convention)
 
-This rule applies to EVERY Agent dispatched in Stage 4: iter 1 full-plan writer, single-step writer (per-task gate), parallel-group writers, iter 1 reviewer, AUTO_FIX fixer, iter 2+ combined fixer-reviewer. After each Agent return, the return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+Cost is recovered from the session transcript at Stage 9 (`cost-transcript.sh reconcile`), not from the Agent return. To make the per-stage / per-agent breakdown attributable, set the `description` of EVERY Agent dispatched in Stage 4 (iter 1 full-plan writer, single-step writer, parallel-group writers, iter 1 reviewer, AUTO_FIX fixer, iter 2+ combined fixer-reviewer) to the canonical prefix when dispatching it:
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-  --model <model-id-from-Agent-return> \
-  --input <usage.input_tokens> \
-  --output <usage.output_tokens> \
-  --stage 4 \
-  --agent <role>
+```
+doer:s4:<role> | <free text describing the call>
 ```
 
-Where `<role>` is one of `code-writer` (writers, single-step or parallel), `code-reviewer` (iter 1 reviewer), `auto-fix-fixer` (AUTO_FIX pass), `code-fixer-reviewer` (iter 2+ combined). Increment `metadata.stages.4.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+Where `<role>` is one of `code-writer` (writers, single-step or parallel), `code-reviewer` (iter 1 reviewer), `auto-fix-fixer` (AUTO_FIX pass), `code-fixer-reviewer` (iter 2+ combined). Increment `metadata.stages.4.agent_invocations` after each return. The reconciler parses `doer:s<N>:<role>` from each sub-agent's `meta.json` to build `cost.by_stage` / `cost.by_agent`; without the prefix the call lands under `unassigned`. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 ## Pre-reviewer deterministic checks
 

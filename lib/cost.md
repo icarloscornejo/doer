@@ -52,6 +52,14 @@ Lives at `metadata.cost` (top-level object in `./.doer/tickets/<TICKET-ID>/metad
         "usd": 0.0
       }
     },
+    "by_agent": {
+      "code-writer":   {"input_tokens": 0, "output_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0, "usd": 0.0},
+      "orchestrator":  {"input_tokens": 0, "output_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0, "usd": 0.0}
+    },
+    "by_stage": {
+      "4":          {"input_tokens": 0, "output_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0, "usd": 0.0},
+      "unassigned": {"input_tokens": 0, "output_tokens": 0, "cache_creation_tokens": 0, "cache_read_tokens": 0, "usd": 0.0}
+    },
     "delta_vs_recorded_usd": 0.0,
     "warnings": []
   }
@@ -62,7 +70,7 @@ Lives at `metadata.cost` (top-level object in `./.doer/tickets/<TICKET-ID>/metad
 - `by_model`, `by_stage`, and `by_agent` are append-update; `unknown_models` lists any model id not present in `cost-rates.json` at record time.
 - `by_stage` tracks `input_tokens`, `output_tokens`, `calls`, and `usd` per stage number (key `"unassigned"` if `--stage` is omitted).
 - `by_agent` tracks `input_tokens`, `output_tokens`, `calls`, and `usd` per agent name passed via `--agent`. Only populated when `--agent` is provided.
-- `transcript_reconciled` is written by `cost-transcript.sh reconcile` (best-effort, does not touch other fields). `delta_vs_recorded_usd` = transcript total minus `total_usd` recorded via Agent returns; a large positive delta indicates significant orchestrator inline work not captured by the standard `record` flow.
+- `transcript_reconciled` is written by `cost-transcript.sh reconcile` (best-effort, does not touch other fields). It is the authoritative cost figure: it reads the session transcript JSONL and produces `by_model`, `by_agent`, and `by_stage` breakdowns from each sub-agent's own message usage plus its sibling `meta.json` (see the `description` convention below). `by_agent` keys are doer roles (`code-writer`, `code-reviewer`, …) or `orchestrator` for the main session, or the harness `agentType` for any non-doer agent. `by_stage` keys are stage numbers (`"4"`, `"5"`, …) or `"unassigned"`. `delta_vs_recorded_usd` = transcript total minus `total_usd` recorded via the legacy `record` flow; when `record` was never called (the normal case, see below) the delta equals the full transcript total.
 - `cache_creation_tokens` in `transcript_reconciled` aggregates `cache_creation_input_tokens` from the transcript regardless of the 5m vs 1h tier split, because the billing distinction is resolved from `usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` when available.
 
 ## Rates file
@@ -117,31 +125,41 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/refresh-rates.sh
 
 ## Operations
 
-The orchestrator MUST call these via `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh`:
+Transcript reconciliation is the primary flow. Use `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost-transcript.sh`:
 
 | Operation | Arguments | Behavior |
 |-----------|-----------|----------|
-| `record <ID>` | `--model <id> --input <tokens> --output <tokens> [--stage <N>] [--agent <name>]` | Update `metadata.cost` totals + `by_model[<id>]` + `by_stage[<N>]`. Unknown models use the `lazy_fallback` rate, append to `unknown_models`, and warn once per model to stderr. |
+| `reconcile <ID>` | (none) | Read `metadata.session_ids[]`, locate JSONL transcripts, sum tokens including cache fields, attribute each sub-agent to a role/stage via its `meta.json` `description`, write `metadata.cost.transcript_reconciled` with `by_model` / `by_agent` / `by_stage`. Best-effort: warns to stderr on any failure and exits 0 (never aborts the pipeline). |
+
+The reporting/legacy helper is `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh`:
+
+| Operation | Arguments | Behavior |
+|-----------|-----------|----------|
+| `status <ID>` | (none) | Print a human-readable tabular summary: total tokens + USD, breakdown by stage, by agent, by model, rates age warning if stale, transcript reconciliation figures. Renders the transcript-reconciled breakdown when no `record` data exists (the normal case). |
 | `total <ID>` | (none) | Print `metadata.cost` as JSON. Empty object if nothing has been recorded yet. |
-| `status <ID>` | (none) | Print a human-readable tabular summary: total tokens + USD, breakdown by stage (sorted by stage number), by agent (sorted by USD desc), by model (sorted by USD desc), unknown models, rates age warning if stale, transcript reconciliation delta if available. |
-
-For transcript reconciliation (reads `~/.claude/projects/` JSONL files), use `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost-transcript.sh`:
-
-| Operation | Arguments | Behavior |
-|-----------|-----------|----------|
-| `reconcile <ID>` | (none) | Read `metadata.session_ids[]`, locate JSONL transcripts, sum tokens including cache fields, write `metadata.cost.transcript_reconciled`. Best-effort: warns to stderr on any failure and exits 0. |
+| `record <ID>` | `--model <id> --input <tokens> --output <tokens> [--stage <N>] [--agent <name>]` | **Legacy / backward-compatibility.** Update `metadata.cost` totals + `by_model[<id>]` + `by_stage[<N>]`. Not part of the standard flow: the Agent tool does not expose token counts, so the orchestrator has nothing to pass. Retained for any future harness that surfaces usage. Unknown models use `lazy_fallback`. |
 
 All operations write atomically: read `metadata.json`, mutate via `jq`, write to `metadata.json.tmp`, `mv` over the original.
 
-## When to record
+## How cost is captured (transcript reconciliation, not `record`)
 
-- After every `Agent` call returns, if the SDK exposed token counts. Most Claude Code Agent invocations expose input/output tokens in the trailing usage block.
-- The orchestrator MUST attempt the record but MUST NOT abort the pipeline if the record fails (e.g. unknown shape, rates file missing). Cost tracking is best-effort.
-- `--agent <name>` is informational; not persisted directly. The model id is the canonical key.
+The Claude Code Agent tool does NOT expose token counts or a model id in its `tool_result` (verified: the result is `{content, tool_use_id, type}` only). The orchestrator therefore cannot read per-Agent usage at return time, and `cost.sh record` is effectively never called in normal operation. It remains in the helper for backward compatibility and for any future harness that does surface usage, but it is not part of the standard flow.
+
+Instead, cost is recovered from the session transcript at Stage 9 by `cost-transcript.sh reconcile`. Each sub-agent writes its own `<SID>/subagents/agent-<hash>.jsonl` (with exact `model`, `input_tokens`, `output_tokens`, and cache fields per message) and a sibling `agent-<hash>.meta.json` (with `agentType` and `description`). The reconciler reads both and builds the full breakdown.
+
+### Agent `description` convention (the one orchestrator obligation)
+
+For `by_agent` / `by_stage` to be attributable, the orchestrator MUST set each dispatched Agent's `description` to:
+
+```
+doer:s<N>:<role> | <free text describing the call>
+```
+
+e.g. `doer:s4:code-writer | implement AC-2 happy path`. The reconciler parses `doer:s<N>:<role>` (the role may contain a colon, as in `advisor:security`; it is terminated by the first space). An Agent dispatched without this prefix still counts toward totals but lands under `unassigned` (stage) and its `agentType` (agent). The canonical `<role>` strings are owned by each stage spec; `<N>` is the stage number. The main session's own turns are attributed to `orchestrator`.
 
 ## Stage 9 wrapup
 
-Step 12 (after inbox clear): run `cost.sh status <ID>` and narrate the one-paragraph summary inline. The persisted state (`metadata.cost`) is the source of truth; the narration is just a UX courtesy.
+Step 12 (after inbox clear): run `cost-transcript.sh reconcile <ID>` first to populate `metadata.cost.transcript_reconciled` (with `by_model` / `by_agent` / `by_stage`), then `cost.sh status <ID>` and narrate the one-paragraph summary inline. The reconciled state is the source of truth; the narration is just a UX courtesy. Any sub-agent dispatched earlier in Stage 9 (summary-writer, pr-description-writer) is captured by this reconcile pass because it reads the whole session transcript.
 
 ## Lazy fallback
 

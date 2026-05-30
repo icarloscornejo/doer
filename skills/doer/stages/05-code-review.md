@@ -115,20 +115,15 @@ ${CLAUDE_PLUGIN_ROOT}/lib/loop.md for classification rules.
 Read budget: 3 files max beyond what's in the diff.
 ```
 
-## Record cost (after every Stage 5 Agent return)
+## Cost attribution (Agent `description` convention)
 
-This rule applies to EVERY Agent dispatched in Stage 5: each advisor persona Agent (when `stage5_advisor_personas` is set), the iter 1 PR-readiness reviewer, the iter 2+ combined fixer-reviewer, and any AUTO_FIX fixer. After each Agent return, the return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+Cost is recovered from the session transcript at Stage 9 (`cost-transcript.sh reconcile`), not from the Agent return. To make the per-stage / per-agent breakdown attributable, set the `description` of EVERY Agent dispatched in Stage 5 (each advisor persona Agent when `stage5_advisor_personas` is set, the iter 1 PR-readiness reviewer, the iter 2+ combined fixer-reviewer, and any AUTO_FIX fixer) to the canonical prefix when dispatching it:
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-  --model <model-id-from-Agent-return> \
-  --input <usage.input_tokens> \
-  --output <usage.output_tokens> \
-  --stage 5 \
-  --agent <role>
+```
+doer:s5:<role> | <free text describing the call>
 ```
 
-Where `<role>` is `code-reviewer` for the PR-readiness reviewer, `code-fixer-reviewer` for the iter 2+ combined Agent, `auto-fix-fixer` for the AUTO_FIX pass, and `advisor:<persona-id>` for each advisor persona Agent (e.g. `advisor:security`, `advisor:performance`). Increment `metadata.stages.5.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+Where `<role>` is `code-reviewer` for the PR-readiness reviewer, `code-fixer-reviewer` for the iter 2+ combined Agent, `auto-fix-fixer` for the AUTO_FIX pass, and `advisor:<persona-id>` for each advisor persona Agent (e.g. `advisor:security`, `advisor:performance`). Increment `metadata.stages.5.agent_invocations` after each return. The reconciler parses `doer:s<N>:<role>` from each sub-agent's `meta.json` to build `cost.by_stage` / `cost.by_agent`; without the prefix the call lands under `unassigned`. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 ## Debugging discipline (when fixing failures)
 

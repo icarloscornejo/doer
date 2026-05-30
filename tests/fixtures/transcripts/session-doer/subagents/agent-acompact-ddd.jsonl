@@ -1,0 +1,1 @@
+{"type":"assistant","uuid":"w1","message":{"id":"m4","model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"compact"}],"usage":{"input_tokens":99999,"output_tokens":99999,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"sessionId":"session-doer"}

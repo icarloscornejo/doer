@@ -131,20 +131,15 @@ Output JSON: {"changelog_appendix": {"stage": 8, "iteration": 1, "kind": "initia
 "items": [{"type": "step", "text": "<one-line summary of doc edit>"}, ...]}}.
 ```
 
-## Record cost (after the docs-updater Agent return)
+## Cost attribution (Agent `description` convention)
 
-After the docs-updater Agent returns, the return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+Cost is recovered from the session transcript at Stage 9 (`cost-transcript.sh reconcile`), not from the Agent return. To make the per-stage / per-agent breakdown attributable, set the `description` of the docs-updater Agent to the canonical prefix when dispatching it:
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-  --model <model-id-from-Agent-return> \
-  --input <usage.input_tokens> \
-  --output <usage.output_tokens> \
-  --stage 8 \
-  --agent docs-writer
+```
+doer:s8:docs-writer | <free text describing the call>
 ```
 
-Increment `metadata.stages.8.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+Increment `metadata.stages.8.agent_invocations` after the docs-updater return. The reconciler parses `doer:s<N>:<role>` from each sub-agent's `meta.json` to build `cost.by_stage` / `cost.by_agent`; without the prefix the call lands under `unassigned`. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 ## Commit
 

@@ -123,12 +123,7 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    Derive durations from stage completed_at minus the previous stage completed_at (or metadata.created_at for Stage 1). Derive LOC from the git diff --stat output. Derive agent counts from metadata.stages.*.agent_invocations. Output only the JSON object, no preamble.
    ```
 
-   After the sub-agent returns, write the `summary` and `performance` fields into `metadata.json`. Record cost best-effort:
-   ```bash
-   ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-     --model <model-id> --input <usage.input_tokens> --output <usage.output_tokens> \
-     --stage 9 --agent summary-writer
-   ```
+   After the sub-agent returns, write the `summary` and `performance` fields into `metadata.json`. Cost attribution: set the summary-writer Agent's `description` to the canonical prefix `doer:s9:summary-writer | <free text>` when dispatching it. The transcript reconciler runs later in this stage (step 12) and reads the whole session transcript, so this Agent's tokens are captured then. No `cost.sh record` call is needed; the Agent return does not expose token counts.
 
    The schema written into `metadata.json` is:
 
@@ -245,7 +240,7 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
    **If the dev says No:** write `metadata.stages.9.squash_performed = false` into `metadata.json` and continue to step 8 unchanged.
 
-8. **Help with the PR description.** Delegate to a PR description writer sub-agent via the Agent tool. The orchestrator MUST NOT generate the PR description inline — it has the largest context in the session and running this step inline is expensive.
+8. **Help with the PR description.** Delegate to a PR description writer sub-agent via the Agent tool. The orchestrator MUST NOT generate the PR description inline — it has the largest context in the session and running this step inline is expensive. Cost attribution: set this Agent's `description` to the canonical prefix `doer:s9:pr-description-writer | <free text>` when dispatching it (the step 12 reconciler captures its tokens from the transcript).
 
    Sub-agent prompt skeleton:
 
@@ -382,20 +377,15 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh status "<TICKET-ID>"
     ```
 
-    Before printing the status output, narrate this two-layer framing verbatim (the dev needs the model to read the breakdown correctly):
+    Before printing the status output, narrate this framing verbatim (the dev needs the model to read the breakdown correctly):
 
-    > *"Cost tracking has two layers. The per-stage, per-agent, per-model breakdown below comes from `cost.sh record` calls after each sub-agent return. The Transcript Reconciliation total includes those PLUS the orchestrator's own tokens (read from session JSONLs) and any cache costs. The Delta line is the orchestrator-only portion."*
+    > *"Cost is reconciled from the session transcript: the Agent tool does not expose per-call token counts, so the breakdown below is built from each sub-agent's own session log plus the orchestrator's turns, including cache costs. The by-stage and by-agent figures are attributed via each Agent's `description` prefix."*
 
-    Then print the full output of `cost.sh status` verbatim. Do NOT paraphrase or summarize it. The helper now handles three render paths:
-    - Recorded sub-agent total > 0: full breakdown plus a Transcript Reconciliation block.
-    - Recorded total == 0 but transcript total > 0: a degraded "orchestrator-only" summary (still useful).
-    - Both zero: the literal `"No cost recorded for this ticket yet."` (rare; means both layers failed).
+    Then print the full output of `cost.sh status` verbatim. Do NOT paraphrase or summarize it. The helper handles two render paths:
+    - Transcript total > 0: full breakdown by stage, agent, and model (the normal case).
+    - Transcript total == 0 (or reconcile never ran): the literal `"No cost recorded for this ticket yet."` (rare; means the reconciler had nothing to read, e.g. empty `metadata.session_ids`).
 
-    After printing the status output, branch on the deltas (read `metadata.cost.transcript_reconciled` directly via `jq` to avoid re-parsing the helper's text):
-    - If `delta_vs_recorded_usd / total_usd > 0.5` (orchestrator-side work was a large share of recorded sub-agent cost), narrate one extra line: *"Orchestrator-side work was a large share of this ticket. Look at where stages dispatched cheap to sub-agents but did expensive inline reasoning."*
-    - Else if `delta_vs_recorded_usd / total_usd > 0.2` (the prior threshold), narrate: *"Delta >20%: notable orchestrator inline work not captured by Agent return records. Consider refreshing the SKILL if this recurs."*
-
-    Best-effort: if `cost.sh status` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means BOTH `cost.sh record` was never called (no Agent invocations exposed token counts) AND the transcript reconciler had nothing to read (likely empty `metadata.session_ids`). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+    Best-effort: if `cost.sh status` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means the transcript reconciler had nothing to read (likely empty `metadata.session_ids`, or the transcript directory could not be located). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
 
     **Present summary and performance inline.** After the cost output, present the following directly in the chat (read from `metadata.json`). This is MANDATORY — do not skip or defer to the closing sentence:
 
@@ -409,10 +399,10 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
     <stages table: for each entry in metadata.performance.stages, one row with these columns:
       Stage | Status | Duration | Tokens (in/out) | Cost | Notes
-    Pull Tokens and Cost from metadata.cost.by_stage[<stage number>]: format tokens as "<input_tokens>/<output_tokens>" and cost as "$<usd>". If a stage has no entry in by_stage (e.g. skipped stages with no agent calls), show "-" in both columns.
+    Pull Tokens and Cost from metadata.cost.transcript_reconciled.by_stage[<stage number>]: format tokens as "<input_tokens>/<output_tokens>" and cost as "$<usd>". If a stage has no entry in by_stage (e.g. skipped stages with no agent calls), show "-" in both columns.
     After the per-stage rows, add two footer rows:
-      - "Orchestrator" row: tokens from transcript_reconciled (total_input_tokens - metadata.cost.total_input_tokens) / (total_output_tokens - metadata.cost.total_output_tokens), cost from transcript_reconciled.delta_vs_recorded_usd. If transcript_reconciled is absent or delta is 0, show "-".
-      - "TOTAL" row (bold): sum of all sub-agent tokens + orchestrator tokens, cost from transcript_reconciled.total_usd (or metadata.cost.total_usd if reconciliation was not run).>
+      - "Orchestrator" row: tokens and cost from metadata.cost.transcript_reconciled.by_agent["orchestrator"] (in/out tokens and usd). If absent, show "-".
+      - "TOTAL" row (bold): cost from transcript_reconciled.total_usd, tokens from transcript_reconciled.total_input_tokens / total_output_tokens.>
 
     Code: <metadata.performance.code.files.total> files, +<loc.add> / -<loc.rem> LOC (<src> src, <tests> test)
 

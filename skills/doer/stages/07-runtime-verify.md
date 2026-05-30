@@ -95,18 +95,42 @@ The orchestrator has inlined these below:
 == Diff ==
 <output of `git diff <base>..HEAD`>
 
-Scope: every file in the diff PLUS every file in the call path the ACs
-exercise (deps, helpers, repositories, view models). Follow imports
-outward from the diff. Stop at framework/SDK boundaries.
+Scope: the FULL VERTICAL SLICE each AC exercises, end to end. Do NOT anchor
+on the diff. The diff is just one point on the slice; logs anchored only to
+it leave the rest of the call chain dark and runtime info is lost. Instead,
+for each AC trace the whole chain of invocation (platform-agnostic):
 
-Read budget: every file in the diff (mandatory; you must read all of them)
-PLUS up to 5 additional source files for call-path exploration. The +5 caps
-exploration, not diff reads. If a BLOCKER genuinely requires more than 5
-extra files, note the extra reads in your output and proceed.
+  ENTRY POINT      the thing that kicks off the AC: a user action (click,
+                   tap, gesture), an inbound request, an event/message, a
+                   CLI invocation, a scheduled job, etc.
+       │ down through every intermediate hop (each function/method the call
+       │ passes through, in any file, following the calls outward in BOTH
+       │ directions from the diff: up toward the entry point AND down toward
+       │ the boundary)
+  BOUNDARY         the edge where the process talks to the outside world:
+                   network/API call, DB query, filesystem, IPC, thread/
+                   coroutine handoff, SDK/framework edge.
+       │ back up the return path
+  OBSERVABLE       the final visible outcome: rendered UI/state change,
+  RESULT           HTTP response, stdout/CLI output, persisted record,
+                   emitted event.
 
-Log: function entry (args), conditional branches (which + why), state
-changes, external boundaries (API/DB/IO/threads/coroutines), exception
-catches, function exit (return or void).
+Instrument every hop on this chain, in both directions, for every AC. Stop
+only at framework/SDK/third-party boundaries (log the call into them and the
+result coming back, but do not descend into their source).
+
+Read budget: NO numeric cap. Completeness of the slice is the stop
+condition, not a file count. Read every file in the diff (mandatory) plus
+every file the call chain passes through, however many that is. This stage
+is the only on-device verification step; a missing log on the path means
+lost runtime information, which is worse than the extra read cost. Keep a
+running count of files read and report it (see the return contract below)
+so cost stays visible even though it is not capped.
+
+Log at every hop: function entry (args), conditional branches (which + why),
+state changes, external boundaries (API/DB/IO/threads/coroutines), exception
+catches, function exit (return or void). A hop with none of its calls logged
+is a gap, treat full slice coverage as the success criterion.
 
 Format MANDATORY: <basic stdout for the file's language>("DOER - <message>")
 
@@ -141,8 +165,21 @@ DO NOT (these survive cleanup and pollute the PR):
 - Add helpers, factories, or any function that is not a print/log line.
   The logger's only job is to add stdout calls. Anything else is out of scope.
 
-Return a JSON list of files touched + one-line reason each. Do NOT
-write a summary file, the orchestrator narrates it inline.
+Return JSON. Do NOT write a summary file, the orchestrator narrates it inline:
+{
+  "files_touched": [{"path": "...", "reason": "<one line>"}, ...],
+  "files_read": <integer count of all source files you read>,
+  "slice_coverage": {
+    "<AC-id>": {
+      "entry": "<file:fn where the AC starts>",
+      "boundary": "<file:fn at the outside-world edge, or null if none>",
+      "observable_result": "<file:fn where the visible outcome is produced>",
+      "gaps": ["<any hop on the chain you could NOT instrument and why>"]
+    }, ...
+  }
+}
+A non-empty `gaps` list is a signal the slice is incomplete, the orchestrator
+surfaces it to the dev rather than silently proceeding.
 ```
 
 ## Step 2: Temporary commit
@@ -156,7 +193,9 @@ Commit is identified later by its unique message prefix.
 
 ## Step 3: Hand off to dev
 
-Narrate the file list inline + build/filter commands. **Project-aware filter suggestion**: detect the project type from the diff's file extensions and offer the simplest filter as the primary recommendation, with native OS log streams as fallback for release builds.
+Narrate the file list inline + build/filter commands. If the logger returned any non-empty `slice_coverage.<AC>.gaps`, narrate them FIRST and let the dev decide before exercising: *"Heads up: the runtime-logger could not instrument the full vertical slice for <AC-id> (<gap reason>). The logs for that AC may be incomplete. Exercise anyway, or return to fix the gap?"* Do not bury the gap, an uninstrumented hop is exactly the lost-information case this stage exists to prevent.
+
+**Project-aware filter suggestion**: detect the project type from the diff's file extensions and offer the simplest filter as the primary recommendation, with native OS log streams as fallback for release builds.
 
 | Project type | Primary filter (simplest) | Fallback (release builds, no Metro/dev server) |
 |---|---|---|
@@ -220,20 +259,15 @@ Branches:
 - **NEED_MORE_DATA** → keep logs, loop back to Step 3
 - **Override** → honor dev's choice, record reason
 
-## Record cost (after every Stage 7 Agent return)
+## Cost attribution (Agent `description` convention)
 
-This rule applies to EVERY Agent dispatched in Stage 7: the runtime-logger (Step 1), the runtime-log analyzer (Step 4), and any cleanup Agent (Step 5 residual or drift removal). After each Agent return, the return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+Cost is recovered from the session transcript at Stage 9 (`cost-transcript.sh reconcile`), not from the Agent return. To make the per-stage / per-agent breakdown attributable, set the `description` of EVERY Agent dispatched in Stage 7 (the runtime-logger in Step 1, the runtime-log analyzer in Step 4, and any cleanup Agent in Step 5) to the canonical prefix when dispatching it:
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-  --model <model-id-from-Agent-return> \
-  --input <usage.input_tokens> \
-  --output <usage.output_tokens> \
-  --stage 7 \
-  --agent <role>
+```
+doer:s7:<role> | <free text describing the call>
 ```
 
-Where `<role>` is `runtime-logger` (Step 1 and the Step 5 residual remover), `log-analyzer` (Step 4), or `runtime-cleanup` (Step 5 drift remover). Increment `metadata.stages.7.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+Where `<role>` is `runtime-logger` (Step 1 and the Step 5 residual remover), `log-analyzer` (Step 4), or `runtime-cleanup` (Step 5 drift remover). Increment `metadata.stages.7.agent_invocations` after each return. The reconciler parses `doer:s<N>:<role>` from each sub-agent's `meta.json` to build `cost.by_stage` / `cost.by_agent`; without the prefix the call lands under `unassigned`. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 ## Step 5: Cleanup
 

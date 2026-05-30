@@ -162,21 +162,46 @@ case "$CMD" in
 
     PROCESSED_SESSIONS=""
 
+    # Parse "<role>\t<stage>" from a sub-agent's sibling meta.json.
+    # Convention (written by the doer orchestrator when dispatching an Agent):
+    #   description = "doer:s<N>:<role> | <free text>"
+    # e.g. "doer:s4:code-writer | implement AC-2 happy path". The role may
+    # contain a colon (e.g. "advisor:security"); it is terminated by the first
+    # space. Falls back to the harness agentType + "unassigned" stage when the
+    # description has no doer prefix (non-doer agents sharing the session), or
+    # to "unassigned"/"unassigned" when no meta.json exists.
+    parse_agent_role_stage() {
+      local meta_file="$1"
+      if [ ! -f "$meta_file" ]; then
+        printf 'unassigned\tunassigned\n'; return 0
+      fi
+      local desc atype role stage
+      desc="$(jq -r '.description // ""' "$meta_file" 2>/dev/null || echo "")"
+      if printf '%s' "$desc" | grep -qE 'doer:s[0-9]+:[a-z][a-z:-]*'; then
+        stage="$(printf '%s' "$desc" | sed -E 's/.*doer:s([0-9]+):[a-z][a-z:-]*.*/\1/')"
+        role="$(printf '%s' "$desc"  | sed -E 's/.*doer:s[0-9]+:([a-z][a-z:-]*).*/\1/')"
+        printf '%s\t%s\n' "$role" "$stage"; return 0
+      fi
+      atype="$(jq -r '.agentType // "unknown"' "$meta_file" 2>/dev/null || echo "unknown")"
+      printf '%s\t%s\n' "$atype" "unassigned"
+    }
+
     process_jsonl_file() {
       local jsonl_file="$1"
-      local rates_file="$2"
-      local cm5="$3"
-      local cm1h="$4"
-      local cr="$5"
+      local role="$2"
+      local stage="$3"
 
       # Extract assistant messages with usage. Use jq streaming to avoid
-      # loading the entire (potentially large) file into memory.
-      # Each object is filtered to: uuid, message.id, message.model,
-      # message.usage, type == "assistant".
-      jq -c 'select(.type == "assistant" and (.message.usage != null))
+      # loading the entire (potentially large) file into memory. Each row
+      # carries the role/stage attribution resolved by the caller, so the
+      # downstream aggregation can build by_agent and by_stage breakdowns.
+      jq -c --arg role "$role" --arg stage "$stage" \
+            'select(.type == "assistant" and (.message.usage != null))
              | {
                  msg_id:  (.message.id // .uuid),
                  model:   (.message.model // "unknown"),
+                 role:    $role,
+                 stage:   $stage,
                  in_tok:  (.message.usage.input_tokens // 0),
                  out_tok: (.message.usage.output_tokens // 0),
                  cc_tok:  (.message.usage.cache_creation_input_tokens // 0),
@@ -196,15 +221,17 @@ case "$CMD" in
 
       FOUND_ANYTHING=0
 
-      # Legacy layout: root JSONL exists.
+      # Legacy layout: root JSONL exists. Main-transcript messages are the
+      # orchestrator's own turns, attributed to role "orchestrator".
       if [ -f "$MAIN_JSONL" ]; then
         FOUND_ANYTHING=1
-        process_jsonl_file "$MAIN_JSONL" "$RATES_FILE" \
-          "$CACHE_CREATION_5M_MULT" "$CACHE_CREATION_1H_MULT" "$CACHE_READ_MULT" \
+        process_jsonl_file "$MAIN_JSONL" "orchestrator" "unassigned" \
           >> "$ACCUM_FILE"
       fi
 
-      # Both layouts: process sub-agent JSONLs under <SID>/subagents/ (exclude acompact).
+      # Both layouts: process sub-agent JSONLs under <SID>/subagents/ (exclude
+      # acompact). Each sub-agent's role/stage is resolved from its sibling
+      # meta.json (agent-<hash>.meta.json) via the doer description convention.
       if [ -d "$SUBAGENT_DIR" ]; then
         for SA_FILE in "${SUBAGENT_DIR}"/agent-*.jsonl; do
           [ -f "$SA_FILE" ] || continue
@@ -212,8 +239,11 @@ case "$CMD" in
             agent-acompact-*) continue ;;
           esac
           FOUND_ANYTHING=1
-          process_jsonl_file "$SA_FILE" "$RATES_FILE" \
-            "$CACHE_CREATION_5M_MULT" "$CACHE_CREATION_1H_MULT" "$CACHE_READ_MULT" \
+          SA_META="${SA_FILE%.jsonl}.meta.json"
+          ROLE_STAGE="$(parse_agent_role_stage "$SA_META")"
+          SA_ROLE="${ROLE_STAGE%%	*}"
+          SA_STAGE="${ROLE_STAGE##*	}"
+          process_jsonl_file "$SA_FILE" "$SA_ROLE" "$SA_STAGE" \
             >> "$ACCUM_FILE"
         done
       fi
@@ -232,107 +262,74 @@ case "$CMD" in
       exit 0
     fi
 
-    # Deduplicate by msg_id, then sum tokens and compute USD per model.
-    # Uses jq to process the newline-delimited JSON accumulator.
+    # Deduplicate by msg_id, compute USD PER ROW (resolving each row's model
+    # rate), then group the same rows three ways: by_model, by_agent, by_stage.
+    # Computing USD per row keeps all three breakdowns consistent against one
+    # cost figure. Token/model data comes from each sub-agent's own JSONL and
+    # the role/stage attribution from its sibling meta.json.
     RECONCILED="$(jq -s -r \
       --argjson cm5  "$CACHE_CREATION_5M_MULT" \
       --argjson cm1h "$CACHE_CREATION_1H_MULT" \
       --argjson cr   "$CACHE_READ_MULT" \
       --slurpfile rates "$RATES_FILE" '
-      # Deduplicate by msg_id.
-      reduce .[] as $row (
-        {};
-        . as $acc
-        | if $acc[$row.msg_id] == null
-          then . + {($row.msg_id): $row}
-          else .
-          end
-      )
-      | to_entries | map(.value) as $rows
+      def round6: . * 1000000 | round / 1000000;
 
-      # Build per-model aggregates.
-      | (
-          $rows
-          | group_by(.model)
-          | map(
-              . as $group
-              | {
-                  model:     ($group[0].model),
-                  in_tok:    ([$group[].in_tok]  | add // 0),
-                  out_tok:   ([$group[].out_tok] | add // 0),
-                  cc_tok:    ([$group[].cc_tok]  | add // 0),
-                  cr_tok:    ([$group[].cr_tok]  | add // 0),
-                  cc5m_tok:  ([($group[].cc5m // 0)]  | add // 0),
-                  cc1h_tok:  ([($group[].cc1h // 0)]  | add // 0)
-                }
-            )
-        ) as $by_model_list
+      # Aggregate a list of usd-annotated rows into the standard breakdown
+      # object. keyf selects the grouping key (.model / .role / .stage).
+      def agg(keyf):
+        group_by(keyf)
+        | map({
+            key: (.[0] | keyf),
+            value: {
+              input_tokens:          ([.[].in_tok] | add // 0),
+              output_tokens:         ([.[].out_tok] | add // 0),
+              cache_creation_tokens: ([.[].cc_tok] | add // 0),
+              cache_read_tokens:     ([.[].cr_tok] | add // 0),
+              usd:                   ([.[].usd]    | add // 0 | round6)
+            }
+          })
+        | from_entries;
 
-      # Resolve rate for a model id (returns [in_rate, out_rate] or lazy_fallback).
-      | (
-          $rates[0].rates as $rate_map
-          | $rates[0].lazy_fallback.input_per_mtok  as $lazy_in
-          | $rates[0].lazy_fallback.output_per_mtok as $lazy_out
-          | $by_model_list
-          | map(
-              . as $m
-              | ($rate_map[$m.model]) as $r
-              | if $r != null
-                then ($r.input_per_mtok)  as $ir
-                   | ($r.output_per_mtok) as $or
-                   | (
-                       # If fine-grained cache_creation breakdown is available use it;
-                       # otherwise treat all cache_creation as 5m.
-                       ( if $m.cc1h_tok > 0 or $m.cc5m_tok > 0
-                         then ($m.cc5m_tok / 1000000 * $ir * $cm5)
-                              + ($m.cc1h_tok / 1000000 * $ir * $cm1h)
-                         else ($m.cc_tok / 1000000 * $ir * $cm5)
-                         end
-                       ) as $cc_usd
-                     | ($m.cr_tok / 1000000 * $ir * $cr)  as $cr_usd
-                     | ($m.in_tok  / 1000000 * $ir)        as $in_usd
-                     | ($m.out_tok / 1000000 * $or)        as $out_usd
-                     | ($in_usd + $out_usd + $cc_usd + $cr_usd) as $total_usd
-                     | {
-                         model:                $m.model,
-                         input_tokens:         $m.in_tok,
-                         output_tokens:        $m.out_tok,
-                         cache_creation_tokens: $m.cc_tok,
-                         cache_read_tokens:    $m.cr_tok,
-                         usd: ($total_usd * 1000000 | round / 1000000)
-                       }
-                   )
-                else
-                  # Unknown model: use lazy_fallback for input/output; apply cm5 for cache.
-                  (
-                    ($m.in_tok  / 1000000 * $lazy_in)  as $in_usd
-                    | ($m.out_tok / 1000000 * $lazy_out) as $out_usd
-                    | ($m.cc_tok / 1000000 * $lazy_in * $cm5) as $cc_usd
-                    | ($m.cr_tok / 1000000 * $lazy_in * $cr)  as $cr_usd
-                    | ($in_usd + $out_usd + $cc_usd + $cr_usd) as $total_usd
-                    | {
-                        model:                $m.model,
-                        input_tokens:         $m.in_tok,
-                        output_tokens:        $m.out_tok,
-                        cache_creation_tokens: $m.cc_tok,
-                        cache_read_tokens:    $m.cr_tok,
-                        usd: ($total_usd * 1000000 | round / 1000000)
-                      }
-                  )
-                end
-            )
-        ) as $by_model_result
+      ($rates[0].rates) as $rate_map
+      | ($rates[0].lazy_fallback.input_per_mtok)  as $lazy_in
+      | ($rates[0].lazy_fallback.output_per_mtok) as $lazy_out
 
-      # Build totals.
+      # Deduplicate by msg_id (same message can appear across files/resumes).
+      | (reduce .[] as $row (
+            {};
+            if .[$row.msg_id] == null then . + {($row.msg_id): $row} else . end)
+         | to_entries | map(.value)) as $rows
+
+      # Annotate each row with its USD cost using its model rate (or fallback).
+      | ($rows | map(
+          . as $m
+          | ($rate_map[$m.model]) as $r
+          | (if $r != null then $r.input_per_mtok  else $lazy_in  end) as $ir
+          | (if $r != null then $r.output_per_mtok else $lazy_out end) as $outr
+          # Fine-grained cache_creation breakdown when present; else treat all as 5m.
+          | (if ($m.cc5m // 0) > 0 or ($m.cc1h // 0) > 0
+               then (($m.cc5m // 0) / 1000000 * $ir * $cm5)
+                    + (($m.cc1h // 0) / 1000000 * $ir * $cm1h)
+               else ($m.cc_tok / 1000000 * $ir * $cm5)
+             end) as $cc_usd
+          | ($m.cr_tok / 1000000 * $ir * $cr) as $cr_usd
+          | ($m.in_tok  / 1000000 * $ir)      as $in_usd
+          | ($m.out_tok / 1000000 * $outr)    as $out_usd
+          | $m + {usd: ($in_usd + $out_usd + $cc_usd + $cr_usd)}
+        )) as $rows_usd
+
+      # Totals + the three breakdowns from one consistent set of rows.
       | {
-          total_input_tokens:         ([$by_model_result[].input_tokens]         | add // 0),
-          total_output_tokens:        ([$by_model_result[].output_tokens]        | add // 0),
-          total_cache_creation_tokens: ([$by_model_result[].cache_creation_tokens] | add // 0),
-          total_cache_read_tokens:    ([$by_model_result[].cache_read_tokens]    | add // 0),
-          total_usd:                  (([$by_model_result[].usd] | add // 0) * 1000000 | round / 1000000),
-          by_model:                   ($by_model_result | map({key: .model, value: (del(.model))}) | from_entries)
+          total_input_tokens:          ([$rows_usd[].in_tok] | add // 0),
+          total_output_tokens:         ([$rows_usd[].out_tok] | add // 0),
+          total_cache_creation_tokens: ([$rows_usd[].cc_tok] | add // 0),
+          total_cache_read_tokens:     ([$rows_usd[].cr_tok] | add // 0),
+          total_usd:                   ([$rows_usd[].usd] | add // 0 | round6),
+          by_model:                    ($rows_usd | agg(.model)),
+          by_agent:                    ($rows_usd | agg(.role)),
+          by_stage:                    ($rows_usd | agg(.stage))
         }
-    ' "$ACCUM_FILE")"
+    ' "$ACCUM_FILE")" || die_graceful "jq reconciliation failed (exit $?); likely a jq version incompatibility. Run 'jq --version'; this helper needs jq 1.6+"
 
     if [ -z "$RECONCILED" ] || [ "$RECONCILED" = "null" ]; then
       die_graceful "jq reconciliation produced empty result"

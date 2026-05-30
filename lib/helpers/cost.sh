@@ -114,8 +114,8 @@ case "$CMD" in
 
     USD=$(jq -n \
       --argjson i "$IN_TOK" --argjson o "$OUT_TOK" \
-      --argjson ir "$IN_RATE" --argjson or "$OUT_RATE" \
-      '(($i / 1000000) * $ir) + (($o / 1000000) * $or) | . * 1000000 | round / 1000000')
+      --argjson ir "$IN_RATE" --argjson outr "$OUT_RATE" \
+      '(($i / 1000000) * $ir) + (($o / 1000000) * $outr) | . * 1000000 | round / 1000000')
 
     FETCHED_AT=$(jq -r '.fetched_at' "$RATES_FILE")
     TS=$(now_iso)
@@ -198,16 +198,23 @@ case "$CMD" in
       | if $c == null then
           "No cost recorded for this ticket yet."
         elif $rec == 0 and $tr != null and ($tr.total_usd // 0) > 0 then
-          "\n=== Cost Summary (orchestrator-only) ===\n"
-          + "Per-Agent records: none captured (cost.sh record was not called).\n"
-          + "Transcript total (orchestrator + sub-agents + cache): \(fmt_usd($tr.total_usd))\n"
+          "\n=== Cost Summary (from transcript) ===\n"
+          + "Total (orchestrator + sub-agents + cache): \(fmt_usd($tr.total_usd))\n"
           + "  input \(fmt_tok($tr.total_input_tokens // 0)) tok / output \(fmt_tok($tr.total_output_tokens // 0)) tok / cache_creation \(fmt_tok($tr.total_cache_creation_tokens // 0)) / cache_read \(fmt_tok($tr.total_cache_read_tokens // 0))\n"
-          + "\n--- By Model (transcript) ---\n"
+          + "\n--- By Stage (transcript) ---\n"
+          + ($tr.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
+              | map("  Stage \(.key): \(fmt_usd(.value.usd))  (in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+              | if length == 0 then "  (none)" else join("\n") end)
+          + "\n\n--- By Agent (transcript) ---\n"
+          + ($tr.by_agent // {} | to_entries | sort_by(-.value.usd)
+              | map("  \(.key): \(fmt_usd(.value.usd))  (in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+              | if length == 0 then "  (none)" else join("\n") end)
+          + "\n\n--- By Model (transcript) ---\n"
           + ($tr.by_model // {} | to_entries | sort_by(-.value.usd)
               | map("  \(.key): \(fmt_usd(.value.usd))  (in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)) / cc \(fmt_tok(.value.cache_creation_tokens // 0)) / cr \(fmt_tok(.value.cache_read_tokens // 0)))")
               | if length == 0 then "  (none)" else join("\n") end)
           + (if ($tr.warnings // []) | length > 0 then "\n\n[WARN] " + ($tr.warnings | join("; ")) else "" end)
-          + "\n\n[INFO] No per-stage / per-agent breakdown is available because cost.sh record was not called for any Agent return. The transcript total above is the authoritative cost figure."
+          + "\n\n[INFO] Breakdown reconciled from the session transcript (the Agent tool does not expose per-call token counts). This is the authoritative cost figure."
           + (if $warn != "" then "\n\($warn)" else "" end)
         else
           "\n=== Cost Summary ===\n"

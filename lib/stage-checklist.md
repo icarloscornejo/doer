@@ -20,21 +20,19 @@ Before marking ANY `metadata.stages.<N>.status = "complete"` (or `"skipped"` / `
 | 8 docs-sync | `name`, `status`, `verified_with` | `started_at`, `completed_at`, `agent_invocations` (integer >= 1) | `skipped_reason` |
 | 9 wrapup | `name`, `status`, `verified_with` | `completed_at`, `commit_message_presented`, `pr_description_presented` | n/a |
 
-**`agent_invocations` schema note.** `metadata.stages.<N>.agent_invocations` is an integer count of Agent tool calls dispatched for that stage. The orchestrator increments it after each successful Agent return, alongside the existing `cost.sh record` call. For stages `skipped`, `imported`, or `deferred`, the field is not required. For stages 1, 6, 9, the field is optional (those stages are state/coordination work with no LLM-heavy delegation).
+**`agent_invocations` schema note.** `metadata.stages.<N>.agent_invocations` is an integer count of Agent tool calls dispatched for that stage. The orchestrator increments it after each successful Agent return. For stages `skipped`, `imported`, or `deferred`, the field is not required. For stages 1, 6, 9, the field is optional (those stages are state/coordination work with no LLM-heavy delegation).
 
 ### Agent-invocation gate
 
 Before transitioning a delegating stage (2, 3, 4, 5, 7, 8) to `complete`, the orchestrator MUST verify `metadata.stages.<N>.agent_invocations >= 1`. If 0 or absent: this is a hard stop. The orchestrator MUST NOT mark the stage `complete`. Narrate: *"Stage <N> finalization blocked: no Agent invocations recorded. The orchestrator must delegate LLM-heavy work; inline execution is not allowed."* Then either resume the stage with a proper Agent dispatch, or mark `blocked` with `blocked_reason: "no_agent_invocations"`.
 
-The `agent_invocations` counter is incremented by the orchestrator after each successful Agent return for the stage, alongside the existing cost.sh record call (see `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`).
+The `agent_invocations` counter is incremented by the orchestrator after each successful Agent return for the stage (see `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`).
 
-### Cost-tracking soft gate (warn, never block)
+### Cost attribution (no per-stage gate)
 
-For delegating stages (2, 3, 4, 5, 7, 8), after the agent-invocation gate passes, the orchestrator MUST also compare `metadata.stages.<N>.agent_invocations` against `metadata.cost.by_stage["<N>"].calls`. If `agent_invocations >= 1` but `cost.by_stage["<N>"].calls` is `0` or absent, narrate verbatim:
+Per-stage cost is NOT recorded during the stage. The Claude Code Agent tool does not expose token counts in its `tool_result`, so there is nothing to record at finalization time. Cost is recovered in full at Stage 9 by `cost-transcript.sh reconcile`, which reads the session transcript and builds `cost.by_model` / `cost.by_agent` / `cost.by_stage` from each sub-agent's own JSONL plus its sibling `meta.json`.
 
-> *"Stage <N> finalization warning: <K> Agent invocations recorded but zero cost.sh record entries for this stage. The orchestrator dispatched LLM-heavy work without recording cost. The transcript reconciler at Stage 9 will partially recover this, but per-stage breakdown will be empty for Stage <N>."*
-
-This is a warning, not a block. Cost tracking is best-effort by design (see `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`); a hard block would propagate cost-helper failure modes (missing rates file, malformed Agent return) into stage finalization, which is worse UX than the current silence. The warning preserves the best-effort contract while making per-stage drift visible at finalization rather than only at Stage 9 wrapup. The orchestrator continues with finalization after narrating.
+The only per-stage obligation is the `description` convention: when dispatching any Agent, the orchestrator sets its `description` to `doer:s<N>:<role> | <free text>` so the reconciler can attribute the call to a stage and role. There is no finalization-time check for this; an Agent dispatched without the prefix still counts toward totals but lands under `unassigned` in the breakdown. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 ## Top-level required fields when transitioning ticket to `status: "complete"`
 

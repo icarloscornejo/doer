@@ -240,19 +240,14 @@ If checks pass (first try or after retry):
 5. Set `metadata.stages.2.status = "complete"`, `metadata.stages.2.verified_with = <SKILL version>`, `metadata.stages.2.completed_at = <ISO8601>`, `metadata.stages.2.retry_used = <true|false>`.
 6. Narrate `"Stage 2 complete: N files, M tests planned. Continuing to Stage 3."` Auto-proceed: Read `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/03-tests.md` and ONLY that file.
 
-## Record cost (after every planner Agent return)
+## Cost attribution (Agent `description` convention)
 
-After EACH planner Agent return (initial dispatch and the optional retry), the Agent return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+Cost is recovered from the session transcript at Stage 9 (`cost-transcript.sh reconcile`), not from the Agent return. To make the per-stage / per-agent breakdown attributable, set the `description` of EACH planner Agent (initial dispatch and the optional retry) to the canonical prefix when dispatching it:
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-  --model <model-id-from-Agent-return> \
-  --input <usage.input_tokens> \
-  --output <usage.output_tokens> \
-  --stage 2 \
-  --agent planner
+```
+doer:s2:planner | <free text describing the call>
 ```
 
-Increment `metadata.stages.2.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+Increment `metadata.stages.2.agent_invocations` after each planner return. The reconciler parses `doer:s<N>:<role>` from each sub-agent's `meta.json` to build `cost.by_stage` / `cost.by_agent`; without the prefix the call lands under `unassigned`. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 **No commit.** `metadata.json` lives in `.doer/` which is gitignored.

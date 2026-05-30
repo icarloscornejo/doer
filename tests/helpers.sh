@@ -368,6 +368,57 @@ JSON
     fail "cost-transcript honours WK_COST_DISABLED" "got $HAS"
   fi
 
+  # --- subagents layout: by_agent / by_stage from sibling meta.json ---
+  new_workdir
+  cat > rates.json <<'JSON'
+{
+  "currency": "USD",
+  "fetched_at": "2026-05-22T00:00:00Z",
+  "ttl_days": 7,
+  "cache_multipliers": {"creation_5m": 1.25, "creation_1h": 2.0, "read": 0.1},
+  "rates": {"claude-sonnet-4-6": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}},
+  "lazy_fallback": {"input_per_mtok": 3.0, "output_per_mtok": 15.0}
+}
+JSON
+  export WK_COST_RATES_FILE="$PWD/rates.json"
+
+  mk_meta TEST-TR-5
+  jq '.session_ids = ["session-doer"]' \
+    .doer/tickets/TEST-TR-5/metadata.json > .doer/tickets/TEST-TR-5/metadata.json.tmp \
+    && mv .doer/tickets/TEST-TR-5/metadata.json.tmp .doer/tickets/TEST-TR-5/metadata.json
+
+  # Point the transcript base at the fixtures dir (it holds session-doer/subagents/).
+  WK_TRANSCRIPT_DIR="$FIXTURES" WK_COST_RATES_FILE="$WK_COST_RATES_FILE" \
+    bash "$COST_TRANSCRIPT_SH" reconcile TEST-TR-5 2>/dev/null
+  TR5=$(jq '.cost.transcript_reconciled' .doer/tickets/TEST-TR-5/metadata.json)
+
+  # by_agent: code-writer (s4) and advisor:security (s5, role with a colon)
+  # parsed from meta.json description prefix; the no-prefix agent falls back
+  # to its agentType (Explore).
+  if echo "$TR5" | jq -e '.by_agent."code-writer".usd == 0.033
+                          and .by_agent."advisor:security".usd == 0.0165
+                          and (.by_agent.Explore != null)' >/dev/null; then
+    pass "cost-transcript by_agent attributes roles from meta.json prefix"
+  else
+    fail "cost-transcript by_agent attributes roles from meta.json prefix" "$(echo "$TR5" | jq -c '.by_agent')"
+  fi
+
+  # by_stage: stage 4 and 5 from the doer prefix; no-prefix agent -> unassigned.
+  if echo "$TR5" | jq -e '.by_stage."4".usd == 0.033
+                          and .by_stage."5".usd == 0.0165
+                          and (.by_stage.unassigned != null)' >/dev/null; then
+    pass "cost-transcript by_stage attributes stages from meta.json prefix"
+  else
+    fail "cost-transcript by_stage attributes stages from meta.json prefix" "$(echo "$TR5" | jq -c '.by_stage')"
+  fi
+
+  # acompact agent is excluded: its 99999/99999 tokens must NOT appear anywhere.
+  if echo "$TR5" | jq -e '.total_input_tokens == 1700 and .total_output_tokens == 3100' >/dev/null; then
+    pass "cost-transcript excludes agent-acompact-* from totals"
+  else
+    fail "cost-transcript excludes agent-acompact-* from totals" "in=$(echo "$TR5" | jq '.total_input_tokens') out=$(echo "$TR5" | jq '.total_output_tokens')"
+  fi
+
   unset WK_COST_RATES_FILE
 }
 
@@ -411,6 +462,14 @@ JSON
       "by_model": {
         "claude-opus-4-7": {"input_tokens": 12345, "output_tokens": 6789, "cache_creation_tokens": 1000, "cache_read_tokens": 500, "usd": 0.5}
       },
+      "by_agent": {
+        "code-writer": {"input_tokens": 10000, "output_tokens": 5000, "cache_creation_tokens": 800, "cache_read_tokens": 400, "usd": 0.4},
+        "orchestrator": {"input_tokens": 2345, "output_tokens": 1789, "cache_creation_tokens": 200, "cache_read_tokens": 100, "usd": 0.1}
+      },
+      "by_stage": {
+        "4": {"input_tokens": 10000, "output_tokens": 5000, "cache_creation_tokens": 800, "cache_read_tokens": 400, "usd": 0.4},
+        "unassigned": {"input_tokens": 2345, "output_tokens": 1789, "cache_creation_tokens": 200, "cache_read_tokens": 100, "usd": 0.1}
+      },
       "delta_vs_recorded_usd": 0.5,
       "warnings": []
     }
@@ -419,13 +478,14 @@ JSON
 JSON
 
   OUT=$(bash "$COST_SH" status TEST-OO)
-  if echo "$OUT" | grep -q "Cost Summary (orchestrator-only)" \
-     && echo "$OUT" | grep -q "Per-Agent records: none captured" \
-     && echo "$OUT" | grep -q "Transcript total" \
+  if echo "$OUT" | grep -q "Cost Summary (from transcript)" \
+     && echo "$OUT" | grep -q "By Stage (transcript)" \
+     && echo "$OUT" | grep -q "By Agent (transcript)" \
+     && echo "$OUT" | grep -q "code-writer" \
      && echo "$OUT" | grep -q "claude-opus-4-7"; then
-    pass "cost status renders orchestrator-only summary when total_usd is 0"
+    pass "cost status renders transcript breakdown when total_usd is 0"
   else
-    fail "cost status renders orchestrator-only summary when total_usd is 0" "out=$OUT"
+    fail "cost status renders transcript breakdown when total_usd is 0" "out=$OUT"
   fi
 
   if echo "$OUT" | grep -q "No cost recorded for this ticket yet"; then

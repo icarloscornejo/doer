@@ -153,20 +153,15 @@ Iteration rules (mirror Step 6):
 
 Set `metadata.stages.1.agent_invocations = (metadata.stages.1.agent_invocations | 0) + 1`. The Stage Finalization Checklist still treats this field as optional for Stage 1, so when the flag is `false` no increment occurs and existing tickets without the field stay unchanged.
 
-## F.1. Record cost (after the ac-reviewer Agent return)
+## F.1. Cost attribution (Agent `description` convention)
 
-The Agent return exposes the model id and a usage block with `input_tokens` and `output_tokens`. After the Agent returns, run, best-effort:
+Cost is recovered from the session transcript at Stage 9 (`cost-transcript.sh reconcile`), not from the Agent return (the Claude Code Agent tool does not expose token counts in its `tool_result`). To make the per-stage / per-agent breakdown attributable, the orchestrator MUST set the `description` of the ac-reviewer Agent to the canonical prefix when dispatching it:
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-  --model <model-id-from-Agent-return> \
-  --input <usage.input_tokens> \
-  --output <usage.output_tokens> \
-  --stage 1 \
-  --agent ac-reviewer
+```
+doer:s1:ac-reviewer | <free text describing the call>
 ```
 
-If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks Stage 1 (the surrounding rule that Step 6.5 MUST NEVER abort still applies). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+The reconciler parses `doer:s<N>:<role>` from each sub-agent's sibling `meta.json` to build `cost.by_stage` and `cost.by_agent`. Without the prefix the call still counts toward totals but lands under `unassigned`. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 ## Failure modes (all non-fatal)
 

@@ -398,6 +398,31 @@ jq '.skill_version = "6.4.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
 
+### Migration: From 6.5.1 -> 6.6.0
+
+`affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and helpers)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Bump skill_version to 6.6.0. No metadata rewrite needed.
+#    Narrate: "Migration 6.5.1 -> 6.6.0, step 1/1: bumping skill_version to 6.6.0."
+jq '.skill_version = "6.6.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- Cost tracking moved from `cost.sh record` (per-Agent return) to transcript reconciliation as the source of truth. The Claude Code Agent tool does not expose token counts in its `tool_result`, so `record` was effectively a no-op; `cost-transcript.sh reconcile` now builds `by_model` / `by_agent` / `by_stage` from the session JSONLs. `record` is retained only for backward compatibility.
+- New orchestrator obligation: when dispatching any Agent, set its `description` to the convention `doer:s<N>:<role> | <free text>`. Without it the call still counts toward totals but lands under `unassigned`. No backfill: in-flight tickets reconcile fine; stages dispatched before 6.6.0 without the prefix simply group under `unassigned`.
+- `cost-transcript.sh` is now resilient to jq version differences (renamed a reserved-word variable that broke on macOS jq 1.6) and degrades to exit 0 on any jq failure (true best-effort; a compile error no longer aborts wrapup).
+- Stage 7 (runtime-verify) log injection now targets the full vertical slice (entry -> boundary -> observable result) instead of anchoring on the diff, with no file-count cap. Orchestrator-side; takes effect on the next Stage 7 run.
+- Phase 2 auto-reverify is a no-op (`affected_stages: []`).
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
 ### Migration: From 6.5.0 -> 6.5.1
 
 `affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and helpers)

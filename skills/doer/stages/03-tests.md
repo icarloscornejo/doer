@@ -188,20 +188,15 @@ All artifacts you write (tests, code comments, JSON values) MUST be in English.
    ```
 5. Narrate `"Stage 3 complete (BDD): N scenario tests added, all failing as expected. Continuing to Stage 4."` Auto-proceed: Read `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/04-code.md` and ONLY that file.
 
-## Record cost (after every test-writer Agent return)
+## Cost attribution (Agent `description` convention)
 
-After EACH test-writer Agent return (`bdd` or `direct` branch, initial dispatch and the optional retry), the Agent return exposes the model id and a usage block with `input_tokens` and `output_tokens`. Run, best-effort:
+Cost is recovered from the session transcript at Stage 9 (`cost-transcript.sh reconcile`), not from the Agent return. To make the per-stage / per-agent breakdown attributable, set the `description` of EACH test-writer Agent (`bdd` or `direct` branch, initial dispatch and the optional retry) to the canonical prefix when dispatching it:
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh record "<TICKET-ID>" \
-  --model <model-id-from-Agent-return> \
-  --input <usage.input_tokens> \
-  --output <usage.output_tokens> \
-  --stage 3 \
-  --agent test-writer
+```
+doer:s3:test-writer | <free text describing the call>
 ```
 
-Increment `metadata.stages.3.agent_invocations` in the same step. If the Agent return does not expose token counts, narrate `cost.sh record skipped (no usage block)` and continue. The cost helper is best-effort and never blocks the stage. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` and `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
+Increment `metadata.stages.3.agent_invocations` after each test-writer return. The reconciler parses `doer:s<N>:<role>` from each sub-agent's `meta.json` to build `cost.by_stage` / `cost.by_agent`; without the prefix the call lands under `unassigned`. See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md`.
 
 ## Single retry policy (all branches)
 
