@@ -295,7 +295,7 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
 
    **Case 1: exactly one template found.** Use it directly, no prompt. Narrate: *"Detected PR template at <path>. Filling it in."* Then proceed to fill it (logic same as "user pastes a template" below).
 
-   **Case 2: multiple templates found** (multi-template folder). Ask: *"Found <N> PR templates: <list>. Which one? [number / `default` / `skip`]"*. Use the chosen one, or fall through to `default`/`skip`.
+   **Case 2: multiple templates found** (multi-template folder). If the total number of choices (templates + `default` + `skip`) is 4 or fewer, ask via `AskUserQuestion` with one option per template plus a `default` and a `skip` option. If there are too many templates to fit (more than 2), ask as a plain-chat question instead: *"Found <N> PR templates: <numbered list>. Reply with a number to pick one, `default` for a generic structure, or `skip`."* Use the chosen one, or fall through to `default`/`skip`.
 
    **Case 3: no template found.** Ask via `AskUserQuestion`:
 

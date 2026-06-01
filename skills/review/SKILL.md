@@ -48,7 +48,7 @@ The `<pr-ref>` argument accepts the following forms.
 **Auto-detection logic:**
 - If the host is `github.com` or the short form uses `#`, use `gh`.
 - If the host is `gitlab.com` or the short form uses `!`, use `glab`.
-- If a bare number is given without a sigil, ask the user once: "Is this a GitHub PR (`#`) or a GitLab MR (`!`)?"
+- If a bare number is given without a sigil, ask the user once via `AskUserQuestion` (two options: `GitHub PR` / `GitLab MR`): "Is this a GitHub PR or a GitLab MR?"
 
 ---
 

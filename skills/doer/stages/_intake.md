@@ -4,27 +4,27 @@ This file runs when `/doer <TICKET-ID>` is invoked and `./.doer/tickets/<TICKET-
 
 ## Step 1. Ask intake questions
 
-Ask the following questions **one at a time** via `AskUserQuestion`. Do not batch.
+Ask **one at a time**. Do not batch. Questions 1, 2, and 4 expect open free-text answers (a title, a pasted description, extra context), so ask them as plain-chat questions and read the dev's reply. Questions 3, 5, and 6 are choices, so they use `AskUserQuestion` (the tool auto-appends a free-text "Other"; do NOT add one by hand). See the mechanism rule in `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
 
-| # | Question |
-|---|----------|
-| 1 | "What is the title of `<TICKET-ID>`?" |
-| 2 | "Paste the full description of the ticket." |
-| 3 | "Does the ticket already have acceptance criteria? If yes, paste them. If no, type `derive` and we'll build them together in Stage 1." |
-| 4 | "Any extra context? (related issues, prior decisions, links, constraints). Type `skip` if none." |
-| 5 | "What name should the feature branch use? (e.g. `feature/fix-login-timeout`)" |
-| 6 | "Have you already done any work on this ticket before invoking `/doer`? [y/N]" |
+| # | Question | How to ask |
+|---|----------|-----------|
+| 1 | "What is the title of `<TICKET-ID>`?" | plain chat |
+| 2 | "Paste the full description of the ticket." | plain chat |
+| 3 | "Does the ticket already have acceptance criteria?" | `AskUserQuestion`, two options: `Yes, I'll paste them` / `No, derive in Stage 1`. On `Yes`, ask a plain-chat follow-up to paste the ACs and store them in `raw_acs`. On `No`, set `raw_acs = "derive"`. The dev can also paste ACs directly through the auto "Other". |
+| 4 | "Any extra context? (related issues, prior decisions, links, constraints). Type `skip` if none." | plain chat |
+| 5 | "What branch should this ticket use?" | `AskUserQuestion`, two options: `Use current branch (<current branch name>)` / `Use suggested name (<suggested>)`. Resolve the current branch with `git rev-parse --abbrev-ref HEAD`; derive `<suggested>` from the ticket id and title (e.g. `feature/<TICKET-ID>-<kebab-title>`). The auto "Other" lets the dev type a custom name. |
+| 6 | "Have you already done any work on this ticket before invoking `/doer`?" | `AskUserQuestion`, two options: `Yes` / `No` |
 
-**Only if question 6 was answered `y`**, ask the four follow-ups one at a time (also via `AskUserQuestion`):
+**Only if question 6 was answered `Yes`**, ask the four follow-ups one at a time as plain-chat questions (each captures free-text detail: a path, a summary, or pass/fail state, so a structured prompt does not fit):
 
 | # | Question | Notes |
 |---|----------|-------|
-| 6a | "Do you have a written plan (mental or in a file)?" | If yes, capture summary or path |
-| 6b | "Did you write tests already?" | If yes, capture file paths and pass/fail status |
-| 6c | "Did you write implementation code?" | If yes, capture file paths and commit/staged/uncommitted state |
-| 6d | "Did you update any documentation?" | If yes, capture file paths |
+| 6a | "Do you have a written plan (mental or in a file)? If so, paste it or give the path." | If yes, capture summary or path |
+| 6b | "Did you write tests already? If so, give the file paths and pass/fail status." | If yes, capture file paths and pass/fail status |
+| 6c | "Did you write implementation code? If so, give the file paths and commit/staged/uncommitted state." | If yes, capture file paths and commit/staged/uncommitted state |
+| 6d | "Did you update any documentation? If so, give the file paths." | If yes, capture file paths |
 
-Persist all answers under `metadata.intake.prior_work`. If question 6 was `N`, write `prior_work: { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }` and skip the follow-ups.
+Persist all answers under `metadata.intake.prior_work`. If question 6 was `No`, write `prior_work: { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }` and skip the follow-ups.
 
 ## Step 2. Infer testing strategy, then ask ONE confirmation
 
@@ -170,12 +170,21 @@ This is the only mechanism that lets the auto-reverify check (see `${CLAUDE_PLUG
 
 ## Step 4. Create the feature branch
 
+If the dev chose `Use current branch` in Step 1 question 5, the branch already exists and is checked out: skip `git checkout -b` and keep working on it. Otherwise create it:
+
 ```bash
 git checkout -b "<branch-name>"
 ```
 
-If the branch already exists (local or remote), ask:
-"Branch `<branch-name>` already exists. Options: 1) Check out existing, 2) Pick a different name. Which?"
+If the branch already exists (local or remote), ask via `AskUserQuestion`:
+```
+Question: Branch `<branch-name>` already exists. How do you want to proceed?
+
+Options:
+  - Check out existing: continue on the existing branch
+  - Pick a different name: I will ask for a new branch name
+```
+On "Pick a different name", ask for the new name as a plain-chat free-text question, then retry the checkout.
 
 ## Step 5. Workspace setup
 

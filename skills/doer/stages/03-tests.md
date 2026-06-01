@@ -61,11 +61,18 @@ any source file in the diff that you need to understand the surface you are test
 Write tests that:
 - Verify the changed value/label/string/constant is present where the ticket
   said it should be.
-- Cover at most one or two paths per AC placeholder. Minimal coverage is the goal.
+- Cover at most one or two paths per acceptance criterion. Minimal coverage is the goal.
 - Are EXPECTED to PASS now (no red phase).
 
 DO NOT add explanatory comments like `// REGRESSION:` or `// regression test`.
 The test name and assertion are self-documenting.
+
+NEVER include AC-N identifiers (e.g. AC-1, AC-3) anywhere in test files -- not
+in inline comments, not in KDoc, not in test names. These are internal doer
+orchestration labels with no meaning to future codebase readers; the `covers`
+field in your JSON output is the only place an AC-N belongs. Any
+Given/When/Then or behavioral comment you write MUST be complete, plain
+business language, never shorthand and never referencing an AC number.
 
 Output a single JSON object:
 
@@ -136,6 +143,15 @@ given_user_has_cart_when_bap_loads_then_promos_shown.
 DO NOT add explanatory comments like `// RED:` or `// BDD red:` or
 `// fails because X` on test bodies. The test name and the failing assertion
 are self-documenting.
+
+NEVER include AC-N identifiers (e.g. AC-1, AC-3) anywhere in test files -- not
+in inline comments, not in KDoc, not in test names. These are internal doer
+orchestration labels with no meaning to future codebase readers; the `covers`
+field in your JSON output is the only place an AC-N belongs. When you express
+Given/When/Then as comments (non-DSL path), write each line as complete,
+plain business language describing user or system behavior (e.g.
+`// Given the user has items in their cart`), not shorthand, not half-sentences,
+and never referencing an AC number.
 
 The orchestrator has inlined these below:
 

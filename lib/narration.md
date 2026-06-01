@@ -77,6 +77,27 @@ Iteration N (single turn):
 
 **Self-check before every response:** *"Am I about to call `AskUserQuestion`, surface an Agent error, or respond to a halt? If no to all three, I MUST keep going in this same turn."*
 
+### Choosing the interaction mechanism: AskUserQuestion vs plain chat
+
+When the orchestrator needs the dev to decide something, it picks ONE of two mechanisms. Both end the turn.
+
+| The answer is... | Mechanism |
+|------------------|-----------|
+| A closed set of 2 to 4 mutually exclusive options, each mapping to a distinct next action | `AskUserQuestion` |
+| Binary (yes/no, confirm/cancel, run/skip) | `AskUserQuestion` with EXACTLY two options |
+| Open-ended free text the orchestrator cannot enumerate (a command, a branch name, pasted description / ACs / template, a written lesson, edit instructions) | Plain-chat question |
+| Long or multiline (an artifact the dev types or pastes) | Plain-chat question |
+| Compound and not reducible to <= 4 options (e.g. `numbers / add: <x> / edit N: <y> / none`) | Plain-chat question |
+| "Continue? / Proceed? / Ready for the next stage?" between stages or iterations | NEITHER. Auto-proceed (see the MUST NOT rule above). |
+
+**Rules for `AskUserQuestion`:**
+
+1. **The tool ALWAYS appends an "Other" free-text option automatically.** It is present on every call, binary or not, and cannot be removed. NEVER hand-author an option labeled "Other", "Something else", "Custom", or similar. Provide only the real, distinct choices; the free-text escape hatch is already there.
+2. **Maximum 4 real options.** The tool does not accept more. If a decision has a fifth path, fold a non-decision (e.g. "view the diff", which only re-presents the same gate) out of the option list, or move a path that needs extra input into a follow-up `AskUserQuestion`.
+3. Use the `Question:` + `Options:` shape with the recommended choice marked `(recommended)`, as in Stage 7 (`${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/07-runtime-verify.md`).
+
+**Rules for plain-chat questions:** state the question, list the accepted free-text replies inline (e.g. `derive`, `skip`, `none`), and end the turn. The auto-resume rule above governs how the next message is interpreted.
+
 ### SUGGESTIONs never pause
 
 Zero BLOCKERs = converged. SUGGESTIONs are persisted as part of the stage's `metadata.code_review[<iteration>]` entry. Orchestrator narrates `"Converged with N SUGGESTIONs logged. Continuing."` then auto-proceeds to the next stage in the same turn.

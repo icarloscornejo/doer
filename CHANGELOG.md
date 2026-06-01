@@ -2,6 +2,57 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.7.0 (AC-N leak prevention, interaction-mechanism rule, intake restructure)
+
+**Type:** MINOR (additive protocol changes and prompt fixes; no `metadata.json` schema incompatibilities with 6.6.x tickets).
+
+### What changed
+
+**Stage 3 tests: AC-N leak prohibition + Given/When/Then quality (`03-tests.md`)**
+- Both test writers (BDD and direct regression) now forbid internal `AC-N` identifiers in any test file (comments, KDoc, names). The `covers` JSON field is the only place an AC-N belongs.
+- Given/When/Then comments must be complete, plain business language. Removed the `AC placeholder` wording from the regression writer that nudged the leak.
+
+**Stage 5 code review: deterministic AC-N leak check (`05-code-review.md`)**
+- New Check D greps the diff (excluding `.doer/`) for `AC-N` labels in source or test files. Any match is a BLOCKER the iter-N+1 fixer scrubs (remove the label, rewrite the comment in plain language). The reviewer-skip gate now also short-circuits on a Check D blocker.
+
+**Interaction mechanism rule (`lib/narration.md`)**
+- New section defines when to use `AskUserQuestion` (2 to 4 closed options, or binary) vs a plain-chat question (free text, multiline, or compound replies). Codifies that the tool always auto-appends an "Other" (never hand-author one) and caps real options at 4.
+
+**Plain-chat gates converted to `AskUserQuestion`**
+- Stage 6 test-failure routing, Stage 1 import entry point, Stage 9 multi-template pick (when <= 4), the migrations reverify/re-exercise prompts, and the `/wk:review` GitHub-vs-GitLab prompt.
+
+**Intake restructure (`_intake.md`)**
+- Questions 1, 2, 4 stay plain chat (open free text). Questions 3 (has ACs), 5 (which branch: current / suggested / Other), and 6 (prior work) now use `AskUserQuestion`. Step 4 skips branch creation when the dev chose the current branch.
+
+**Stage 4 per-task gate option-count fix (`04-code.md`)**
+- The gate had five options; `AskUserQuestion` accepts at most four. `view-full-diff` (a non-decision that re-presents the gate) moved out of the option list to the auto free-text path.
+
+### Migration
+
+No metadata changes. In-flight 6.6.x tickets resume without modification. `metadata.skill_version` bumps to `6.7.0` on the next stage transition.
+
+---
+
+## 6.6.0 (cost from transcript reconciliation, Stage 7 vertical slice)
+
+**Type:** MINOR (additive protocol changes; no `metadata.json` schema incompatibilities with 6.5.x tickets).
+
+### What changed
+
+**Cost tracking moved to transcript reconciliation (`cost-transcript.sh`, `cost.md`)**
+- Source of truth for cost is now the session transcript, reconciled at Stage 9 into `by_model` / `by_agent` / `by_stage`. The Agent tool does not expose token counts in its result, so the old `cost.sh record` path was a no-op; it is retained only for backward compatibility.
+- Every dispatched Agent must set its `description` to the convention `doer:s<N>:<role> | <free text>` so the reconciler can attribute the call. Without it the call lands under `unassigned`.
+- Reconciler hardened against jq version differences (macOS jq 1.6) and now degrades to exit 0 on any jq failure, so a reconcile error never aborts wrapup.
+
+**Stage 7 runtime verify: full vertical slice instrumentation (`07-runtime-verify.md`)**
+- Log injection now targets the full vertical slice (entry -> boundary -> observable result) instead of anchoring on the diff, with no file-count cap.
+
+### Migration
+
+No metadata changes. In-flight 6.5.x tickets resume without modification. `metadata.skill_version` bumps to `6.6.0` on the next stage transition.
+
+---
+
 ## 6.5.1 (orchestrator cost reduction, transcript reconciler fixes)
 
 **Type:** PATCH (behavioral improvements; no `metadata.json` schema incompatibilities).

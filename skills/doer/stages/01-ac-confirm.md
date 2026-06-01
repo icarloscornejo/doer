@@ -68,7 +68,16 @@ If the inference is wrong, the dev will see it surface in the entry-stage sugges
 | Plan + tests + partial code | 4 (code) | 2, 3 |
 | Plan + tests + complete code | 5 (code-review) | 2, 3, 4 |
 
-Confirm with user: *"Suggesting entry at Stage {N}, importing {list}. Proceed? [Y / start at 1 / pick stage]"*
+Confirm with user via `AskUserQuestion`:
+```
+Question: Suggesting entry at Stage {N}, importing {list}. How do you want to proceed?
+
+Options:
+  - Proceed (recommended): enter at Stage {N} with the imports above
+  - Start at Stage 1: ignore the imports and run the full pipeline
+  - Pick a different stage: I will ask which stage to enter at
+```
+On "Pick a different stage", ask for the stage number as a plain-chat free-text question.
 
 ## Step 5: Baseline + import
 

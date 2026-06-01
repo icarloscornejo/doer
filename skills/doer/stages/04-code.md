@@ -32,20 +32,21 @@ Active ONLY when `preferences.sh get-flag stage4_per_task_gate` returns `true`. 
 2. Invoke the **single-step writer** (variant of the writer prompt below; payload is restricted to the current step plus AC and lessons; read budget shrinks to 5 source files since the surface area is smaller).
 3. `git add -A`.
 4. **Empty-diff branch.** If `git diff --cached` is empty, do NOT present the gate. Append `{step_order: <order>, decision: "auto_accepted_empty", at: "<ISO8601>"}` to `metadata.stages.4.per_task_gate.decisions`, narrate *"Step N produced zero changes. Auto-accepted. Continuing."*, advance to the next step.
-5. **Gate.** Otherwise, narrate the staged diff (`git diff --cached`) and call `AskUserQuestion` with the five-option gate (see "Gate options" below). Apply the chosen branch.
+5. **Gate.** Otherwise, narrate the staged diff (`git diff --cached`) and call `AskUserQuestion` with the four-option gate (see "Gate options" below). Apply the chosen branch.
 6. Repeat until all steps are processed OR a `reject` aborts the stage.
 
-**Gate options.** Present exactly these five labels (orchestrator narration is in the operating locale; the option semantics are fixed):
+**Gate options.** Present exactly these four decision options in `AskUserQuestion` (the tool also auto-appends a free-text "Other"; do NOT add a fifth option). Orchestrator narration is in the operating locale; the option semantics are fixed:
 
 | Option | Action |
 |---|---|
-| `[a]ccept` | Leave the staged diff in place. Append `{step_order, decision: "accepted", at}`. Continue. |
-| `[e]dit` | Sub-prompt: `manual` or `via-writer`. See "Edit semantics" below. |
-| `[r]eject` | `git reset --hard <pre_step_sha>`. Append `{step_order, decision: "rejected", at}`. Set `metadata.stages.4.status = "blocked"`, set `metadata.stages.4.blocked_reason = "rejected at step <order>"`. Narrate *"Stage 4 aborted at step N (rejected). Run /doer continue <ID> after adjusting metadata.plan."*. End turn. |
-| `[s]kip` | `git reset --hard <pre_step_sha>`. Append `{step_order, decision: "skipped", at}`. Continue to the next step. The plan step is recorded as not implemented; the eventual reviewer will see it as a missing-file BLOCKER from Check C if the step required a file that was now never touched, which the dev can address by accepting residuals at convergence or re-running. |
-| `[v]iew-full-diff` | Print `git diff <pre_stage4_sha>..HEAD` (cumulative Stage 4 diff). Do NOT count as a decision. Re-present the SAME gate. |
+| `accept` | Leave the staged diff in place. Append `{step_order, decision: "accepted", at}`. Continue. |
+| `edit` | Sub-prompt: `manual` or `via-writer`. See "Edit semantics" below. |
+| `reject` | `git reset --hard <pre_step_sha>`. Append `{step_order, decision: "rejected", at}`. Set `metadata.stages.4.status = "blocked"`, set `metadata.stages.4.blocked_reason = "rejected at step <order>"`. Narrate *"Stage 4 aborted at step N (rejected). Run /doer continue <ID> after adjusting metadata.plan."*. End turn. |
+| `skip` | `git reset --hard <pre_step_sha>`. Append `{step_order, decision: "skipped", at}`. Continue to the next step. The plan step is recorded as not implemented; the eventual reviewer will see it as a missing-file BLOCKER from Check C if the step required a file that was now never touched, which the dev can address by accepting residuals at convergence or re-running. |
 
-**Edit semantics.** When the dev picks `[e]dit`, ask one follow-up `AskUserQuestion`:
+**View full diff (not a decision).** This is NOT one of the four options. If the dev replies through the auto-appended free-text option asking to see the full diff, print `git diff <pre_stage4_sha>..HEAD` (cumulative Stage 4 diff) and re-present the SAME gate. It does not count as a decision and is never recorded in `decisions[]`.
+
+**Edit semantics.** When the dev picks `edit`, ask one follow-up `AskUserQuestion`:
 
 - `manual`: narrate *"Edit by hand and reply when done."*. End turn. On the next user message that is not a halt signal, run `git add -A`, append `{step_order, decision: "edited_manual", at}`, continue to the next step. (The auto-resume rule from `lib/narration.md` already covers re-entry semantics.)
 - `via-writer`: ask the dev for instructions in a free-text field, then re-invoke the single-step writer with those instructions inlined as `== Dev edit instructions ==`. Re-present the SAME gate (no new `pre_step_sha`; this is still the same step). Append `{step_order, decision: "edited_via_writer", at, edit_instructions: "<verbatim>"}` only when the dev finally accepts (so a step that goes via-writer twice ends up with one `edited_via_writer` decision plus one `accepted`).

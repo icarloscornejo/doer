@@ -72,14 +72,16 @@ Every migration block declares `affected_stages: [<stage names>]` listing the st
 
 1. For each stage in that union, look up `metadata.stages.<N>.verified_with`.
 2. If the stage has `status` in `("complete", "skipped", "imported")` AND `verified_with < current SKILL version`, mark it as a **reverify candidate**.
-3. If the ticket is `complete` and there are reverify candidates, ask ONCE:
+3. If the ticket is `complete` and there are reverify candidates, ask ONCE via `AskUserQuestion`:
    ```
-   Ticket already complete. SKILL upgraded to <X.Y.Z>; <N> stages changed
-   behavior since this ticket finished:
-   <list>
-   Re-verify them now? [Y/n]
+   Question: Ticket already complete. SKILL upgraded to <X.Y.Z>; <N> stages
+   changed behavior since this ticket finished: <list>. Re-verify them now?
+
+   Options:
+     - Re-verify (recommended): run the spot-checks
+     - Skip: leave the ticket as is
    ```
-   If `n` → narrate, do nothing else. If `Y` → run spot-checks (next bullet).
+   On "Skip" → narrate, do nothing else. On "Re-verify" → run spot-checks (next bullet).
 4. If the ticket is `in_progress`, run spot-checks AUTOMATICALLY (no prompt) before resuming. The dev expected to keep working; verify-first is the safer default.
 
 **Spot-check mechanics per stage:**
@@ -92,7 +94,7 @@ Every migration block declares `affected_stages: [<stage names>]` listing the st
 | 4 code | Re-run pre-checks (test pass + lint + typecheck + plan-driven scope). Skip LLM reviewer unless pre-checks find new issues. |
 | 5 code-review | Re-run pre-checks (RED grep, secrets, smoke, bare except). Skip LLM reviewer unless pre-checks find new issues. |
 | 6 quality-gate | Re-run test suite via the skip-safe check (`last_green_sha` lookup; usually no-op). |
-| 7 runtime-verify | CANNOT auto-rerun (needs device + dev). Ask: *"Stage 7 changed behavior in <X.Y.Z>. Re-exercise on device? [Y/n]"*. If n, mark `verified_with: <new>` with note `dev_acknowledged_skip`. |
+| 7 runtime-verify | CANNOT auto-rerun (needs device + dev). Ask via `AskUserQuestion` (two options: `Re-exercise on device` / `Skip`): *"Stage 7 changed behavior in <X.Y.Z>. Re-exercise on device?"*. On `Skip`, mark `verified_with: <new>` with note `dev_acknowledged_skip`. |
 | 8 docs-sync | Re-run pre-checks A/B/C. Skip LLM agent unless update list non-empty. |
 | 9 wrapup | No spot-check. Wrapup is the terminal stage; if its behavior changed, the dev re-runs `/doer <ID>` to refresh `metadata.summary` and `metadata.performance` only if they want updated stats. |
 
@@ -419,6 +421,29 @@ jq '.skill_version = "6.6.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 - New orchestrator obligation: when dispatching any Agent, set its `description` to the convention `doer:s<N>:<role> | <free text>`. Without it the call still counts toward totals but lands under `unassigned`. No backfill: in-flight tickets reconcile fine; stages dispatched before 6.6.0 without the prefix simply group under `unassigned`.
 - `cost-transcript.sh` is now resilient to jq version differences (renamed a reserved-word variable that broke on macOS jq 1.6) and degrades to exit 0 on any jq failure (true best-effort; a compile error no longer aborts wrapup).
 - Stage 7 (runtime-verify) log injection now targets the full vertical slice (entry -> boundary -> observable result) instead of anchoring on the diff, with no file-count cap. Orchestrator-side; takes effect on the next Stage 7 run.
+- Phase 2 auto-reverify is a no-op (`affected_stages: []`).
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
+### Migration: From 6.6.0 -> 6.7.0
+
+`affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and prompts)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Bump skill_version to 6.7.0. No metadata rewrite needed.
+#    Narrate: "Migration 6.6.0 -> 6.7.0, step 1/1: bumping skill_version to 6.7.0."
+jq '.skill_version = "6.7.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No data backfill. All changes are prompt and protocol text: the AC-N leak prohibition in Stage 3 writers, the new Stage 5 Check D (deterministic `AC-N` grep), the AskUserQuestion-vs-plain-chat rule in `lib/narration.md`, the intake question restructure, and the Stage 4 gate option-count fix. They take effect on the next stage that runs them.
+- Stage 5 gains a deterministic Check D that BLOCKS when an internal `AC-N` label leaks into a source or test file. In-flight tickets whose Stage 5 already passed are not retroactively re-checked; the check runs on the next Stage 5 entry.
 - Phase 2 auto-reverify is a no-op (`affected_stages: []`).
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.

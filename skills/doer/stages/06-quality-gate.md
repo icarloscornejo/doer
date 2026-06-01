@@ -25,7 +25,15 @@ The last green test run is tracked in `metadata.last_green_sha`. Stages 4 and 5 
 
 3. **Otherwise run the full test suite.**
 
-4. **If any test fails:** narrate the failures and ask: *"Tests failing: {list}. Options: 1) Return to Stage 4 to fix, 2) Return to Stage 5 to re-review, 3) Pause for manual fix. Which?"*
+4. **If any test fails:** narrate the failures, then ask via `AskUserQuestion`:
+   ```
+   Question: Tests failing: {list}. How do you want to proceed?
+
+   Options:
+     - Return to Stage 4 (recommended): fix the implementation
+     - Return to Stage 5: re-review the code
+     - Pause: I will stop so you can fix manually
+   ```
 
 5. **If all tests pass:**
    - Persist a brief summary in `metadata.stages.6.test_summary = "<N>/<N> tests passed in <duration>"` (counts and timing only; the dev's terminal already has the full output, no need to duplicate it on disk).

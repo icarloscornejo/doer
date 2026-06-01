@@ -68,9 +68,25 @@ Any match → SUGGESTION (the dev may have intentional reasons; do not auto-fix)
   a specific exception or logging.
 ```
 
+**Check D. Internal AC-N labels leaked into source or test files.**
+AC-N identifiers (AC-1, AC-2, ...) are internal doer orchestration labels. They
+must never appear in committed source or test files (comments, KDoc, test names).
+Scan added lines in the diff, excluding the `.doer/` workspace:
+```bash
+git diff <base>..HEAD -- . ':(exclude).doer/**' | grep -nE '^\+' | grep -E '\bAC-[0-9]+\b'
+```
+Any match → BLOCKER. This is a mechanical cleanup the iter-N+1 fixer must
+perform: remove the AC-N reference and, if it sits inside a Given/When/Then or
+behavioral comment, rewrite that comment as complete plain business language.
+Do not just delete the token mid-sentence; leave a readable comment or none.
+```
+- B-N (ac-leak): internal label AC-<k> found at <file>:<line>. Remove it and
+  rewrite the surrounding comment in plain business language.
+```
+
 ## Reviewer LLM (only if pre-checks did not produce BLOCKERs)
 
-If Check A (secrets) produced any BLOCKERs, end the iteration and hand them to the iter-N+1 fixer (the dev cannot proceed with secrets in the diff). Skip the reviewer LLM for that iteration.
+If Check A (secrets) or Check D (AC-N leak) produced any BLOCKERs, end the iteration and hand them to the iter-N+1 fixer (the dev cannot proceed with secrets in the diff, and AC-N leaks are a mechanical scrub the fixer handles before semantic review). Skip the reviewer LLM for that iteration.
 
 Otherwise, MUST invoke the PR-readiness reviewer as a sub-agent via the Agent tool with a TIGHT scope. The orchestrator MUST NOT perform the PR-readiness review inline. Stage 4's reviewer already validated correctness; do not duplicate that work here:
 
