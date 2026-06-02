@@ -448,6 +448,29 @@ jq '.skill_version = "6.7.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
 
+### Migration: From 6.7.0 -> 6.8.0
+
+`affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and prompts)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Bump skill_version to 6.8.0. No metadata rewrite needed.
+#    Narrate: "Migration 6.7.0 -> 6.8.0, step 1/1: bumping skill_version to 6.8.0."
+jq '.skill_version = "6.8.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No data backfill. All changes are prompt and protocol text: new Core Principle 10 (internal orchestration vocabulary never reaches team-facing artifacts), the comment-economy rule in the Stage 4 code-writer prompt, the "tighten comment means shorten" clarification in `lib/loop.md`, the comment-economy axis in the Stage 5 reviewer scope, and the Stage 9 anti-leak rules plus the post-generation validation grep on the recommended commit message and PR description. They take effect on the next stage that runs them.
+- Stage 9 now grep-validates the recommended commit message (step 7) and the PR description (step 8) for leaked internal labels (`AC-N`, `DOER`, `doer(`), mirroring the Stage 5 Check D that already guards committed code. In-flight tickets whose Stage 9 already produced those artifacts are not retroactively re-checked; the validation runs on the next Stage 9 entry.
+- Phase 2 auto-reverify is a no-op (`affected_stages: []`).
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
 ### Migration: From 6.5.0 -> 6.5.1
 
 `affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and helpers)

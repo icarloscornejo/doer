@@ -187,6 +187,13 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    - Use imperative mood ("Add X", "Fix Y", "Refactor Z", not "Added", "Fixes", "Refactoring")
    - Be specific (mention the actual change, not just "implement ticket")
    - Stay under 72 characters total (including the `<TICKET-ID>: ` prefix)
+   - Contain NO internal orchestration vocabulary (Core Principle 10): no `AC-N` labels, no `DOER` / debug-log wording, no stage names, no literal `doer`. Describe the change in plain business language. The `<TICKET-ID>: ` prefix is the issue key (e.g. `PDE-2079: `), which is expected and fine; the prohibition is on the body.
+
+   **Validate before presenting.** After drafting, run the team-facing-artifact grep over the message text:
+   ```bash
+   printf '%s' "<drafted commit message>" | grep -nE '\bAC-[0-9]+\b|\bDOER\b|\bdoer\('
+   ```
+   If it matches (exit 0), the draft leaked an internal label. Rewrite it in plain business language and re-validate. Do NOT present a message that matches.
 
    Present the recommendation in a fenced code block so the dev can copy-paste:
 
@@ -254,8 +261,14 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    == metadata.changelog ==
    <JSON dump of metadata.changelog>
 
-   == metadata.stages.7.ac_verdicts ==
-   <JSON dump of metadata.stages.7.ac_verdicts, or "Stage 7 skipped" if absent>
+   == Verification summary (behavior, NOT internal labels) ==
+   <Plain-language verification summary. The orchestrator MUST translate each
+   metadata.stages.7.ac_verdicts entry from its AC-N label into the behavior it
+   describes (pull the behavior from metadata.ac.in_scope) BEFORE inlining it
+   here. Example: instead of "AC-1 PASS via unit test", write "the stale banner
+   no longer re-renders after refresh (covered by unit test)". NEVER inline raw
+   AC-N labels, and NEVER write "DOER logs confirmed ..." or any runtime-log /
+   process wording. Write "Stage 7 skipped" if Stage 7 did not run.>
 
    == metadata.lessons_captured ==
    <JSON dump of metadata.lessons_captured, or [] if empty>
@@ -275,7 +288,8 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    Instructions:
    - If a template was provided: fill every section using the inlined metadata above. Preserve all headings, HTML comments, /label and /cc directives verbatim. Write "> N/A for this ticket." for sections that do not apply.
    - If "default": generate a generic structure with sections: Summary, Changes, How to test, Verification, Notes (omit Notes if empty).
-   - No em-dashes anywhere. Plain prose plus bullets. Terse — reviewers read fast.
+   - NEVER include internal orchestration labels (Core Principle 10): no `AC-N` (AC-1, AC-2, ...), no `DOER` or debug-log tags, no stage names ("Stage 4", "the reviewer"), no literal `doer`. Describe behavior and verification in plain business language (e.g. "verified on device", "unit tests pass", "the stale banner no longer re-renders"). The issue key in the title (e.g. PDE-2079) is fine; the prohibition is on internal labels in the body.
+   - No em-dashes anywhere. Plain prose plus bullets. Terse, reviewers read fast.
    - Output ONLY the filled PR description as a markdown string. No preamble, no explanation.
    ```
 
@@ -339,6 +353,12 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    - Apply Core Principle 9 (no em-dashes anywhere; see `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`).
    - Use plain prose plus bullets. No marketing language, no superlatives.
    - Keep it terse. Reviewers read PR descriptions fast.
+
+   **Validate before presenting (Core Principle 10, mirror of Stage 5 Check D).** After the sub-agent returns and before presenting, grep the generated PR description text for leaked internal vocabulary:
+   ```bash
+   printf '%s' "<generated PR description>" | grep -nE '\bAC-[0-9]+\b|\bDOER\b|\bdoer\('
+   ```
+   If it matches (exit 0): narrate which token leaked, re-invoke the PR-description writer with an explicit instruction to remove it (or scrub the offending line inline if it is a single trivial token), then re-validate. Do NOT present a description that matches the grep. (The issue key in a title, e.g. `PDE-2079`, does not match this pattern; only `AC-N`, `DOER`, and `doer(` do.)
 
    Present the result in a fenced code block so it copy-pastes directly into GitHub/GitLab/etc.:
 

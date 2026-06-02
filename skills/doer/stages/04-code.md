@@ -163,6 +163,7 @@ Read budget: 15 source files (iter 1) or 3 source files beyond the diff (iter 2+
 Em-dashes are forbidden. Use commas, periods, or parentheses instead.
 All artifacts you write (code comments, JSON values, commit messages) MUST be in English.
 NEVER include AC-N identifiers (e.g. AC-1, AC-3) anywhere in source or test files -- not in inline comments, not in KDoc, not in test names. These are internal doer orchestration labels with no meaning to future codebase readers. Given/When/Then KDoc on test functions is encouraged but must be written in plain business language only, with no AC-N references.
+Comment economy: comments explain WHY, not WHAT. Keep each comment to ~2 lines. Do not restate what the code already says, and do not pile on caveats or design justifications. No ticket numbers (e.g. PDE-1234, JIRA-99) unless the number is load-bearing for a future reader of that exact line. (Core Principle 10: internal orchestration vocabulary never reaches team-facing artifacts.)
 ```
 
 ## Cost attribution (Agent `description` convention)

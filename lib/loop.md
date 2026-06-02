@@ -17,6 +17,10 @@ Stage 1 (AC Confirm) Step 6.5 is also single-pass. It does NOT use this loop.
 
 **Test for AUTO_FIX vs SUGGESTION:** *"Is there anything to decide?"* No → AUTO_FIX. Yes (trade-off, preference, design judgment) → SUGGESTION. When in doubt → SUGGESTION (be conservative; AUTO_FIX runs without user approval).
 
+**"Tighten / shorten / trim comment" AUTO_FIX means REDUCE, never expand.** When an AUTO_FIX targets a comment for being too long, vague, or imprecise, the fix is to make it SHORTER and clearer, never to add caveats, conditions, or design justifications. Removing words is the goal; adding them is a regression of the same finding.
+- Wrong: a 3-line comment flagged as imprecise becomes a 5-line comment with extra "fails safe / refreshed only on fetch" caveats.
+- Right: a 5-line comment collapses to ~2 lines that keep only the WHY. (See Core Principle 10 and the code-writer comment-economy rule in `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/04-code.md`.)
+
 **Convergence = zero BLOCKERs remaining.** AUTO_FIXes are applied within the same iteration, do not block convergence.
 
 ## Review entries (in `metadata.code_review`)

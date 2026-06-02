@@ -2,6 +2,28 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.8.0 (no internal vocabulary in team-facing artifacts, comment economy)
+
+**Type:** MINOR (additive protocol changes and prompt fixes; no `metadata.json` schema incompatibilities with 6.7.x tickets).
+
+### What changed
+
+**New Core Principle 10 (`lib/principles.md`)**
+- "Internal orchestration vocabulary NEVER reaches team-facing artifacts." Defines the forbidden tokens (`AC-N` labels, the `DOER` runtime log tag, the literal `doer`, stage/loop names, stray ticket numbers) and the team-facing artifacts where the rule applies (committed code and comments, the recommended squash commit message, the PR description). The orchestrator translates `AC-N` to behavior before inlining into any writer prompt, and every generated artifact is grep-validated before it is shown. The internal per-stage `doer(<ID>):` commit prefix is explicitly out of scope (it is squashed away).
+
+**Comment economy (`04-code.md`, `lib/loop.md`, `05-code-review.md`)**
+- The code-writer prompt now caps comments at ~2 lines, forbids restating the code, and forbids stray ticket numbers unless load-bearing.
+- `lib/loop.md` clarifies that a "tighten / shorten / trim comment" AUTO_FIX means REDUCE length, never add caveats or justifications (the failure mode where a 3-line comment grew to 5 lines while being "tightened").
+- The Stage 5 reviewer LLM scope item 3 now covers comment economy (comments that restate code, over-long comments, stray ticket numbers), flagged as AUTO_FIX to shorten.
+
+**Stage 9 anti-leak for output artifacts (`09-wrapup.md`)**
+- Step 7 (recommended commit message): the body must contain no internal labels; a validation grep (`AC-N | DOER | doer(`) runs before presenting, and a match is rewritten.
+- Step 8 (PR description): the writer sub-agent prompt now forbids internal labels; the orchestrator translates each `metadata.stages.7.ac_verdicts` entry from its `AC-N` label into the behavior it describes (and never writes "DOER logs confirmed") BEFORE inlining; a post-generation validation grep mirrors Stage 5 Check D and blocks any leaked description from being shown. Also fixed a stray em-dash in the PR-writer prompt (Core Principle 9).
+
+### Migration
+
+`affected_stages: []`. No data backfill. All changes are prompt and protocol text; they take effect on the next Stage 4 / 5 / 9 that runs. In-flight tickets whose Stage 9 already produced its artifacts are not retroactively re-checked. See `lib/migrations.md` (6.7.0 -> 6.8.0).
+
 ## 6.7.0 (AC-N leak prevention, interaction-mechanism rule, intake restructure)
 
 **Type:** MINOR (additive protocol changes and prompt fixes; no `metadata.json` schema incompatibilities with 6.6.x tickets).

@@ -121,9 +121,15 @@ Your scope is narrow. Judge ONLY:
    Meaningful recovery or fallback? Logging? Or silently swallowing in
    a way that will hide bugs in production?
 
-3. Stale or misleading comments in the diff: TODO that should have
-   been done, comments that contradict what the code now does, dead
-   code commented out.
+3. Comment quality and economy in the diff:
+   - Stale or misleading: TODO that should have been done, comments that
+     contradict what the code now does, dead code commented out.
+   - Economy: comments that merely restate what the code already says,
+     comments longer than ~2 lines without a justifying WHY, or stray
+     ticket numbers (e.g. PDE-1234) with no value to a future reader.
+     Flag these as AUTO_FIX to SHORTEN (never to add caveats; see the
+     "tighten comment" rule in ${CLAUDE_PLUGIN_ROOT}/lib/loop.md and
+     Core Principle 10).
 
 Output findings as BLOCKER / AUTO_FIX / SUGGESTION / INFO. See
 ${CLAUDE_PLUGIN_ROOT}/lib/loop.md for classification rules.
