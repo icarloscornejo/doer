@@ -135,7 +135,8 @@ The reporting/legacy helper is `${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh`:
 
 | Operation | Arguments | Behavior |
 |-----------|-----------|----------|
-| `status <ID>` | (none) | Print a human-readable tabular summary: total tokens + USD, breakdown by stage, by agent, by model, rates age warning if stale, transcript reconciliation figures. Renders the transcript-reconciled breakdown when no `record` data exists (the normal case). |
+| `status <ID>` | `[--compact]` | Print a human-readable tabular summary: total tokens + USD, breakdown by stage, by agent, by model, rates age warning if stale, transcript reconciliation figures. Renders the transcript-reconciled breakdown when no `record` data exists (the normal case). `--compact` drops the per-stage block (it lives in the `performance` table at wrapup) and keeps total + by-agent + by-model. |
+| `performance <ID>` | (none) | Render the full Performance block deterministically from `metadata.performance` joined with `metadata.cost.transcript_reconciled`: a markdown stage table (Stage / Status / Duration / Tokens (in/out) / Cost / Notes), `Orchestrator` and bold `TOTAL` footer rows, plus `Code:` / `Agents:` / `Convergence:` lines. Stage 9 prints this verbatim so the orchestrator never hand-builds the table (which is the failure mode that drops the Tokens/Cost columns). Prints `"No performance data recorded for this ticket yet."` if `metadata.performance` is absent. |
 | `total <ID>` | (none) | Print `metadata.cost` as JSON. Empty object if nothing has been recorded yet. |
 | `record <ID>` | `--model <id> --input <tokens> --output <tokens> [--stage <N>] [--agent <name>]` | **Legacy / backward-compatibility.** Update `metadata.cost` totals + `by_model[<id>]` + `by_stage[<N>]`. Not part of the standard flow: the Agent tool does not expose token counts, so the orchestrator has nothing to pass. Retained for any future harness that surfaces usage. Unknown models use `lazy_fallback`. |
 
@@ -159,7 +160,7 @@ e.g. `doer:s4:code-writer | implement AC-2 happy path`. The reconciler parses `d
 
 ## Stage 9 wrapup
 
-Step 12 (after inbox clear): run `cost-transcript.sh reconcile <ID>` first to populate `metadata.cost.transcript_reconciled` (with `by_model` / `by_agent` / `by_stage`), then `cost.sh status <ID>` and narrate the one-paragraph summary inline. The reconciled state is the source of truth; the narration is just a UX courtesy. Any sub-agent dispatched earlier in Stage 9 (summary-writer, pr-description-writer) is captured by this reconcile pass because it reads the whole session transcript.
+Step 12 (after inbox clear): run `cost-transcript.sh reconcile <ID>` first to populate `metadata.cost.transcript_reconciled` (with `by_model` / `by_agent` / `by_stage`). Then present the wrapup in a FIXED order: (a) Summary rendered in the operating locale (`preferences.sh get-locale`; the stored `metadata.summary` stays English), (b) Performance via `cost.sh performance <ID>` printed verbatim (deterministic stage table with Tokens + Cost columns, Orchestrator + TOTAL rows, Code/Agents/Convergence), (c) cost detail via `cost.sh status <ID> --compact` (by-agent + by-model, no per-stage duplication since the table already has it), (d) the closing sentence. The reconciled state is the source of truth. Any sub-agent dispatched earlier in Stage 9 (summary-writer, pr-description-writer) is captured by this reconcile pass because it reads the whole session transcript.
 
 ## Lazy fallback
 

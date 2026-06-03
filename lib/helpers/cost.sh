@@ -11,9 +11,15 @@ Usage: cost.sh <command> <TICKET-ID> [args...]
 Commands:
   record <ID> --model <id> --input <tokens> --output <tokens> [--stage <N>] [--agent <name>]
   total  <ID>
-  status <ID>
+  status <ID> [--compact]
+  performance <ID>
 
 Notes:
+  - status --compact drops the per-stage breakdown (it lives in the
+    'performance' table at wrapup) and keeps by-agent / by-model / total.
+  - performance renders the full Performance block (stage table with
+    tokens + cost, Orchestrator and TOTAL rows, Code/Agents/Convergence)
+    from metadata.performance + metadata.cost.transcript_reconciled.
   - Requires jq.
   - Rates resolved from \$WK_COST_RATES_FILE, else \$CLAUDE_PLUGIN_ROOT/lib/cost-rates.json,
     else <script-dir>/../cost-rates.json.
@@ -177,6 +183,14 @@ case "$CMD" in
     ;;
 
   status)
+    COMPACT=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --compact) COMPACT=1; shift ;;
+        *) echo "Unknown arg: $1" >&2; usage ;;
+      esac
+    done
+
     RATES_FILE=$(resolve_rates_file) || true
     RATES_AGE_WARNING=""
     if [ -n "$RATES_FILE" ]; then
@@ -189,7 +203,7 @@ case "$CMD" in
       fi
     fi
 
-    jq -r --arg warn "$RATES_AGE_WARNING" '
+    jq -r --arg warn "$RATES_AGE_WARNING" --argjson compact "$COMPACT" '
       def fmt_tok(n): if n >= 1000000 then "\(n/1000000 * 10 | round / 10)M" elif n >= 1000 then "\(n/1000 * 10 | round / 10)k" else "\(n)" end;
       def fmt_usd(v): "$\(v * 100 | round / 100)";
       (.cost // null) as $c
@@ -200,11 +214,13 @@ case "$CMD" in
         elif $rec == 0 and $tr != null and ($tr.total_usd // 0) > 0 then
           "\n=== Cost Summary (from transcript) ===\n"
           + "Total (orchestrator + sub-agents + cache): \(fmt_usd($tr.total_usd))\n"
-          + "  input \(fmt_tok($tr.total_input_tokens // 0)) tok / output \(fmt_tok($tr.total_output_tokens // 0)) tok / cache_creation \(fmt_tok($tr.total_cache_creation_tokens // 0)) / cache_read \(fmt_tok($tr.total_cache_read_tokens // 0))\n"
-          + "\n--- By Stage (transcript) ---\n"
-          + ($tr.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
-              | map("  Stage \(.key): \(fmt_usd(.value.usd))  (in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
-              | if length == 0 then "  (none)" else join("\n") end)
+          + "  input \(fmt_tok($tr.total_input_tokens // 0)) tok / output \(fmt_tok($tr.total_output_tokens // 0)) tok / cache_creation \(fmt_tok($tr.total_cache_creation_tokens // 0)) / cache_read \(fmt_tok($tr.total_cache_read_tokens // 0))"
+          + (if $compact == 1 then "" else
+              "\n\n--- By Stage (transcript) ---\n"
+              + ($tr.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
+                  | map("  Stage \(.key): \(fmt_usd(.value.usd))  (in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+                  | if length == 0 then "  (none)" else join("\n") end)
+            end)
           + "\n\n--- By Agent (transcript) ---\n"
           + ($tr.by_agent // {} | to_entries | sort_by(-.value.usd)
               | map("  \(.key): \(fmt_usd(.value.usd))  (in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
@@ -218,11 +234,13 @@ case "$CMD" in
           + (if $warn != "" then "\n\($warn)" else "" end)
         else
           "\n=== Cost Summary ===\n"
-          + "Total: \(fmt_usd($c.total_usd))  |  input \(fmt_tok($c.total_input_tokens)) tok  |  output \(fmt_tok($c.total_output_tokens)) tok\n"
-          + "\n--- By Stage ---\n"
-          + ($c.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
-              | map("  Stage \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
-              | if length == 0 then "  (none)" else join("\n") end)
+          + "Total: \(fmt_usd($c.total_usd))  |  input \(fmt_tok($c.total_input_tokens)) tok  |  output \(fmt_tok($c.total_output_tokens)) tok"
+          + (if $compact == 1 then "" else
+              "\n\n--- By Stage ---\n"
+              + ($c.by_stage // {} | to_entries | sort_by(.key | tonumber? // 999)
+                  | map("  Stage \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
+                  | if length == 0 then "  (none)" else join("\n") end)
+            end)
           + "\n\n--- By Agent ---\n"
           + ($c.by_agent // {} | to_entries | sort_by(-.value.usd)
               | map("  \(.key): \(fmt_usd(.value.usd))  (\(.value.calls) call\(if .value.calls == 1 then "" else "s" end), in \(fmt_tok(.value.input_tokens // 0)) / out \(fmt_tok(.value.output_tokens // 0)))")
@@ -243,6 +261,61 @@ case "$CMD" in
              else "" end)
           + "\n\nRates from: \($c.rates_fetched_at)"
           + (if $warn != "" then "\n\($warn)" else "" end)
+        end
+    ' "$META"
+    ;;
+
+  performance)
+    # Render the full Performance block deterministically. The orchestrator
+    # prints this verbatim at wrapup (step 12) instead of hand-building a
+    # markdown table under heavy context, which is the failure mode that drops
+    # the Tokens/Cost columns. Data source: metadata.performance joined with
+    # metadata.cost.transcript_reconciled (the authoritative cost figure).
+    jq -r '
+      def fmt_tok(n): if n >= 1000000 then "\(n/1000000 * 10 | round / 10)M" elif n >= 1000 then "\(n/1000 * 10 | round / 10)k" else "\(n)" end;
+      def fmt_usd(v): "$\(v * 100 | round / 100)";
+      (.performance // null) as $p
+      | (.cost.transcript_reconciled // null) as $tr
+      | ($tr.by_stage // {}) as $bs
+      | ($tr.by_agent // {}) as $ba
+      | if $p == null then
+          "No performance data recorded for this ticket yet."
+        else
+          "| Stage | Status | Duration | Tokens (in/out) | Cost | Notes |\n"
+          + "|---|---|---|---|---|---|\n"
+          + (($p.stages // []) | map(
+              . as $s
+              | ($bs[($s.n | tostring)] // null) as $sc
+              | (if ($s.notes // "") != "" then $s.notes
+                 else [ (if $s.retry_used == true then "retry used" else empty end),
+                        (if $s.iterations != null then "\($s.iterations) iter" else empty end),
+                        (if $s.blockers_resolved != null then "\($s.blockers_resolved) blockers" else empty end)
+                      ] | join(", ")
+                 end) as $notes
+              | "| \($s.n) \($s.name) | \($s.status) | \($s.duration // "-") | "
+                + (if $sc == null then "- | - |"
+                   else "\(fmt_tok($sc.input_tokens // 0))/\(fmt_tok($sc.output_tokens // 0)) | \(fmt_usd($sc.usd // 0)) |"
+                   end)
+                + " \($notes) |"
+            ) | join("\n"))
+          + "\n"
+          + (($ba["orchestrator"] // null) as $o
+             | if $o == null then "| Orchestrator | - | - | - | - | |"
+               else "| Orchestrator | - | - | \(fmt_tok($o.input_tokens // 0))/\(fmt_tok($o.output_tokens // 0)) | \(fmt_usd($o.usd // 0)) | |"
+               end)
+          + "\n"
+          + (if $tr == null then "| **TOTAL** | | | - | - | |"
+             else "| **TOTAL** | | | **\(fmt_tok($tr.total_input_tokens // 0))/\(fmt_tok($tr.total_output_tokens // 0))** | **\(fmt_usd($tr.total_usd // 0))** | |"
+             end)
+          + (($p.code // null) as $code
+             | if $code == null then ""
+               else "\n\nCode: \($code.files.total // 0) files, +\($code.loc.add // 0) / -\($code.loc.rem // 0) LOC (\($code.files.src // 0) src, \($code.files.tests // 0) test)"
+               end)
+          + "\n\nAgents: " + ($p.agents // {} | to_entries | map("\(.key): \(.value)") | if length == 0 then "(none)" else join(", ") end)
+          + "\n\nConvergence: " + ($p.reviewer_roi // (
+              if $p.convergence != null
+              then "iter1: \($p.convergence.iter1 // 0), iter2+: \($p.convergence."iter2+" // 0), max_iter_hit: \($p.convergence.max_iter_hit // 0)"
+              else "-" end))
         end
     ' "$META"
     ;;

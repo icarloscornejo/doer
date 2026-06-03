@@ -108,11 +108,17 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
        "wall_clock": "<duration string>",
        "active":     "<duration string; equals wall_clock>",
        "stages": [
-         {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "<HH:MM:SS>"},
-         {"n": 2, "name": "plan",       "status": "complete", "duration": "...", "retry_used": false},
+         {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "<HH:MM:SS>", "notes": "<short free-text note, or omit>"},
+         {"n": 2, "name": "plan",       "status": "complete", "duration": "...", "retry_used": false, "notes": "retry used (check A-1 incorrect)"},
          {"n": 4, "name": "code",       "status": "complete", "duration": "...", "iterations": 2, "blockers_resolved": 1},
+         {"n": 6, "name": "quality-gate", "status": "skipped", "duration": "...", "notes": "no diff since last green"},
          ...
        ],
+
+       The optional `notes` field is a short human-readable note rendered verbatim in the
+       Performance table's Notes column (e.g. "retry used", "no diff since last green",
+       "visual on device"). If omitted, the renderer derives a note from retry_used /
+       iterations / blockers_resolved. Keep notes terse and in plain language.
        "code": {"commits": N, "files": {"total": N, "src": N, "tests": N, "docs": N}, "loc": {"add": N, "rem": N}, "tests_passing": "<X/Y>"},
        "agents": {"<agent-name>": <invocation-count>, ...},
        "convergence": {"iter1": N, "iter2+": N, "max_iter_hit": N, "avg": N},
@@ -136,7 +142,7 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
      "wall_clock":  "<duration string>",
      "active":      "<duration string; equals wall_clock since there is no pause concept>",
      "stages": [
-       {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "<HH:MM:SS>"},
+       {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "<HH:MM:SS>", "notes": "<optional short note>"},
        {"n": 2, "name": "plan",       "status": "complete", "duration": "...", "retry_used": false},
        {"n": 4, "name": "code",       "status": "complete", "duration": "...", "iterations": 2, "blockers_resolved": 1},
        ...
@@ -391,49 +397,47 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
     ```
     Pending messages at wrapup are an anomaly; the orchestrator MUST surface them via `AskUserQuestion` and ack them out of band before continuing. Acked messages are cleared so `metadata.inbox` does not grow unbounded across reverify cycles.
 
-12. **Surface ticket cost.** Run the transcript reconciliation first (best-effort), then the status report:
+12. **Surface ticket cost, then present the wrapup.** Run the transcript reconciliation first (best-effort):
     ```bash
     ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost-transcript.sh reconcile "<TICKET-ID>"
-    ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh status "<TICKET-ID>"
     ```
 
-    Before printing the status output, narrate this framing verbatim (the dev needs the model to read the breakdown correctly):
+    The wrapup is presented to the dev in a FIXED order. Do NOT reorder it, and do NOT hand-build the Performance table in prose — the table is rendered by a deterministic helper and printed verbatim. (Hand-building it under heavy end-of-session context is the failure mode that drops the Tokens/Cost columns; the helper exists to prevent that.)
 
-    > *"Cost is reconciled from the session transcript: the Agent tool does not expose per-call token counts, so the breakdown below is built from each sub-agent's own session log plus the orchestrator's turns, including cache costs. The by-stage and by-agent figures are attributed via each Agent's `description` prefix."*
+    **Presentation order (MANDATORY, in this exact sequence):**
 
-    Then print the full output of `cost.sh status` verbatim. Do NOT paraphrase or summarize it. The helper handles two render paths:
-    - Transcript total > 0: full breakdown by stage, agent, and model (the normal case).
-    - Transcript total == 0 (or reconcile never ran): the literal `"No cost recorded for this ticket yet."` (rare; means the reconciler had nothing to read, e.g. empty `metadata.session_ids`).
-
-    Best-effort: if `cost.sh status` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means the transcript reconciler had nothing to read (likely empty `metadata.session_ids`, or the transcript directory could not be located). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
-
-    **Present summary and performance inline.** After the cost output, present the following directly in the chat (read from `metadata.json`). This is MANDATORY — do not skip or defer to the closing sentence:
-
+    **(a) Summary — in the operating locale.** Read the locale once:
+    ```bash
+    LOCALE=$(${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh get-locale)
+    ```
+    `metadata.summary` is stored in English (it is an artifact; the PR-description writer consumes it). For the CHAT presentation, render it in `$LOCALE`: if `$LOCALE` is `en`, print `metadata.summary` verbatim; otherwise translate it into `$LOCALE` for display (the stored `metadata.summary` stays English — do NOT overwrite it). Present as:
     ```
     Summary
 
-    <metadata.summary — the one-paragraph prose written in step 3>
-
-    ---
-    Performance
-
-    <stages table: for each entry in metadata.performance.stages, one row with these columns:
-      Stage | Status | Duration | Tokens (in/out) | Cost | Notes
-    Pull Tokens and Cost from metadata.cost.transcript_reconciled.by_stage[<stage number>]: format tokens as "<input_tokens>/<output_tokens>" and cost as "$<usd>". If a stage has no entry in by_stage (e.g. skipped stages with no agent calls), show "-" in both columns.
-    After the per-stage rows, add two footer rows:
-      - "Orchestrator" row: tokens and cost from metadata.cost.transcript_reconciled.by_agent["orchestrator"] (in/out tokens and usd). If absent, show "-".
-      - "TOTAL" row (bold): cost from transcript_reconciled.total_usd, tokens from transcript_reconciled.total_input_tokens / total_output_tokens.>
-
-    Code: <metadata.performance.code.files.total> files, +<loc.add> / -<loc.rem> LOC (<src> src, <tests> test)
-
-    Agents: <comma-separated "name: N" pairs from metadata.performance.agents>
-
-    Convergence: <from metadata.performance.convergence — X/Y stages converged on iter 1, zero BLOCKERs or equivalent>
-
-    Cost: <brief line from cost output — approx USD + model + token counts>
+    <metadata.summary, rendered in $LOCALE>
     ```
 
-    Then narrate the closing sentence. This is NOT freeform — present it VERBATIM, branching ONLY on `squash_performed`. Do NOT substitute, reorder, expand, or summarize this sentence:
+    **(b) Performance — rendered by the helper, printed VERBATIM.** Run:
+    ```bash
+    ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh performance "<TICKET-ID>"
+    ```
+    Print its full output verbatim under a `Performance` heading. The helper emits the complete stage table (columns: Stage | Status | Duration | Tokens (in/out) | Cost | Notes), the `Orchestrator` and bold `TOTAL` footer rows, and the `Code:` / `Agents:` / `Convergence:` lines, all joined from `metadata.performance` and `metadata.cost.transcript_reconciled`. Do NOT rebuild any of this by hand. If the helper prints `"No performance data recorded for this ticket yet."`, something earlier failed to persist `metadata.performance`; narrate that and continue.
+
+    **(c) Cost detail — compact.** Narrate this framing verbatim first (the dev needs the model to read the breakdown correctly):
+
+    > *"Cost is reconciled from the session transcript: the Agent tool does not expose per-call token counts, so the breakdown below is built from each sub-agent's own session log plus the orchestrator's turns, including cache costs. The per-stage figures are in the Performance table above; the detail below is by agent and by model."*
+
+    Then print the full output of `cost.sh status --compact` verbatim. The `--compact` flag drops the per-stage block (already shown in the Performance table) and keeps the total, by-agent, and by-model breakdowns, avoiding duplication:
+    ```bash
+    ${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh status "<TICKET-ID>" --compact
+    ```
+    Do NOT paraphrase or summarize it. Two render paths:
+    - Transcript total > 0: by-agent and by-model breakdown (the normal case).
+    - Transcript total == 0 (or reconcile never ran): the literal `"No cost recorded for this ticket yet."` (rare; means the reconciler had nothing to read, e.g. empty `metadata.session_ids`).
+
+    Best-effort: if `cost.sh status --compact` prints `"No cost recorded for this ticket yet."`, narrate that line as-is and continue. Cost tracking is always-on; that message means the transcript reconciler had nothing to read (likely empty `metadata.session_ids`, or the transcript directory could not be located). See `${CLAUDE_PLUGIN_ROOT}/lib/cost.md` for the protocol.
+
+    **(d) Closing sentence.** After the cost detail, narrate the closing sentence. This is NOT freeform — present it VERBATIM, branching ONLY on `squash_performed`. Do NOT substitute, reorder, expand, or summarize this sentence:
 
     - If `metadata.stages.9.squash_performed == true`: *"Ticket <TICKET-ID> complete. 1 commit on `<branch>` (squashed). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, paste the PR description above, then push and open the PR manually."*
     - Otherwise: *"Ticket <TICKET-ID> complete. {N} commits on `<branch>` (post-cleanup). Summary and performance stats persisted to .doer/tickets/<TICKET-ID>/metadata.json (`summary`, `performance`, `cost`). Run your pre-commit checks, squash with the recommended commit message above, paste the PR description above, then push and open the PR manually."*

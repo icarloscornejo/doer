@@ -2,6 +2,34 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.8.1 (deterministic wrapup presentation: Summary then Performance then Cost)
+
+**Type:** PATCH (presentation fix and additive helper commands; the only `metadata.json` change is an optional, render-only `performance.stages[].notes` field with a graceful fallback).
+
+### What changed
+
+**Stage 9 wrapup output had two recurring failures.** The Performance table the orchestrator hand-built at the end of the session kept losing its Tokens and Cost columns (collapsing to `Stage | Status | Duration | Notes`), and the one-paragraph summary was pasted in English into Spanish-locale chats. The cost block also printed the per-stage breakdown twice (once in `cost.sh status`, once intended for the table). Root cause: the table was built in free-form prose at the point of heaviest accumulated context, and step 12 said "present `metadata.summary` verbatim" with no locale step.
+
+**New deterministic renderer `cost.sh performance <ID>` (`lib/helpers/cost.sh`)**
+- Emits the full Performance block from `metadata.performance` joined with `metadata.cost.transcript_reconciled`: the stage table (Stage / Status / Duration / Tokens (in/out) / Cost / Notes), the `Orchestrator` and bold `TOTAL` footer rows, and the `Code:` / `Agents:` / `Convergence:` lines. The orchestrator prints it verbatim and no longer hand-builds the table, which is what dropped the columns.
+- Degrades gracefully: prints `"No performance data recorded for this ticket yet."` if `metadata.performance` is absent; shows `-` for stages with no transcript cost entry.
+
+**New `cost.sh status --compact` flag (`lib/helpers/cost.sh`)**
+- Drops the per-stage block (now owned by the Performance table) and keeps the total, by-agent, and by-model breakdowns. Used for the cost-detail section at wrapup to avoid duplicating the per-stage figures.
+
+**Stage 9 step 12 rewritten (`09-wrapup.md`)** to a FIXED presentation order: (a) Summary rendered in the operating locale (`preferences.sh get-locale`; the stored `metadata.summary` stays English so the PR-description writer still gets English), (b) Performance via `cost.sh performance` printed verbatim, (c) cost detail via `cost.sh status --compact`, (d) the verbatim closing sentence.
+
+**Optional `performance.stages[].notes` field (`09-wrapup.md` summary-writer schema)**
+- Short human-readable note rendered verbatim in the table's Notes column (e.g. "retry used", "no diff since last green"). If omitted, the renderer derives a note from `retry_used` / `iterations` / `blockers_resolved`.
+
+**Docs (`lib/cost.md`)**: documented the `performance` command, the `--compact` flag, and the new wrapup presentation order.
+
+**Tests (`tests/helpers.sh`)**: added `test_cost_performance` covering the Tokens/Cost columns, per-stage cost join, `-` fallback, Orchestrator/TOTAL rows, Code/Agents/Convergence footers, graceful degradation, and the `--compact` flag. 46 tests pass.
+
+### Migration
+
+`affected_stages: []`. No data backfill. The `notes` field is additive and optional; in-flight tickets without it render via the derived-note fallback. All other changes are helper code and orchestrator instructions; they take effect on the next Stage 9 that runs. See `lib/migrations.md` (6.8.0 -> 6.8.1).
+
 ## 6.8.0 (no internal vocabulary in team-facing artifacts, comment economy)
 
 **Type:** MINOR (additive protocol changes and prompt fixes; no `metadata.json` schema incompatibilities with 6.7.x tickets).

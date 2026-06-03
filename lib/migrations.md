@@ -448,6 +448,29 @@ jq '.skill_version = "6.7.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
 
+### Migration: From 6.8.0 -> 6.8.1
+
+`affected_stages: []` (no metadata shape change; the new `performance.stages[].notes` field is optional and render-only)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Bump skill_version to 6.8.1. No metadata rewrite needed.
+#    Narrate: "Migration 6.8.0 -> 6.8.1, step 1/1: bumping skill_version to 6.8.1."
+jq '.skill_version = "6.8.1"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- No data backfill. The Stage 9 wrapup now presents output in a fixed order (Summary in the operating locale, then a deterministic Performance table via `cost.sh performance`, then a compact cost detail via `cost.sh status --compact`, then the closing sentence). The Performance table is rendered by a helper instead of hand-built, which fixes the recurring loss of its Tokens/Cost columns.
+- The optional `performance.stages[].notes` field is additive. In-flight tickets whose `metadata.performance` predates it render via the derived-note fallback (`retry_used` / `iterations` / `blockers_resolved`); no rewrite required.
+- All changes are helper code and orchestrator instructions; they take effect on the next Stage 9 that runs. In-flight tickets whose Stage 9 already completed are not retroactively re-rendered.
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
 ### Migration: From 6.7.0 -> 6.8.0
 
 `affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and prompts)

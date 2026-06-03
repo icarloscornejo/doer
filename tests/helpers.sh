@@ -510,6 +510,137 @@ JSON
   unset WK_COST_RATES_FILE
 }
 
+test_cost_performance() {
+  echo "## cost.sh performance / status --compact"
+
+  new_workdir
+  mkdir -p .doer/tickets/TEST-PERF/
+  cat > .doer/tickets/TEST-PERF/metadata.json <<'JSON'
+{
+  "ticket_id": "TEST-PERF",
+  "performance": {
+    "stages": [
+      {"n": 1, "name": "ac-confirm", "status": "complete", "duration": "01:00:00"},
+      {"n": 2, "name": "plan", "status": "complete", "duration": "01:00:00", "retry_used": true},
+      {"n": 4, "name": "code", "status": "complete", "duration": "01:00:00", "iterations": 1, "blockers_resolved": 0},
+      {"n": 6, "name": "quality-gate", "status": "skipped", "duration": "00:30:00", "notes": "no diff since last green"}
+    ],
+    "code": {"commits": 1, "files": {"total": 4, "src": 2, "tests": 2, "docs": 0}, "loc": {"add": 170, "rem": 20}, "tests_passing": "8/8"},
+    "agents": {"planner": 2, "code-writer": 1},
+    "convergence": {"iter1": 2, "iter2+": 0, "max_iter_hit": 0},
+    "reviewer_roi": "2/2 looped stages converged on iter 1 with zero BLOCKERs (100%)."
+  },
+  "cost": {
+    "total_usd": 0,
+    "transcript_reconciled": {
+      "total_usd": 10.83,
+      "total_input_tokens": 343000,
+      "total_output_tokens": 82700,
+      "total_cache_creation_tokens": 905000,
+      "total_cache_read_tokens": 20600000,
+      "by_stage": {
+        "1": {"input_tokens": 5000, "output_tokens": 1000, "usd": 0.07},
+        "2": {"input_tokens": 90000, "output_tokens": 20000, "usd": 1.95},
+        "4": {"input_tokens": 30000, "output_tokens": 8000, "usd": 0.19}
+      },
+      "by_agent": {
+        "orchestrator": {"input_tokens": 200000, "output_tokens": 40000, "usd": 7.34},
+        "planner": {"input_tokens": 90000, "output_tokens": 20000, "usd": 1.95}
+      },
+      "by_model": {
+        "claude-sonnet-4-6": {"input_tokens": 343000, "output_tokens": 82700, "cache_creation_tokens": 905000, "cache_read_tokens": 20600000, "usd": 10.83}
+      }
+    }
+  }
+}
+JSON
+
+  PERF=$(bash "$COST_SH" performance TEST-PERF)
+  # Table must carry both Tokens and Cost columns (the regressed columns).
+  if echo "$PERF" | grep -q "Tokens (in/out)" && echo "$PERF" | grep -q "| Cost |"; then
+    pass "performance renders Tokens and Cost columns"
+  else
+    fail "performance renders Tokens and Cost columns" "out=$PERF"
+  fi
+
+  # Per-stage cost must be joined from transcript_reconciled.by_stage.
+  if echo "$PERF" | grep -qE '\| 2 plan \|.*\$1.95'; then
+    pass "performance joins per-stage cost from transcript"
+  else
+    fail "performance joins per-stage cost from transcript" "out=$PERF"
+  fi
+
+  # Skipped stage with no transcript entry shows '-' for tokens and cost.
+  if echo "$PERF" | grep -qE '\| 6 quality-gate \| skipped \|.*\| - \| - \|'; then
+    pass "performance shows '-' for stages with no cost entry"
+  else
+    fail "performance shows '-' for stages with no cost entry" "out=$PERF"
+  fi
+
+  # Orchestrator and TOTAL footer rows.
+  if echo "$PERF" | grep -qE '\| Orchestrator \|.*\$7.34' \
+     && echo "$PERF" | grep -qE '\*\*TOTAL\*\*.*\*\*\$10.83\*\*'; then
+    pass "performance renders Orchestrator and TOTAL rows"
+  else
+    fail "performance renders Orchestrator and TOTAL rows" "out=$PERF"
+  fi
+
+  # Code / Agents / Convergence footers.
+  if echo "$PERF" | grep -q "Code: 4 files, +170 / -20 LOC" \
+     && echo "$PERF" | grep -q "Agents: planner: 2, code-writer: 1" \
+     && echo "$PERF" | grep -q "converged on iter 1"; then
+    pass "performance renders Code/Agents/Convergence footers"
+  else
+    fail "performance renders Code/Agents/Convergence footers" "out=$PERF"
+  fi
+
+  # Graceful: no performance object.
+  echo '{"cost":{}}' > .doer/tickets/TEST-PERF/metadata.json
+  if bash "$COST_SH" performance TEST-PERF | grep -q "No performance data recorded"; then
+    pass "performance degrades gracefully without performance object"
+  else
+    fail "performance degrades gracefully without performance object"
+  fi
+
+  # --- status --compact drops the per-stage block but keeps by-agent/by-model ---
+  new_workdir
+  cat > rates.json <<'JSON'
+{"currency":"USD","fetched_at":"2026-05-20T00:00:00Z","ttl_days":7,"rates":{},"lazy_fallback":{"input_per_mtok":3.0,"output_per_mtok":15.0}}
+JSON
+  export WK_COST_RATES_FILE="$PWD/rates.json"
+  mkdir -p .doer/tickets/TEST-CMP/
+  cat > .doer/tickets/TEST-CMP/metadata.json <<'JSON'
+{
+  "ticket_id": "TEST-CMP",
+  "cost": {
+    "total_usd": 0,
+    "transcript_reconciled": {
+      "total_usd": 0.5, "total_input_tokens": 12345, "total_output_tokens": 6789,
+      "total_cache_creation_tokens": 1000, "total_cache_read_tokens": 500,
+      "by_stage": {"4": {"input_tokens": 10000, "output_tokens": 5000, "usd": 0.4}},
+      "by_agent": {"orchestrator": {"input_tokens": 2345, "output_tokens": 1789, "usd": 0.1}},
+      "by_model": {"claude-sonnet-4-6": {"input_tokens": 12345, "output_tokens": 6789, "cache_creation_tokens": 1000, "cache_read_tokens": 500, "usd": 0.5}}
+    }
+  }
+}
+JSON
+  CMP=$(bash "$COST_SH" status TEST-CMP --compact)
+  FULL=$(bash "$COST_SH" status TEST-CMP)
+  if ! echo "$CMP" | grep -q "By Stage" \
+     && echo "$CMP" | grep -q "By Agent (transcript)" \
+     && echo "$CMP" | grep -q "By Model (transcript)"; then
+    pass "status --compact drops By Stage, keeps By Agent/By Model"
+  else
+    fail "status --compact drops By Stage, keeps By Agent/By Model" "out=$CMP"
+  fi
+  if echo "$FULL" | grep -q "By Stage (transcript)"; then
+    pass "status without --compact still renders By Stage"
+  else
+    fail "status without --compact still renders By Stage" "out=$FULL"
+  fi
+  unset WK_COST_RATES_FILE
+}
+
 test_preferences() {
   echo "## preferences.sh"
 
@@ -589,6 +720,7 @@ test_inbox
 test_cost
 test_cost_transcript
 test_cost_status_orchestrator_only
+test_cost_performance
 test_preferences
 test_extract_acs
 

@@ -11,7 +11,7 @@ description: >-
   "keep going with ABC-123"). Skips PRD, architecture design, ticket creation,
   PR assembly, and deployment. Keeps spec, plan, tests, code, review, docs,
   and lessons learned.
-version: 6.8.0
+version: 6.8.1
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
