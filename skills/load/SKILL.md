@@ -4,7 +4,7 @@ description: >-
   Import a ticket from Jira, Linear, or GitHub Issues into the local doer
   intake. After import, run /wk:doer <TICKET-ID> to start the pipeline.
   Auto-detects the tracker by ID shape; override with --tracker.
-version: 6.0.0
+version: 6.9.0
 user-invocable: true
 allowed-tools: [Read, Write, Bash, AskUserQuestion]
 ---
@@ -154,7 +154,7 @@ jq '<transform>' .doer/tickets/<ID>/metadata.json > .doer/tickets/<ID>/metadata.
 | `branch` | `<ticket_id>-<slugified-title>`, or the value of `--branch`. |
 | `status` | `"in_progress"` (doer pipeline status, not the tracker status). |
 | `current_stage` | `1` |
-| `skill_version` | `"6.0.0"` |
+| `skill_version` | `"6.9.0"` |
 | `created_at` | ISO8601 timestamp of the import. |
 | `intake.description` | Full body text of the tracker issue. |
 | `intake.raw_acs` | Verbatim AC section if detected; otherwise the literal string `"derive"`. |

@@ -51,7 +51,7 @@ All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.s
   "branch": "<branch>",
   "status": "in_progress | complete",
   "current_stage": 1,
-  "skill_version": "6.0.0",
+  "skill_version": "6.9.0",
   "testing_strategy": {
     "mode": "direct | bdd",
     "rationale": "<one sentence explaining why this mode was chosen>",
@@ -92,15 +92,15 @@ All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.s
   },
 
   "stages": {
-    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "6.0.0", "completed_at": "<ISO8601>"},
-    "2": {"name": "plan",           "status": "...", "verified_with": "6.0.0", "retry_used": false},
-    "3": {"name": "tests",          "status": "pending | in_progress | complete | deferred | skipped | imported | blocked", "verified_with": "6.0.0", "retry_used": false, "testing_strategy_mode": "direct | bdd"},
-    "4": {"name": "code",           "status": "...", "verified_with": "6.0.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals", "pre_stage4_sha": "<full-40-char-SHA>", "per_task_gate": {"enabled": false, "decisions": [{"step_order": 1, "decision": "accepted | edited_manual | edited_via_writer | rejected | skipped | auto_accepted_empty", "at": "<ISO8601>", "edit_instructions": "<optional, only for edited_via_writer>"}]}, "parallel_subagents": {"enabled": false, "groups": [{"id": "<parallel_group id, or 'serial-<order>' for ungrouped steps>", "step_orders": [1, 2], "dispatched": "parallel | serialized_due_to_overlap | serial_singleton", "started_at": "<ISO8601>", "completed_at": "<ISO8601>", "errored_step_orders": []}]}},
-    "5": {"name": "code-review",    "status": "...", "verified_with": "6.0.0", "iterations": 0, "loop_outcome": "..."},
-    "6": {"name": "quality-gate",   "status": "...", "verified_with": "6.0.0"},
-    "7": {"name": "runtime-verify", "status": "...", "verified_with": "6.0.0", "ac_verdicts": {}},
-    "8": {"name": "docs-sync",      "status": "...", "verified_with": "6.0.0"},
-    "9": {"name": "wrapup",         "status": "...", "verified_with": "6.0.0"}
+    "1": {"name": "ac-confirm",     "status": "pending | in_progress | complete | skipped | imported | blocked | retroactive_in_progress", "verified_with": "6.9.0", "completed_at": "<ISO8601>"},
+    "2": {"name": "plan",           "status": "...", "verified_with": "6.9.0", "retry_used": false},
+    "3": {"name": "tests",          "status": "pending | in_progress | complete | deferred | skipped | imported | blocked", "verified_with": "6.9.0", "retry_used": false, "testing_strategy_mode": "direct | bdd"},
+    "4": {"name": "code",           "status": "...", "verified_with": "6.9.0", "iterations": 0, "loop_outcome": "converged | accepted_with_residuals", "pre_stage4_sha": "<full-40-char-SHA>", "per_task_gate": {"enabled": false, "decisions": [{"step_order": 1, "decision": "accepted | edited_manual | edited_via_writer | rejected | skipped | auto_accepted_empty", "at": "<ISO8601>", "edit_instructions": "<optional, only for edited_via_writer>"}]}, "parallel_subagents": {"enabled": false, "groups": [{"id": "<parallel_group id, or 'serial-<order>' for ungrouped steps>", "step_orders": [1, 2], "dispatched": "parallel | serialized_due_to_overlap | serial_singleton", "started_at": "<ISO8601>", "completed_at": "<ISO8601>", "errored_step_orders": []}]}},
+    "5": {"name": "code-review",    "status": "...", "verified_with": "6.9.0", "iterations": 0, "loop_outcome": "..."},
+    "6": {"name": "quality-gate",   "status": "...", "verified_with": "6.9.0"},
+    "7": {"name": "runtime-verify", "status": "...", "verified_with": "6.9.0", "ac_verdicts": {}},
+    "8": {"name": "docs-sync",      "status": "...", "verified_with": "6.9.0"},
+    "9": {"name": "wrapup",         "status": "...", "verified_with": "6.9.0"}
   },
 
   "changelog": [

@@ -4,7 +4,7 @@ description: >-
   Run configurable advisor personas (security, performance, mobile, a11y, api)
   against specs, ACs, diffs, or files. Personas are JSON files under
   lib/advisor-personas/. Use /wk:advise --list to see available personas.
-version: 6.0.0
+version: 6.9.0
 user-invocable: true
 allowed-tools: [Read, Write, Bash, Agent]
 ---

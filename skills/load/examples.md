@@ -22,7 +22,7 @@ Reference-only. Read on demand if you need to see the resulting `metadata.json` 
   "branch": "ABC-123-add-rate-limiting-to-the-public-api",
   "status": "in_progress",
   "current_stage": 1,
-  "skill_version": "6.0.0",
+  "skill_version": "6.9.0",
   "created_at": "2026-05-20T18:00:00Z",
   "intake": {
     "description": "We need to limit unauthenticated callers to 100 req/min...",
@@ -58,7 +58,7 @@ Reference-only. Read on demand if you need to see the resulting `metadata.json` 
   "branch": "ENG-88-dark-mode-toggle-in-settings-screen",
   "status": "in_progress",
   "current_stage": 1,
-  "skill_version": "6.0.0",
+  "skill_version": "6.9.0",
   "created_at": "2026-05-20T18:05:00Z",
   "intake": {
     "description": "Users should be able to switch between light and dark mode from Settings...",
@@ -92,7 +92,7 @@ Reference-only. Read on demand if you need to see the resulting `metadata.json` 
   "branch": "feature/fix-cors-headers",
   "status": "in_progress",
   "current_stage": 1,
-  "skill_version": "6.0.0",
+  "skill_version": "6.9.0",
   "created_at": "2026-05-20T18:10:00Z",
   "intake": {
     "description": "The /v2/auth/login and /v2/auth/refresh endpoints are missing Access-Control-Allow-Origin headers...",

@@ -39,7 +39,7 @@ fi
 mk_meta() {
   mkdir -p ".doer/tickets/$1"
   cat > ".doer/tickets/$1/metadata.json" <<JSON
-{"ticket_id":"$1","title":"t","branch":"b","status":"in_progress","current_stage":1,"skill_version":"6.0.0"}
+{"ticket_id":"$1","title":"t","branch":"b","status":"in_progress","current_stage":1,"skill_version":"6.9.0"}
 JSON
 }
 

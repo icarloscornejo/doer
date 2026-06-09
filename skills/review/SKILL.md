@@ -4,7 +4,7 @@ description: >-
   Review an external pull request (GitHub or GitLab) with configurable advisor
   personas (security, performance, mobile, a11y, api). Optionally posts the
   findings as a PR review comment. Personas are shared with /wk:advise.
-version: 6.0.0
+version: 6.9.0
 user-invocable: true
 allowed-tools: [Read, Write, Bash, Agent]
 ---

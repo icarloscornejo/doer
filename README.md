@@ -1,6 +1,6 @@
 # Doer Work Kit (`wk`)
 
-**Ticket execution orchestrator for Claude Code.** Plugin version 6.8.1.
+**Ticket execution orchestrator for Claude Code.** Plugin version 6.9.0.
 
 Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
 
