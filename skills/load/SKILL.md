@@ -63,6 +63,8 @@ When `--tracker` is provided, the detection step is skipped entirely.
 | `curl` | Jira and Linear backends |
 | `jq` | All backends (JSON parsing and metadata writes) |
 
+The HTTP fetch and field extraction logic is provided by the shared helper `${CLAUDE_PLUGIN_ROOT}/lib/helpers/tracker-fetch.sh`. Dependency checks (curl, gh, jq) are handled by the helper itself.
+
 ### GitHub Issues
 
 Uses `gh` exclusively; no raw HTTP calls.
@@ -260,32 +262,32 @@ fi
 
 **5. Fetch from tracker.**
 
-GitHub:
+Use the shared tracker-fetch helper. It handles HTTP calls, error detection, and field normalization for all three backends:
+
 ```bash
-gh issue view "<ref>" --json title,body,labels,state
+RESULT=$(bash "${CLAUDE_PLUGIN_ROOT}/lib/helpers/tracker-fetch.sh" <tracker> "${TICKET_ID}")
 ```
 
-Jira:
-```bash
-curl -s -u "${WK_JIRA_EMAIL}:${WK_JIRA_TOKEN}" \
-  "${WK_JIRA_BASE_URL}/rest/api/3/issue/${TICKET_ID}"
-```
+Where `<tracker>` is `jira`, `linear`, or `gh`. For Jira, the helper uses `?expand=renderedFields` to obtain readable descriptions and falls back to ADF text extraction when rendered fields are unavailable.
 
-Linear:
+Check the `.error` field of the JSON output before proceeding:
 ```bash
-curl -s -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: ${WK_LINEAR_API_KEY}" \
-  --data "{\"query\": \"{ issue(id: \\\"${TICKET_ID}\\\") { title description state { name } labels { nodes { name } } } }\"}" \
-  https://api.linear.app/graphql
+FETCH_ERROR=$(printf '%s' "$RESULT" | jq -r '.error // empty')
+if [ -n "$FETCH_ERROR" ]; then
+  # Handle error per the Error Handling section.
+fi
 ```
-
-Check the HTTP status or `jq` output for errors before proceeding (see Error
-Handling section).
 
 **6. Extract fields.**
-Parse `title`, `body`/`description`, `state`/`status.name`, and `labels` from
-the JSON response using `jq`.
+
+Parse normalized fields from the helper output:
+```bash
+TITLE=$(printf '%s' "$RESULT" | jq -r '.title')
+BODY=$(printf '%s' "$RESULT" | jq -r '.body')
+TRACKER_STATUS=$(printf '%s' "$RESULT" | jq -r '.status')
+LABELS=$(printf '%s' "$RESULT" | jq '.labels')
+SOURCE_URL=$(printf '%s' "$RESULT" | jq -r '.source_url')
+```
 
 **7. Extract ACs from the body.**
 Write the body to a temp file, then run:

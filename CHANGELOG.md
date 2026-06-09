@@ -2,6 +2,50 @@
 
 All releases follow SemVer. For migration details, see `lib/migrations.md`.
 
+## 6.9.0 (intake auto-fetch, lessons-driven stage guidance, commit/PR persistence)
+
+**Type:** MINOR (additive metadata fields, new intake capability, prompt guidance additions; no incompatibilities with 6.8.x tickets).
+
+### What changed
+
+**Intake auto-fetch (Step 0 in `_intake.md`)**
+- When `/wk:doer PROJ-123` is invoked, the intake now detects tracker connectivity before asking manual questions. Detection cascade: MCP tools → WK_JIRA_* env vars → common JIRA_*/JIRA_URL/JIRA_TOKEN patterns → GitHub CLI (`gh`). If connectivity is found, offers to fetch ticket data automatically via `AskUserQuestion`, skipping Q1-Q3 (title, description, ACs) and pre-filling Q4 (context) and Q5 (branch).
+- Doer does NOT configure anything. It only detects what the dev already has available and offers to use it. If nothing is detected, the manual flow runs silently with no mention of the attempt.
+
+**New shared helpers (`lib/helpers/`)**
+- `tracker-detect.sh`: env var detection cascade for Jira (WK_JIRA_* → common JIRA_*), Linear (WK_LINEAR_API_KEY → LINEAR_API_KEY), GitHub (`gh auth status`). Never prints token values; only `token_set: true/false`.
+- `tracker-fetch.sh`: HTTP fetch + field normalization for all three trackers. Jira uses `?expand=renderedFields` for readable descriptions with ADF text extraction fallback. Always exits 0; errors in `.error` JSON field.
+
+**`/wk:load` refactored to shared helper**
+- Steps 5-6 of `skills/load/SKILL.md` now delegate to `tracker-fetch.sh` instead of inline curl+jq. No behavioral change.
+
+**Commit message format changed to gerund (`09-wrapup.md` Step 7)**
+- Format is now `TICKET-ID: Verbing rest of description` (e.g., `PDE-2079: Adding dark mode support`). Previously used imperative mood (`Add X`). Present participle with initial capital is mandatory.
+
+**Commit message and PR description persisted in metadata (`09-wrapup.md` Steps 7, 8)**
+- New root-level fields `metadata.commit_message` and `metadata.pr_description` capture the final artifacts generated in Stage 9. Previously only `stages.9.commit_message_presented` / `pr_description_presented` flags were written.
+
+**Wrapup preamble fix (`09-wrapup.md`)**
+- Preamble said "NINE numbered sub-steps" but the body had 12. Fixed to say TWELVE, added steps 10-12 to the summary table. Added body-over-table forcing rule: when the preamble table and the body disagree on step count, the body wins.
+
+**New testing strategy signal (`_intake.md`)**
+- `direct.sdk_unknown_mechanism`: when the ticket involves integrating with an SDK/library whose mechanism is not documented or known, infer `direct` mode instead of `bdd`. Prevents writing tests before understanding the SDK.
+
+**Lessons-driven stage guidance additions**
+- `02-plan.md`: explore SDK sources before planning when mechanism is unknown; derive wire model field names from Endpoint Contract JSON, never from AC prose.
+- `03-tests.md` (both branches): use reflection-based assertions for delete/remove tickets; assert side-effects fire for multi-condition guard flows.
+- `04-code.md`: grep ALL call sites when gating a function behind a feature flag; scan entire doc files for stale references when updating.
+
+**`intake.tracker` provenance field (`lib/memory-paths.md`)**
+- New optional field in intake: `{kind, source_id, source_url, imported_at}`. Populated by `/wk:load` or intake auto-fetch Step 0. Null when data was pasted manually.
+
+**Tests (`tests/helpers.sh`)**
+- 15 new tests for tracker-detect.sh and tracker-fetch.sh. 61 total, 0 failures.
+
+### Migration
+
+`affected_stages: []`. All new fields (`commit_message`, `pr_description`, `intake.tracker`) are additive with null defaults. In-flight tickets at 6.8.x gain the new fields when Stage 9 runs (or on next intake for `tracker`). The guidance additions in stages 2-4 take effect on the next stage execution. The wrapup preamble fix takes effect on the next Stage 9. No data backfill needed. See `lib/migrations.md` (6.8.1 → 6.9.0).
+
 ## 6.8.1 (deterministic wrapup presentation: Summary then Performance then Cost)
 
 **Type:** PATCH (presentation fix and additive helper commands; the only `metadata.json` change is an optional, render-only `performance.stages[].notes` field with a graceful fallback).

@@ -62,10 +62,11 @@ All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.s
   "completed_at": null,
 
   "intake": {
-    "description": "<full pasted description>",
-    "raw_acs": "<full pasted ACs or 'derive'>",
+    "description": "<full pasted description or auto-fetched body>",
+    "raw_acs": "<full pasted ACs, extracted ACs, or 'derive'>",
     "context": "<extra context or 'none'>",
-    "prior_work": { "exists": false, "plan": null, "tests": null, "code": null, "docs": null }
+    "prior_work": { "exists": false, "plan": null, "tests": null, "code": null, "docs": null },
+    "tracker": { "kind": "jira | linear | gh", "source_id": "<as typed>", "source_url": "<canonical URL>", "imported_at": "<ISO8601>" }
   },
 
   "ac": {
@@ -115,6 +116,8 @@ All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.s
 
   "assumptions_validation": [{"text": "...", "status": "VALIDATED | INVALIDATED | UNVERIFIED", "reason": "..."}],
   "lessons_captured": [{"slug": "<lesson-slug>", "takeaway": "..."}],
+  "commit_message": "<TICKET-ID>: Verbing rest of description (the final squash-ready message, or null if wrapup did not complete)>",
+  "pr_description": "<full PR description markdown, or null if dev skipped or wrapup did not complete>",
   "summary": "<wrapup paragraph>",
   "performance": {"started": "...", "completed": "...", "wall_clock": "...", "active": "...", "stages": [], "code": {}, "agents": {}, "convergence": {}, "reviewer_roi": "..."},
 
@@ -132,7 +135,7 @@ All reads and writes go through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.s
 }
 ```
 
-**Field ownership:** `intake` (intake step), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1; `ac.self_review` populated by Step 6.5 when `preferences.sh get-flag stage1_ac_self_review` returns empty or `true`), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.sh get-flag stage4_per_task_gate` returns `true`, `parallel_subagents` for 4 when `preferences.sh get-flag stage4_parallel_subagents` returns `true`, `ac_verdicts` for 7). `session_ids` and `session_ids_source` are written at intake and appended on every resume; owned by the orchestrator entry-point and resume flow. `cost.transcript_reconciled` is written by `cost-transcript.sh reconcile` at Stage 9 step 12.
+**Field ownership:** `intake` (intake step; `intake.tracker` is optional, populated by `/wk:load` or by the intake auto-fetch Step 0 when the dev has tracker connectivity configured; `null` when the dev pasted data manually), `testing_strategy` (intake's final sub-step, after heuristic inference + a single dev confirmation), `ac` (Stage 1; `ac.self_review` populated by Step 6.5 when `preferences.sh get-flag stage1_ac_self_review` returns empty or `true`), `plan` (Stage 2), `changelog` (every doer stage appends), `code_review` (Stage 5 appends), `assumptions_validation` / `lessons_captured` / `summary` / `performance` / `commit_message` (Stage 9 step 7) / `pr_description` (Stage 9 step 8) (Stage 9). The `stages` block is the state machine; the orchestrator updates per-stage `status`, `verified_with`, and stage-specific fields (`retry_used` and `testing_strategy_mode` for 3, `retry_used` for 2, `iterations`/`loop_outcome` for 4/5, `pre_stage4_sha` and `per_task_gate` for 4 when `preferences.sh get-flag stage4_per_task_gate` returns `true`, `parallel_subagents` for 4 when `preferences.sh get-flag stage4_parallel_subagents` returns `true`, `ac_verdicts` for 7). `session_ids` and `session_ids_source` are written at intake and appended on every resume; owned by the orchestrator entry-point and resume flow. `cost.transcript_reconciled` is written by `cost-transcript.sh reconcile` at Stage 9 step 12.
 
 **`ac.self_review` field semantics (added in 6.3.0).** Stage 1 Step 6.5 dispatches a single `ac-reviewer` sub-agent (one round, no loop) that compares the AC draft built in Step 6 against `intake.description`, `intake.raw_acs`, and `intake.context`. Findings use a fixed three-tier taxonomy: `affirmation` (what is solid; mandatory output so the dev sees confirmation, not only negatives), `gap` (something missing or imprecise; carries `optional: true` for granularity preferences vs structural omissions), `blocker` (a direct contradiction with the description). Blocker findings are promoted into `ac.open_questions_resolved` with `source: "self_review"` and a proposed resolution; the dev still answers the single Stage 1 question. The orchestrator NEVER auto-applies fixes; the dev accepts or rejects findings by id and the decision is recorded as `dev_accepted` / `dev_rejected`. Failure modes (malformed JSON, timeout, empty findings, Agent error) are non-fatal: Stage 1 narrates one warning and persists `self_review = {ran: false, reason: "<one-line>"}`. When `preferences.sh get-flag stage1_ac_self_review` returns `false`, Step 6.5 is skipped silently and `self_review = {ran: false, reason: "flag disabled"}`.
 

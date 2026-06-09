@@ -471,6 +471,35 @@ jq '.skill_version = "6.8.1"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
 
 The behavioral changes apply on the next `/wk:doer <ID>` invocation.
 
+### Migration: From 6.8.1 -> 6.9.0
+
+`affected_stages: []` (new metadata fields are additive with null defaults; all other changes are prompts and helpers)
+
+**Per-ticket changes:**
+
+```bash
+TICKET_DIR=.doer/tickets/<TICKET-ID>
+META=$TICKET_DIR/metadata.json
+
+# 1. Add commit_message and pr_description fields (null default).
+# 2. Add intake.tracker field (null default).
+# 3. Bump skill_version to 6.9.0.
+#    Narrate: "Migration 6.8.1 -> 6.9.0, step 1/1: adding commit_message, pr_description, intake.tracker fields and bumping skill_version."
+jq '.commit_message //= null | .pr_description //= null | .intake.tracker //= null | .skill_version = "6.9.0"' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+```
+
+**Important migration notes:**
+
+- The three new root-level fields (`commit_message`, `pr_description`) and the nested `intake.tracker` are all additive with null defaults. In-flight tickets gain them via the jq `//=` operator (set only if absent). `commit_message` and `pr_description` are populated when Stage 9 steps 7 and 8 run; `intake.tracker` is populated only on fresh intakes (auto-fetch or `/wk:load`).
+- The commit message format changed from imperative mood ("Add X") to gerund with initial capital ("Adding X"). This takes effect on the next Stage 9 step 7 that runs. In-flight tickets whose commit message was already generated are not retroactively reformatted.
+- The wrapup preamble fix (NINE→TWELVE, body-over-table rule) takes effect on the next Stage 9 entry. In-flight tickets whose Stage 9 already completed are not affected.
+- New testing strategy signal `direct.sdk_unknown_mechanism` takes effect on the next intake. In-flight tickets retain their already-set `testing_strategy.mode`.
+- Stage guidance additions (02-plan SDK/endpoint, 03-tests reflection/side-effect, 04-code gating/doc-sync) take effect on the next execution of those stages.
+- New shared helpers (`tracker-detect.sh`, `tracker-fetch.sh`) and refactored `/wk:load` take effect immediately. The load behavior is unchanged; only the internal implementation moved to the shared helper.
+- Phase 2 auto-reverify is a no-op (`affected_stages: []`).
+
+The behavioral changes apply on the next `/wk:doer <ID>` invocation.
+
 ### Migration: From 6.7.0 -> 6.8.0
 
 `affected_stages: []` (no metadata shape change; all changes are orchestrator instructions and prompts)

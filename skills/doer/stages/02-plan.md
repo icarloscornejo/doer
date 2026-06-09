@@ -88,6 +88,8 @@ Constraints:
 - Use `change: "new"` only if the file does NOT currently exist; `change: "edit"` only if it does.
 - Be terse, no prose, one-line items.
 - Read budget: 10 source files. Stay within it. If a BLOCKER from the deterministic checks needs more, add it on retry.
+- When the ticket involves integrating with an SDK/library whose mechanism is not documented in the ticket, explore the SDK sources (e.g., `~/.gradle/caches/` for Android, `node_modules/` for JS) to understand what API controls the behavior BEFORE planning. Include the discovered mechanism as an assumption with a verifiable check.
+- When the ticket contains an Endpoint Contract (JSON schema, WebSocket schema, or similar wire-format block), derive all field names directly from the contract JSON. Never derive field names from AC prose, which paraphrases and may rename fields.
 
 Do NOT write code. Do NOT run tests. Plan only.
 ```

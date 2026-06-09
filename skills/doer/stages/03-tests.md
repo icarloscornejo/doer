@@ -63,6 +63,8 @@ Write tests that:
   said it should be.
 - Cover at most one or two paths per acceptance criterion. Minimal coverage is the goal.
 - Are EXPECTED to PASS now (no red phase).
+- When the AC involves verifying that a class, method, or module no longer exists (delete/remove tickets), use reflection-based assertions (e.g., ClassNotFoundException, NoSuchMethodException) to verify absence. Do NOT write behavioral tests that exercise the code being deleted.
+- For flows with multi-condition guards (feature flags, eligibility checks), assert that the side-effect (repository call, service invocation) actually fires, not just that state changed. Use mock verification alongside state assertions.
 
 DO NOT add explanatory comments like `// REGRESSION:` or `// regression test`.
 The test name and assertion are self-documenting.
@@ -152,6 +154,15 @@ Given/When/Then as comments (non-DSL path), write each line as complete,
 plain business language describing user or system behavior (e.g.
 `// Given the user has items in their cart`), not shorthand, not half-sentences,
 and never referencing an AC number.
+
+When the AC involves verifying that a class, method, or module no longer exists
+(delete/remove tickets), write scenarios that assert absence via reflection
+(e.g., ClassNotFoundException). Do NOT write scenarios that exercise the
+behavior of the code being deleted.
+
+For flows with multi-condition guards (feature flags, eligibility checks),
+include at least one scenario that asserts the actual side-effect fires
+(repository call, service invocation), not just that state changed.
 
 The orchestrator has inlined these below:
 

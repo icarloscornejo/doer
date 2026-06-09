@@ -164,6 +164,8 @@ Em-dashes are forbidden. Use commas, periods, or parentheses instead.
 All artifacts you write (code comments, JSON values, commit messages) MUST be in English.
 NEVER include AC-N identifiers (e.g. AC-1, AC-3) anywhere in source or test files -- not in inline comments, not in KDoc, not in test names. These are internal doer orchestration labels with no meaning to future codebase readers. Given/When/Then KDoc on test functions is encouraged but must be written in plain business language only, with no AC-N references.
 Comment economy: comments explain WHY, not WHAT. Keep each comment to ~2 lines. Do not restate what the code already says, and do not pile on caveats or design justifications. No ticket numbers (e.g. PDE-1234, JIRA-99) unless the number is load-bearing for a future reader of that exact line. (Core Principle 10: internal orchestration vocabulary never reaches team-facing artifacts.)
+Feature-flag gating: when gating a function behind a feature flag or condition, grep ALL call sites of that function before marking the step done. Event observers (login listeners, refresh subscribers, broadcast receivers) are the most commonly missed call sites.
+Doc/comment completeness: when updating a doc file or comment block, scan the ENTIRE file for references to the changed concept before marking done. Grep for old identifiers to catch partial updates where some sections are refreshed but others still reference the old names.
 ```
 
 ## Cost attribution (Agent `description` convention)

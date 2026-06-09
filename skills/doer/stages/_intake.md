@@ -2,6 +2,129 @@
 
 This file runs when `/doer <TICKET-ID>` is invoked and `./.doer/tickets/<TICKET-ID>/metadata.json` does NOT exist. Locale resolution has already happened in the entry-point dispatch (see SKILL.md).
 
+## Step 0. Auto-fetch detection (tracker connectivity)
+
+This step detects whether the dev has tracker connectivity configured and offers to fetch ticket data automatically. Doer does NOT configure anything; it only detects what is already available.
+
+### Step 0A. Check ticket ID shape
+
+Check whether `<TICKET-ID>` matches a known tracker pattern:
+- Jira/Linear: `^[A-Z][A-Z0-9_]+-[0-9]+$`
+- GitHub Issues: `^#?[0-9]+$` or `^[A-Za-z0-9_./-]+#[0-9]+$`
+
+If no match, skip Step 0 entirely and proceed to Step 1 (manual flow).
+
+### Step 0B. Detection cascade
+
+Run detection in priority order. Stop at the first successful detection.
+
+**Priority 1: MCP tools.** Check your available tool list for tool names containing `jira`, `atlassian`, `linear`, `get_issue`, `get-issue`. If a matching MCP tool that can fetch issue details is found, record: `method = "mcp"`, `tool_name = "<matched tool name>"`.
+
+**Priority 2-3: Environment variables.** Run:
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/lib/helpers/tracker-detect.sh" resolve "<TICKET-ID>"
+```
+Parse the JSON output. If `tracker != "unknown"` and `method != "none"`, record the detection.
+
+If `tracker == "ambiguous"` (both Jira and Linear env vars are set), ask the dev via `AskUserQuestion`:
+```
+Question: Both Jira and Linear credentials are configured. Which tracker is <TICKET-ID> from?
+Options:
+  - Jira
+  - Linear
+```
+
+**Priority 4: Nothing found.** Skip Step 0 entirely. Proceed to Step 1 (manual flow) with no interruption or narration about the failed detection. Do NOT tell the dev that auto-fetch was attempted and failed.
+
+### Step 0C. Offer auto-fetch
+
+If connectivity was detected, ask the dev via `AskUserQuestion`:
+
+```
+Question: I detected <tracker> access via <method_desc>. Want me to fetch <TICKET-ID> data automatically?
+Options:
+  - Yes, fetch it (Recommended)
+  - No, I will paste manually
+```
+
+Where `<method_desc>` is:
+- MCP: `"MCP tool '<tool_name>'"`
+- wk_env: `"WK_JIRA_* environment variables"` (or WK_LINEAR_*)
+- common_env: `"JIRA_* environment variables"` (or LINEAR_*)
+- gh_cli: `"GitHub CLI (gh)"`
+
+If the dev says "No" or uses the auto "Other" to decline, proceed to Step 1 (manual flow) with no further auto-fetch mentions.
+
+### Step 0D. Fetch and pre-populate
+
+If the dev says "Yes":
+
+**For MCP method:** Use the detected MCP tool to fetch the issue. Parse the response for title, description/body, status, and labels. The exact tool invocation depends on the MCP tool's parameter schema.
+
+**For env var methods (wk_env, common_env) and gh_cli:** Run:
+```bash
+RESULT=$(bash "${CLAUDE_PLUGIN_ROOT}/lib/helpers/tracker-fetch.sh" <tracker> "<TICKET-ID>" --var-prefix <wk|common>)
+```
+
+Check the `.error` field:
+```bash
+FETCH_ERROR=$(printf '%s' "$RESULT" | jq -r '.error // empty')
+```
+
+If `.error` is non-null, narrate: `"Fetch failed: <error>. Falling back to manual flow."` and proceed to Step 1.
+
+On success:
+
+1. Extract ACs from the body using the existing helper:
+```bash
+TMPBODY=$(mktemp)
+printf '%s' "$BODY" > "$TMPBODY"
+RAW_ACS=$(bash "${CLAUDE_PLUGIN_ROOT}/skills/load/lib/extract-acs.sh" "$TMPBODY")
+rm -f "$TMPBODY"
+[ -z "$RAW_ACS" ] && RAW_ACS="derive"
+```
+
+2. Store fetched data in local memory (not yet persisted to metadata.json; that happens at Step 3):
+   - `fetched_title` = `.title`
+   - `fetched_description` = `.body`
+   - `fetched_raw_acs` = extracted ACs or `"derive"`
+   - `fetched_labels` = `.labels` (joined as comma-separated string)
+   - `fetched_status` = `.status`
+   - `fetched_source_url` = `.source_url`
+
+3. Build the `intake.tracker` provenance object:
+```json
+{
+  "kind": "<jira|linear|gh>",
+  "source_id": "<TICKET-ID as typed>",
+  "source_url": "<fetched_source_url>",
+  "imported_at": "<ISO8601>"
+}
+```
+
+4. Derive a suggested branch name from the fetched title:
+```bash
+SLUG=$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//' | cut -c1-50)
+SUGGESTED_BRANCH="${TICKET_ID}-${SLUG}"
+```
+
+### Step 0E. Modified question flow (auto-fetch path)
+
+When auto-fetch succeeded, the intake questions change as described in the table below. After completing these modified questions, skip to Step 2 (testing strategy inference).
+
+| # | Original question | Auto-fetch behavior |
+|---|-------------------|---------------------|
+| Q1 | "What is the title of `<TICKET-ID>`?" | **SKIP.** Narrate: `"Title (from tracker): <fetched_title>"` |
+| Q2 | "Paste the full description of the ticket." | **SKIP.** Narrate: `"Description fetched from tracker (<N> chars)."` |
+| Q3 | "Does the ticket already have acceptance criteria?" | **SKIP.** If `fetched_raw_acs != "derive"`: narrate `"ACs extracted from tracker description."` If `fetched_raw_acs == "derive"`: narrate `"No AC section found in tracker description; will derive in Stage 1."` |
+| Q4 | "Any extra context?" | **ASK (plain chat),** pre-filled: `"Fetched context: labels: <X, Y>; status: <Z>. Any additional context? Type 'skip' if the fetched context is sufficient."` If the dev types `skip`, use the fetched context string only. Otherwise append the dev's response. |
+| Q5 | "What branch should this ticket use?" | **ASK (`AskUserQuestion`)** with `SUGGESTED_BRANCH` derived from fetched title. Options: `Use current branch (<current>)` / `Use suggested name (<SUGGESTED_BRANCH>)`. |
+| Q6 | "Have you already done any work on this ticket?" | **ALWAYS ASK.** Cannot be auto-detected. Unchanged from manual flow. |
+
+When auto-fetch was NOT used (dev declined or nothing detected), the full manual question flow in Step 1 runs unchanged.
+
+---
+
 ## Step 1. Ask intake questions
 
 Ask **one at a time**. Do not batch. Questions 1, 2, and 4 expect open free-text answers (a title, a pasted description, extra context), so ask them as plain-chat questions and read the dev's reply. Questions 3, 5, and 6 are choices, so they use `AskUserQuestion` (the tool auto-appends a free-text "Other"; do NOT add one by hand). See the mechanism rule in `${CLAUDE_PLUGIN_ROOT}/lib/narration.md`.
@@ -42,6 +165,7 @@ Read `metadata.intake.title`, `metadata.intake.description`, and `metadata.intak
 - Description matches `change X to Y` or `update X from Y to Z` patterns. Signal ID: `direct.change_x_to_y`.
 - Title contains: `mapper`, `transformer`, `util`, `utility`, `extension`, `helper`, `parser`, `calculator`, `converter`, `validator`. Signal ID: `direct.technical_unit_title`.
 - Ticket is a refactor with no behavior change. Signal ID: `direct.refactor_no_behavior`.
+- Description or context references integrating with an SDK or library whose internal mechanism is not documented in the ticket or known from existing codebase patterns (e.g., the ticket says "hide feature X" but the SDK's method for hiding is unknown). Signal ID: `direct.sdk_unknown_mechanism`.
 
 **Signals for `bdd`:**
 - Title or description contains user-story language: `as a user`, `should see`, `should be able to`, `when user`, `given`, `when`, `then`. Signal ID: `bdd.user_story_language`.
@@ -103,12 +227,13 @@ After confirmation, persist:
   "created_at": "<ISO8601>",
   "completed_at": null,
   "intake": {
-    "description": "<full description from intake>",
-    "raw_acs": "<pasted ACs or 'derive'>",
+    "description": "<full description from intake or auto-fetched>",
+    "raw_acs": "<pasted ACs, extracted ACs, or 'derive'>",
     "context": "<extra context or 'none'>",
     "prior_work": {
       "exists": false, "plan": null, "tests": null, "code": null, "docs": null
-    }
+    },
+    "tracker": null
   },
   "stages": {
     "1": {"name": "ac-confirm",     "status": "pending"},
@@ -130,6 +255,8 @@ After confirmation, persist:
   "session_ids_source": null
 }
 ```
+
+**`intake.tracker` (auto-fetch only):** When Step 0 auto-fetch was used, set `intake.tracker` to the provenance object built in Step 0D. When the manual flow was used (Step 0 skipped or dev declined), leave `intake.tracker` as `null`.
 
 ### Session ID capture (intake)
 

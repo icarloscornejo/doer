@@ -4,13 +4,14 @@
 
 ## MUST-RUN steps (forcing rule, NEVER skip)
 
-Stage 9 is a sequence of NINE numbered sub-steps. Steps 7 (commit message) and 8 (PR description) are the two most-skipped sub-steps in the wild because they fall after the visible "ticket complete" actions (history cleanup, final commit). Skipping them violates the dev's contract; they are mandatory output of every wrapup. To prevent the skip:
+Stage 9 is a sequence of TWELVE numbered sub-steps. Steps 7 (commit message) and 8 (PR description) are the two most-skipped sub-steps in the wild because they fall after the visible "ticket complete" actions (history cleanup, final commit). Skipping them violates the dev's contract; they are mandatory output of every wrapup. To prevent the skip:
 
 1. Before narrating any "Ticket complete" or "Stage 9 complete" message in step 9, the orchestrator MUST self-verify BOTH flags:
    - `metadata.stages.9.commit_message_presented` is `true` (or `"skipped"` if the dev explicitly said skip during step 7).
    - `metadata.stages.9.pr_description_presented` is `true` (or `"skipped"` if the dev replied `skip` in step 8).
 2. If either flag is missing or `false`, STOP. Do NOT narrate the closing summary. Run the missing step now (jump back to step 7 or step 8 as appropriate) and ONLY THEN write the closing summary.
 3. The Stage Finalization Checklist (`${CLAUDE_PLUGIN_ROOT}/lib/stage-checklist.md`) already enforces both flags as required-when-complete fields. The forcing rule above is the runtime double-check that catches the failure mode where the orchestrator advances `metadata.stages.9.status = "complete"` without having presented either artifact.
+4. **Body-over-table rule.** When the preamble table and the body disagree on step count, the BODY is the source of truth. The orchestrator MUST count the numbered steps in the body (not the table rows) and execute all of them. The stage is not complete until the LAST numbered step in the body has executed.
 
 **Order of sub-steps (MUST run in this order):**
 
@@ -25,6 +26,9 @@ Stage 9 is a sequence of NINE numbered sub-steps. Steps 7 (commit message) and 8
 | 7 | **Recommend final commit message** (write `commit_message_presented`) |
 | 8 | **Help with PR description** (write `pr_description_presented`) |
 | 9 | Final closing narration |
+| 10 | Release the per-ticket lock |
+| 11 | Drain the inbox |
+| 12 | Surface ticket cost, then present the wrapup |
 
 Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by replying `skip`, in which case the flag is set to the literal string `"skipped"`; the step itself still runs to capture that decision. There is no auto-skip path for either step.
 
@@ -187,10 +191,10 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    - `metadata.changelog` (what was actually done across all stages)
    - `git log <base>..HEAD --oneline` (commit history of the branch)
 
-   Format MANDATORY: `<TICKET-ID>: <imperative subject line, ≤72 chars>`
+   Format MANDATORY: `<TICKET-ID>: <Gerund subject line, ≤72 chars>`
 
    The subject line should:
-   - Use imperative mood ("Add X", "Fix Y", "Refactor Z", not "Added", "Fixes", "Refactoring")
+   - Use present participle (gerund) with initial capital ("Adding X", "Fixing Y", "Refactoring Z", not "Added", "Fixes", "Add", "Fix")
    - Be specific (mention the actual change, not just "implement ticket")
    - Stay under 72 characters total (including the `<TICKET-ID>: ` prefix)
    - Contain NO internal orchestration vocabulary (Core Principle 10): no `AC-N` labels, no `DOER` / debug-log wording, no stage names, no literal `doer`. Describe the change in plain business language. The `<TICKET-ID>: ` prefix is the issue key (e.g. `PDE-2079: `), which is expected and fine; the prohibition is on the body.
@@ -207,13 +211,13 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    Recommended commit message for the squashed PR commit:
 
    ```
-   <TICKET-ID>: <imperative subject>
+   <TICKET-ID>: <Gerund subject>
    ```
 
    You can use this as-is or adjust it before squashing your branch commits.
    ````
 
-   After presenting, write `metadata.stages.9.commit_message_presented = true` into `metadata.json`.
+   After presenting, persist the recommended message into `metadata.commit_message` (root level) and set `metadata.stages.9.commit_message_presented = true` in `metadata.json`.
 
    **Offer to squash now.** Immediately after presenting the message, ask via `AskUserQuestion`:
 
@@ -376,7 +380,7 @@ Steps 7 and 8 are NEVER skipped automatically. The dev may decline step 8 by rep
    ```
    ````
 
-   After presenting, write `metadata.stages.9.pr_description_presented = true` into `metadata.json`.
+   After presenting, persist the generated description into `metadata.pr_description` (root level) and set `metadata.stages.9.pr_description_presented = true` in `metadata.json`. When the dev replies `skip`, leave `metadata.pr_description` as `null` and set the flag to the literal `"skipped"`.
 
 9. **Forcing rule before final narration.** Re-read `metadata.stages.9.commit_message_presented` and `metadata.stages.9.pr_description_presented` from disk. If either is absent or literal `false`, STOP. Do NOT proceed to the closing narration. Jump back to step 7 (if `commit_message_presented` is missing) or step 8 (if `pr_description_presented` is missing) and run them now. Only after BOTH flags read `true` (or the literal `"skipped"` for `pr_description_presented`) may the orchestrator continue to the closing narration below.
 

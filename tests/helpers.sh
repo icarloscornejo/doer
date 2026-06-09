@@ -16,6 +16,8 @@ COST_SH="${REPO_ROOT}/lib/helpers/cost.sh"
 COST_TRANSCRIPT_SH="${REPO_ROOT}/lib/helpers/cost-transcript.sh"
 PREFS_SH="${REPO_ROOT}/lib/helpers/preferences.sh"
 EXTRACT_SH="${REPO_ROOT}/skills/load/lib/extract-acs.sh"
+TRACKER_DETECT_SH="${REPO_ROOT}/lib/helpers/tracker-detect.sh"
+TRACKER_FETCH_SH="${REPO_ROOT}/lib/helpers/tracker-fetch.sh"
 FIXTURES="${REPO_ROOT}/tests/fixtures/transcripts"
 
 PASS=0
@@ -715,6 +717,201 @@ test_preferences() {
   unset WK_PREFERENCES_FILE
 }
 
+# ---------------------------------------------------------------------------
+# tracker-detect.sh
+# ---------------------------------------------------------------------------
+test_tracker_detect() {
+  echo "## tracker-detect.sh"
+
+  new_workdir
+
+  # resolve with no env vars -> method none
+  OUT=$(env -i PATH="$PATH" bash "$TRACKER_DETECT_SH" resolve "PROJ-123")
+  METHOD=$(printf '%s' "$OUT" | jq -r '.method')
+  TRACKER=$(printf '%s' "$OUT" | jq -r '.tracker')
+  if [ "$METHOD" = "none" ] && [ "$TRACKER" = "jira" ]; then
+    pass "tracker-detect resolve returns method=none when no env vars"
+  else
+    fail "tracker-detect resolve returns method=none when no env vars" "method=$METHOD tracker=$TRACKER"
+  fi
+
+  # resolve with WK_JIRA_* -> method wk_env
+  OUT=$(env -i PATH="$PATH" \
+    WK_JIRA_BASE_URL="https://test.atlassian.net" \
+    WK_JIRA_EMAIL="user@test.com" \
+    WK_JIRA_TOKEN="secret123" \
+    bash "$TRACKER_DETECT_SH" resolve "PROJ-123")
+  METHOD=$(printf '%s' "$OUT" | jq -r '.method')
+  if [ "$METHOD" = "wk_env" ]; then
+    pass "tracker-detect resolve detects WK_JIRA_* env vars"
+  else
+    fail "tracker-detect resolve detects WK_JIRA_* env vars" "method=$METHOD"
+  fi
+
+  # resolve with common JIRA_* -> method common_env
+  OUT=$(env -i PATH="$PATH" \
+    JIRA_URL="https://test.atlassian.net" \
+    JIRA_USER="user@test.com" \
+    JIRA_API_TOKEN="secret123" \
+    bash "$TRACKER_DETECT_SH" resolve "PROJ-123")
+  METHOD=$(printf '%s' "$OUT" | jq -r '.method')
+  BASE_VAR=$(printf '%s' "$OUT" | jq -r '.vars.base_url_var')
+  EMAIL_VAR=$(printf '%s' "$OUT" | jq -r '.vars.email_var')
+  if [ "$METHOD" = "common_env" ] && [ "$BASE_VAR" = "JIRA_URL" ] && [ "$EMAIL_VAR" = "JIRA_USER" ]; then
+    pass "tracker-detect resolve detects common JIRA_* env vars"
+  else
+    fail "tracker-detect resolve detects common JIRA_* env vars" "method=$METHOD base=$BASE_VAR email=$EMAIL_VAR"
+  fi
+
+  # WK_JIRA_* takes priority over common JIRA_*
+  OUT=$(env -i PATH="$PATH" \
+    WK_JIRA_BASE_URL="https://wk.test" \
+    WK_JIRA_EMAIL="wk@test.com" \
+    WK_JIRA_TOKEN="wksecret" \
+    JIRA_URL="https://common.test" \
+    JIRA_USER="common@test.com" \
+    JIRA_API_TOKEN="commonsecret" \
+    bash "$TRACKER_DETECT_SH" resolve "PROJ-123")
+  METHOD=$(printf '%s' "$OUT" | jq -r '.method')
+  if [ "$METHOD" = "wk_env" ]; then
+    pass "tracker-detect WK_JIRA_* takes priority over common JIRA_*"
+  else
+    fail "tracker-detect WK_JIRA_* takes priority over common JIRA_*" "method=$METHOD"
+  fi
+
+  # unknown ID shape
+  OUT=$(env -i PATH="$PATH" bash "$TRACKER_DETECT_SH" resolve "not-a-ticket")
+  TRACKER=$(printf '%s' "$OUT" | jq -r '.tracker')
+  if [ "$TRACKER" = "unknown" ]; then
+    pass "tracker-detect returns tracker=unknown for unrecognized ID"
+  else
+    fail "tracker-detect returns tracker=unknown for unrecognized ID" "tracker=$TRACKER"
+  fi
+
+  # GitHub short form
+  OUT=$(env -i PATH="$PATH" bash "$TRACKER_DETECT_SH" resolve "#42")
+  TRACKER=$(printf '%s' "$OUT" | jq -r '.tracker')
+  if [ "$TRACKER" = "gh" ]; then
+    pass "tracker-detect recognizes GitHub short ID (#N)"
+  else
+    fail "tracker-detect recognizes GitHub short ID (#N)" "tracker=$TRACKER"
+  fi
+
+  # token values never appear in output
+  OUT=$(env -i PATH="$PATH" \
+    WK_JIRA_BASE_URL="https://test.atlassian.net" \
+    WK_JIRA_EMAIL="user@test.com" \
+    WK_JIRA_TOKEN="MY_SUPER_SECRET_TOKEN_VALUE" \
+    bash "$TRACKER_DETECT_SH" resolve "PROJ-123")
+  if echo "$OUT" | grep -q "MY_SUPER_SECRET_TOKEN_VALUE"; then
+    fail "tracker-detect never leaks token values" "token found in output"
+  else
+    pass "tracker-detect never leaks token values"
+  fi
+
+  # output is always valid JSON
+  for ID in "PROJ-123" "not-valid" "#42" "owner/repo#1"; do
+    OUT=$(env -i PATH="$PATH" bash "$TRACKER_DETECT_SH" resolve "$ID")
+    if printf '%s' "$OUT" | jq -e . >/dev/null 2>&1; then
+      :
+    else
+      fail "tracker-detect JSON validity for ID=$ID" "out=$OUT"
+    fi
+  done
+  pass "tracker-detect always outputs valid JSON"
+
+  # ambiguous: both Jira and Linear env vars set
+  OUT=$(env -i PATH="$PATH" \
+    WK_JIRA_BASE_URL="https://test.atlassian.net" \
+    WK_JIRA_EMAIL="user@test.com" \
+    WK_JIRA_TOKEN="secret" \
+    WK_LINEAR_API_KEY="lin_secret" \
+    bash "$TRACKER_DETECT_SH" resolve "PROJ-123")
+  TRACKER=$(printf '%s' "$OUT" | jq -r '.tracker')
+  if [ "$TRACKER" = "ambiguous" ]; then
+    pass "tracker-detect returns ambiguous when both Jira and Linear are available"
+  else
+    fail "tracker-detect returns ambiguous when both Jira and Linear are available" "tracker=$TRACKER"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# tracker-fetch.sh
+# ---------------------------------------------------------------------------
+test_tracker_fetch() {
+  echo "## tracker-fetch.sh"
+
+  new_workdir
+
+  # Jira: missing credentials -> error in JSON
+  OUT=$(env -i PATH="$PATH" bash "$TRACKER_FETCH_SH" jira "PROJ-123" --var-prefix wk)
+  ERR=$(printf '%s' "$OUT" | jq -r '.error')
+  TITLE=$(printf '%s' "$OUT" | jq -r '.title')
+  if [ -n "$ERR" ] && [ "$ERR" != "null" ] && [ "$TITLE" = "null" ]; then
+    pass "tracker-fetch jira missing creds returns error JSON"
+  else
+    fail "tracker-fetch jira missing creds returns error JSON" "err=$ERR title=$TITLE"
+  fi
+
+  # Jira: invalid host -> network error in JSON
+  OUT=$(env -i PATH="$PATH" \
+    WK_JIRA_BASE_URL="https://invalid.nonexistent.test" \
+    WK_JIRA_EMAIL="x" \
+    WK_JIRA_TOKEN="y" \
+    bash "$TRACKER_FETCH_SH" jira "PROJ-123" --var-prefix wk)
+  ERR=$(printf '%s' "$OUT" | jq -r '.error')
+  if [ -n "$ERR" ] && [ "$ERR" != "null" ]; then
+    pass "tracker-fetch jira network failure returns error JSON"
+  else
+    fail "tracker-fetch jira network failure returns error JSON" "err=$ERR"
+  fi
+
+  # Linear: missing API key -> error in JSON
+  OUT=$(env -i PATH="$PATH" bash "$TRACKER_FETCH_SH" linear "PROJ-123" --var-prefix wk)
+  ERR=$(printf '%s' "$OUT" | jq -r '.error')
+  if [ -n "$ERR" ] && [ "$ERR" != "null" ]; then
+    pass "tracker-fetch linear missing key returns error JSON"
+  else
+    fail "tracker-fetch linear missing key returns error JSON" "err=$ERR"
+  fi
+
+  # Unknown tracker -> error in JSON
+  OUT=$(bash "$TRACKER_FETCH_SH" unknown "PROJ-123")
+  ERR=$(printf '%s' "$OUT" | jq -r '.error')
+  if echo "$ERR" | grep -q "Unknown tracker"; then
+    pass "tracker-fetch unknown tracker returns error JSON"
+  else
+    fail "tracker-fetch unknown tracker returns error JSON" "err=$ERR"
+  fi
+
+  # All error outputs are valid JSON with exit 0
+  ALL_OK=true
+  OUT=$(bash "$TRACKER_FETCH_SH" jira "PROJ-123" --var-prefix wk 2>/dev/null); RC=$?
+  if [ "$RC" -ne 0 ] || ! printf '%s' "$OUT" | jq -e . >/dev/null 2>&1; then ALL_OK=false; fi
+  OUT=$(bash "$TRACKER_FETCH_SH" linear "PROJ-123" --var-prefix wk 2>/dev/null); RC=$?
+  if [ "$RC" -ne 0 ] || ! printf '%s' "$OUT" | jq -e . >/dev/null 2>&1; then ALL_OK=false; fi
+  OUT=$(bash "$TRACKER_FETCH_SH" unknown "X" 2>/dev/null); RC=$?
+  if [ "$RC" -ne 0 ] || ! printf '%s' "$OUT" | jq -e . >/dev/null 2>&1; then ALL_OK=false; fi
+  if [ "$ALL_OK" = "true" ]; then
+    pass "tracker-fetch always exits 0 with valid JSON on error paths"
+  else
+    fail "tracker-fetch always exits 0 with valid JSON on error paths"
+  fi
+
+  # common_env prefix resolves JIRA_URL / JIRA_USER / JIRA_API_TOKEN
+  OUT=$(env -i PATH="$PATH" \
+    JIRA_URL="https://invalid.nonexistent.test" \
+    JIRA_USER="x" \
+    JIRA_API_TOKEN="y" \
+    bash "$TRACKER_FETCH_SH" jira "PROJ-123" --var-prefix common)
+  ERR=$(printf '%s' "$OUT" | jq -r '.error')
+  if echo "$ERR" | grep -qi "network\|curl"; then
+    pass "tracker-fetch jira --var-prefix common resolves common env vars"
+  else
+    fail "tracker-fetch jira --var-prefix common resolves common env vars" "err=$ERR"
+  fi
+}
+
 test_lock
 test_inbox
 test_cost
@@ -723,6 +920,8 @@ test_cost_status_orchestrator_only
 test_cost_performance
 test_preferences
 test_extract_acs
+test_tracker_detect
+test_tracker_fetch
 
 echo
 echo "Results: ${PASS} passed, ${FAIL} failed."
