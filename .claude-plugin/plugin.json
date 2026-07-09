@@ -1,8 +1,8 @@
 {
   "name": "wk",
   "displayName": "Doer Work Kit",
-  "version": "6.9.0",
-  "description": "Ticket execution orchestrator. Takes a pre-defined ticket from acceptance criteria to implementation-ready code on a feature branch. Includes satellite skills for tracker import, advisor review, MR review, and publishing.",
+  "version": "7.0.0",
+  "description": "Three skills for daily dev work: /wk:doer executes a pre-defined ticket from acceptance criteria to implementation-ready code in 5 stages; /wk:bugfix triages a Jira bug to a fix or a mini-spike; /wk:protologs injects and cleans temporary runtime debug logs. Plus three one-off config commands: /wk:setup (guided), /wk:locale, /wk:jira.",
   "author": {
     "name": "Carlos Cornejo"
   },
@@ -12,9 +12,8 @@
   "keywords": [
     "ticket",
     "orchestration",
-    "pipeline",
-    "tdd",
-    "bdd",
+    "bugfix",
+    "debug-logs",
     "code-review",
     "claude-code"
   ]

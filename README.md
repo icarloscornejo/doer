@@ -1,16 +1,16 @@
 # Doer Work Kit (`wk`)
 
-**Ticket execution orchestrator for Claude Code.** Plugin version 6.9.0.
+**Three skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.0.0.
 
-Takes a pre-defined ticket (feature, bug, refactor) from acceptance criteria to implementation-ready code on a feature branch. Nine sequential stages, delta-aware doer/reviewer loops on the heaviest stages, on-device runtime verification, automatic versioning + migrations.
+| Slash command | Purpose |
+|---|---|
+| `/wk:doer <TICKET-ID>` | Execute a pre-defined ticket (feature, refactor, planned bug) from acceptance criteria to implementation-ready code on a feature branch. 5 stages, stops before PR and deploy. |
+| `/wk:bugfix <jira-key-or-url>` | Triage a bug from a Jira ticket: pull it, digest any attached evidence, investigate in plan mode, reach a verdict. Real app bug → fix + on-device verification. Not the app's fault → mini-spike ready for Jira. |
+| `/wk:protologs` | Inject temporary `PROTOLOG` debug logs into the vertical slice of the current diff to observe runtime behavior on device; `/wk:protologs cleanup` removes every trace. Standalone, also used by the other two. |
 
-Scope stops before PR and deploy. Anything upstream (PRD, architecture, ticket creation) or downstream (PR assembly, CI, deploy) is out of scope by design.
+Rule of thumb: planned work goes to `doer`, reported bugs go to `bugfix`, and `protologs` is the shared verification muscle. `setup` / `locale` / `jira` (below) are one-off configuration, not daily-work skills.
 
----
-
-## Install via marketplace
-
-Detailed install ritual (and onboarding for a Claude session that just received this repo) lives in [`AGENTS.md`](./AGENTS.md). Quick version:
+## Install
 
 ```bash
 claude plugin marketplace add https://github.com/icarloscornejo/doer.git
@@ -18,305 +18,97 @@ claude plugin install wk@wk
 claude plugin list
 ```
 
-The plugin ships five operational skills (see "Included skills" below). After install, set your locale with `/wk:doer locale es` (or any ISO 639-1 code). The setting persists at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` and survives plugin upgrades.
-
-**Updates** — doer notifies you at the start of each session when a newer version is published. To update:
-
-**Option A — GUI (recommended):** open the `/plugins` panel in Claude Code, find `wk`, and click **Update now**.
-
-**Option B — CLI** (use the full plugin id `wk@wk`, not the short name `wk`):
+### Setup (once)
 
 ```bash
-claude plugin update wk@wk
-# restart Claude Code so the new version loads
+/wk:setup
 ```
 
-The Migration Check auto-applies any structural changes to in-flight tickets the next time they're touched. Locale and opt-in flags live outside the versioned plugin cache (since 6.2.0), so they survive upgrades.
+Guided, three steps: locale (global, personal; optional), Jira base URL for this project (optional; needed for `/wk:bugfix` and doer's auto-fetch), and the name of the env var holding your Jira token (defaults to `JIRA_PAT`; only needed if your token already lives under another name). Or set each piece individually:
 
----
+```bash
+/wk:locale es        # any ISO 639-1 code. Chat narration only; artifacts stay English. Global.
+/wk:jira https://jira.your-company.com   # this project only
+export JIRA_PAT="<your Jira PAT>"        # full-token, session-only, never written to disk
+```
 
-## Included skills
+Locale is global and personal (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`, survives plugin upgrades). Jira config is **per-project** (`./.doer/config.json`, git-excluded), because different repos can point at different Jira instances. The token itself is never stored anywhere; only the name of the env var that holds it.
 
-| Slash command | Status | Purpose |
-|---------------|--------|---------|
-| `/wk:doer ABC-123` | **Operational** | 9-stage ticket execution orchestrator (the core skill, was previously `/doer`). |
-| `/wk:load <ID>` | **Operational** | Import a ticket from Jira / Linear / GitHub Issues into the doer intake. |
-| `/wk:advise` | **Operational** | Review specs, ACs, or code with configurable advisor personas. |
-| `/wk:review` | **Operational** | Review external pull requests with configurable advisor personas. |
-| `/wk:publish ABC-123` | **Operational** | Push the feature branch and create a PR (GitHub) or MR (GitLab) for a completed ticket. Optional `--transition <state>` triggers a Jira state change. |
+To update the plugin: `/plugins` panel → `wk` → Update now, or `claude plugin update wk@wk` and restart Claude Code.
 
-All 4 satellite skills shipped in 6.0.0 via `WK-7` through `WK-10` and are operational. See [`CHANGELOG.md`](./CHANGELOG.md) for per-version detail.
+## `/wk:doer` in 5 stages
 
----
+```
+1 AC + Intake  ->  2 Plan (native plan mode)  ->  3 Build (tests + code + review loop x3)
+                                              ->  4 Verify (on device, via protologs)
+                                              ->  5 Wrapup (lessons + commit msg + PR desc)
+```
 
-## Usage
+- **Stage 1** captures the ticket (paste or Jira auto-fetch), confirms testable ACs as Given/When/Then scenarios (BDD-style; a trivial cosmetic change gets a plain bullet instead), and detects pre-existing work (plan/tests/code you already had skip you ahead).
+- **Stage 2** designs the plan in Claude Code's plan mode; your approval is the gate. Assumptions get mechanical pre-flight checks.
+- **Stage 3** is the doer/reviewer loop (max 3 iterations): the test-writer derives failing tests from the Given/When/Then scenarios (tests-first) or adds regression tests alongside a trivial change (code-first), the code-writer makes them pass, and a reviewer returns findings in 4 buckets (BLOCKER / AUTO_FIX / SUGGESTION / INFO); the stage exits only with the full suite green.
+- **Stage 4** never auto-skips: it always asks, then instruments the vertical slice with `protologs`, you exercise the ACs on device, an analyzer maps logs to verdicts, and cleanup is verified.
+- **Stage 5** validates assumptions, captures lessons into the global pool, checks docs, and delivers a copy-paste commit message + PR description (with optional auto-squash).
 
-### Day-to-day commands
+### Day-to-day
 
 | Command | Description |
-|---------|-------------|
-| `/wk:doer <TICKET-ID>` | Start a new ticket. Orchestrator asks for title, description, ACs, context, branch name, prior-work flags, then asks you to confirm the inferred testing strategy (`direct` or `bdd`). |
-| `/wk:doer continue <TICKET-ID>` | Resume a ticket from its last stage (across sessions). |
-| `/wk:doer status <TICKET-ID>` | Show current stage, loop state, blockers. |
-| `/wk:doer list` | List all tickets under `./.doer/tickets/`. |
-
-### Escape-hatch commands (rarely needed; flows below run automatically)
-
-| Command | When to use it manually |
-|---------|--------------------------|
-| `/wk:doer verify <TICKET-ID>` | Only for tickets already at `status: complete`. The Migration Check auto-upgrades any in-flight ticket, but a closed ticket has no entry point, so this command is the only way to retroactively run new stages added to the skill after the ticket closed. |
-| `/wk:doer cleanup-history <TICKET-ID>` | Auto-runs at wrapup (Stage 9). Use manually only if you declined the prompt at wrapup, want to preview/re-run the cleanup, or are working on a closed ticket. |
-
-### Stopping and resuming
-
-State is persisted to `metadata.json` after every Agent return; no separate "save" or "pause" needed. Multiple ways to stop:
-
-| Action | When to use |
-|--------|-------------|
-| Close the session / quit Claude | End-of-day. Session exit doesn't lose anything; resume next day. |
-| Write `stop`, `wait`, `hold on` | At any turn boundary. Orchestrator narrates where it stopped and stops. |
-| Press `Esc` | Mid-Agent (the orchestrator is waiting for a subagent). Cancels the current Agent call. Works in CLI clients that support it. |
-| `Ctrl+C` in the parent shell | Mid-Agent in terminal-based clients (e.g. Android Studio terminal) where `Esc` doesn't propagate. |
-
-To resume from any future session: `/wk:doer continue <TICKET-ID>`.
-
-### Talking to an active ticket
-
-Once a ticket is active, natural language works alongside slash commands. Whatever you type at a turn boundary is interpreted as one of two intents:
-
-| You write... | Orchestrator does |
 |---|---|
-| Anything non-halt (`ok`, `yes`, `continue`, `the plan looks good`, an unrelated question, even an empty message) | **Continue**: reads `metadata.json` and runs the next pending action |
-| A halt signal (`stop`, `wait`, `hold on`) | **Stop**: narrates current position and exits |
+| `/wk:doer <TICKET-ID>` | Start new or resume (auto-detected). |
+| `/wk:doer status <TICKET-ID>` | Current stage, loop state, blockers. |
+| `/wk:doer list` | All tickets (doer and bugfix) under `./.doer/tickets/`. |
+| `/wk:doer cleanup-history <TICKET-ID>` | Scrub `.doer/` from branch history (auto-offered at wrapup). |
 
-You don't need to type `/wk:doer continue` to nudge the next iteration. That command is only for resuming **across sessions**.
+Stopping: close the session (state persists after every step) or write `stop` / `wait` / `hold on`. Anything else at a turn boundary means "continue". Resume anytime with `/wk:doer <TICKET-ID>`.
 
----
+Config (not doer-specific, see Setup above): `/wk:setup` (guided), `/wk:locale <code>`, `/wk:jira <url>`.
 
-## Testing strategy (Direct / BDD)
-
-The orchestrator infers a testing strategy at intake from signals in the title, description, and raw ACs.
-
-| Strategy | When | Stage 3 behavior |
-|---|---|---|
-| Direct | Cosmetic/trivial change (label rename, copy fix, constant change, no AC) | DEFERRED: Stage 4 runs first, regression tests written after Stage 4. Tests expected to PASS. No red phase. |
-| BDD | User-facing behavior, observable bug, analytics with AC, flow with multiple states | Given/When/Then scenario tests first (failing); Stage 4 implements code derived from scenario names. |
-
-Intake presents the inferred strategy and asks you to confirm or override:
+## `/wk:bugfix` in 7 stages
 
 ```
-Y                              accept as inferred
-change strategy:bdd            override testing strategy to bdd
-change strategy:direct         override testing strategy to direct
+0 Init -> 1 Ingest Jira -> 2 Gather attachments -> 3 Entry points
+       -> 4 Investigate (plan mode) -> verdict -> 5 Fix OR mini-spike -> 6 Verify on device
 ```
 
-`testing_strategy` is set ONCE at intake and never changes mid-ticket. Pre-existing tickets that were created with `testing_strategy.mode = "tdd"` are auto-rewritten to `"bdd"` under v5.0.0 (the red-phase contract has the same shape).
+Designed to run in **opusplan**: the mechanical stages run cheap, the investigation runs on the strongest model. Stage 2 is opportunistic: whatever evidence the ticket happens to have gets pulled in and digested by grepping for the ticket's technical signals, never read whole; a ticket with nothing attached just moves on to Stage 3. Network captures (Charles `.chls`, converted to `.har` via `makehar` or Charles.app when available) and screenshots are the common case, not a requirement. The verdict is data-driven: `app_bug` → plan + fix + `protologs` verification; `not_app_bug` (API / CMS / backend / data / env) → an evidence-first mini-spike in Jira markup, posted as a comment only with your explicit yes.
 
----
+Control state lives in `./.doer/tickets/<KEY>/` (never reaches git); heavy artifacts (network captures, screenshots, the spike) in `~/Downloads/<KEY>/` for easy manual inspection.
 
-## Pipeline (9 stages)
+## `/wk:protologs`
 
-```mermaid
-flowchart TD
-    A[1 AC Confirm]:::single --> B[2 Plan]:::single
-    B --> C[3 Tests Direct or BDD]:::single
-    C --> D[4 Code Implementation]:::loop
-    D --> E[5 Code Review]:::loop
-    E --> F[6 Quality Gate]:::gate
-    F --> G[7 Runtime Verify]:::runtime
-    G --> H[8 Docs Sync]:::plain
-    H --> I[9 Wrapup]:::final
+Instruments the COMPLETE vertical slice of your current diff (entry point → boundary → observable result), with saturation-level density (function entry/exit, every branch, every nullable, every emit), using only the language's basic stdout with the tag `PROTOLOG - `. Backs up the pre-inject state to /tmp, compiles what it touched, and prints the filter command (`adb logcat | grep "PROTOLOG - "`). `cleanup` deletes every tagged line, restores files it touched outside your diff, and verifies zero trace remains. Never commits or pushes.
 
-    classDef loop fill:#1e3a5f,stroke:#60a5fa,stroke-width:2px,color:#e0f2fe
-    classDef gate fill:#78350f,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
-    classDef final fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7
-    classDef plain fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
-    classDef runtime fill:#4c1d95,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
-    classDef single fill:#1e293b,stroke:#94a3b8,stroke-width:2px,color:#e2e8f0
-```
-
-Color legend:
-
-- **Blue**: doer/reviewer loop (Stages 4 and 5; max 3 iterations)
-- **Amber**: validation gate (test suite execution)
-- **Purple**: on-device runtime verification with temporary debug logs (always asks the dev; never silent skip)
-- **Green**: wrapup (lessons + performance)
-- **Slate**: single-pass stage (Stages 1, 2, 3, 8). Stages 2 and 3 use deterministic checks plus one retry on check failure
-
-Stages with real-code commits (3, 4, 5, 7, 8) commit on the feature branch. Stages whose only output is `metadata.json` (1, 2, 9) skip the commit, since `metadata.json` is gitignored locally and never reaches the team.
-
----
-
-## Pre-Existing Work
-
-If you already started on the ticket (plan, tests, code, docs), Stage 1 detects it and skips ahead. The orchestrator reads your commits, classifies touched files, and runs the test suite, then asks you to confirm the inferred entry point.
-
-| You have... | Entry stage |
-|---|---|
-| Nothing | 1 (AC confirm) |
-| Plan only | 3 (tests) |
-| Plan + tests | 4 (code) |
-| Plan + tests + partial code | 4 (code) |
-| Plan + tests + complete code | 5 (code review) |
-
-Skipped stages are marked `imported` in `metadata.json`; uncommitted changes get a baseline commit before resuming.
-
----
-
-## Doer / Reviewer Loop
-
-Stages 4 (Code) and 5 (Code Review) only. Max 3 iterations. One full iteration (doer + reviewer + AUTO_FIX pass) runs in a single turn. Iteration 1 is clean-slate; iteration 2+ is a combined fixer-reviewer agent that receives prior findings inline and only re-scans the areas the doer touched.
-
-Stages 2 (Plan) and 3 (Tests) do NOT loop. Single-pass, then deterministic checks decide pass/fail. On check failure the writer agent is invoked once more with the BLOCKERs inline; a second failure marks the stage `blocked` and the dev fixes manually before `/wk:doer continue`.
-
-### Findings (4 buckets)
-
-| Bucket | Behavior | Examples |
-|--------|----------|----------|
-| `BLOCKER` | Loop continues until resolved | Failing test, missing AC coverage, security issue, broken build |
-| `AUTO_FIX` | Applied automatically same iteration before convergence check | Reference to deleted function, unused import, stale test name, typo |
-| `SUGGESTION` | Logged to `metadata.code_review`, never applied, never blocks | "Consider extracting", design tweaks |
-| `INFO` | Observational only | "This file is 500 LOC", "pattern used in 3 places" |
-
-Decision rule for AUTO_FIX vs SUGGESTION: *"Is there anything to decide?"* No → AUTO_FIX. Yes → SUGGESTION. When in doubt → SUGGESTION.
-
----
-
-## State Layout
-
-State is split between the **plugin install** (cross-project) and **per-repo `.doer/`** (one directory per checkout). Per-ticket state lives in a single `metadata.json`; no markdown sidecars.
+## State layout
 
 ```
-${CLAUDE_PLUGIN_ROOT}/             # plugin install, e.g. ~/.claude/plugins/cache/wk/
-├── skills/{doer,load,advise,review,publish}/SKILL.md
-├── lib/                           # protocols + helpers (see AGENTS.md for the tree)
-│   ├── memory-paths.md            # source of truth for metadata.json schema
-│   ├── helpers/*.sh               # bash helpers (lock, inbox, cost, preferences)
-│   └── advisor-personas/*.json    # 5 personas: security, performance, mobile, accessibility, api
-└── lessons/{slug}.md              # GLOBAL, cross-project
+${CLAUDE_PLUGIN_ROOT}/               # plugin install
+├── skills/{doer,bugfix,protologs}/  # work skills
+├── skills/{setup,locale,jira}/      # config skills
+├── lib/                             # shared protocols + helpers (see AGENTS.md)
+└── lessons/{slug}.md                # GLOBAL lessons pool, cross-project
 
-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/
-└── preferences.json               # locale + opt-in flags. Outside the versioned plugin cache.
+${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json    # locale only, global
 
-./.doer/                           # per-repo (in CWD), auto-added to .git/info/exclude
-└── tickets/{TICKET-ID}/
-    ├── metadata.json              # SINGLE source of truth per ticket
-    ├── lock.json                  # per-ticket lock
-    └── advisor-findings/{persona-id}.json   # only when /wk:advise --target ticket:<ID> ran
+./.doer/config.json                  # per-repo Jira config (base URL + token env var name)
+./.doer/tickets/{ID}/                # per-repo control state (metadata.json | bugfix.json)
+~/Downloads/{KEY}/                   # bugfix heavy artifacts
 ```
 
-Lessons are GLOBAL across every repo that uses the plugin. Sub-agents receive the relevant slices of metadata inlined in their prompts; they do not read sidecar files.
+**`.doer/` never reaches the team.** The Workspace Guard adds it to `.git/info/exclude` at every entry point and verifies the exclusion works; wrapup can scrub any stragglers from branch history. The team sees only real code commits.
 
-The full `metadata.json` schema (top-level fields, owners, per-stage runtime fields) lives in [`lib/memory-paths.md`](./lib/memory-paths.md).
+Full schemas live in [`lib/state.md`](./lib/state.md).
 
----
+## Design notes
 
-## `.doer/` Never Reaches the Team
+- **One branch, one ticket.** All commits use `--no-verify`; you run the real checks before the PR. The kit never pushes.
+- **Orchestrator is the sole voice.** Sub-agents write artifacts and return JSON; only the orchestrator talks to you.
+- **No hidden state.** Everything lives on disk; closing the session is pausing.
+- **No internal vocabulary in team artifacts.** `AC-N` labels, `PROTOLOG`/`DOER` tags, and stage names never reach committed code, commit messages, or PR text; every generated artifact is grep-validated before it is shown.
+- **Lessons are global.** Each wrapup can save a lesson; every future ticket in any repo reads the applicable ones before planning.
 
-A hard rule. The Workspace Guard runs at every entry point and ensures:
+### Upgrading from 6.x
 
-1. `.doer/` is in `.git/info/exclude` (per-clone, never committed).
-2. The `.doer/` exclusion takes effect (test file under `.doer/` does not appear in `git status`).
-3. Stale per-repo lessons are migrated to the global pool.
-4. The Migration Check auto-upgrades the ticket to the current skill version.
-5. Stage 9 wrapup runs `git filter-branch` to strip any `.doer/` content from prior commits on the feature branch (only when needed; typically a no-op for tickets created with the Workspace Guard active from the start).
-
-**`.doer/` files always remain on disk.** The cleanup at wrapup only rewrites git history; it never touches the filesystem.
-
-After a ticket completes you can still:
-
-- Run `/wk:doer status <TICKET-ID>` for a summary
-- Run `/wk:doer list` to see all tickets
-- Run `/wk:doer continue <TICKET-ID>` to inspect or extend
-- Read `./.doer/tickets/<TICKET-ID>/metadata.json` directly for ac, plan, changelog, code review history, wrapup summary, and performance stats
-
-The team sees ONLY real code commits. No doer artifacts, no metadata, no review history.
-
----
-
-## Locale (optional)
-
-The orchestrator narrates in English by default. Override the locale globally per Claude Code config:
-
-```bash
-/wk:doer locale es     # any ISO 639-1 code; es, fr, en, ...
-```
-
-This writes to `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (outside the versioned plugin cache, so it survives plugin upgrades). On the first message of a session with no locale set, the orchestrator runs a one-shot heuristic and asks once in Spanish if it detects Spanish keyword density.
-
-| Scope | Language |
-|---|---|
-| Live chat (narration, questions, confirmations) | Operating locale |
-| Persistent state on disk (metadata, lessons, commit messages) | **Always English** |
-
-Persistent state stays in English so the global lessons pool is shareable across projects and future tickets, regardless of which language the dev is working in.
-
----
-
-## Opt-in features (preferences.json)
-
-Toggles live in the global preferences file at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`. Most default off; `stage1_ac_self_review` defaults on because it adds dev confidence at near-zero cost.
-
-| Key | Default | Summary |
-|---|---|---|
-| `stage1_ac_self_review` | `true` | Stage 1 dispatches an `ac-reviewer` sub-agent that compares the AC draft against intake. Findings (`affirmation` / `gap` / `blocker`) surface to the dev; blockers promote to Open Questions. Never auto-applies fixes. Non-fatal on failure. |
-| `stage4_per_task_gate` | `false` | Stage 4 implements one plan step at a time and pauses for `[a]ccept / [e]dit / [r]eject / [s]kip` after each. Mutually exclusive with `stage4_parallel_subagents`. |
-| `stage4_parallel_subagents` | `false` | Stage 4 groups disjoint plan steps and dispatches them as parallel Agent calls. Serializes on file overlap. |
-| `stage5_advisor_personas` | `[]` | Stage 5 dispatches the listed advisor personas (e.g. `["security","performance"]`) via `/wk:advise` once at iter 1. Findings flow into the standard reviewer buckets with `source: "advisor:<persona-id>"`. 5 personas shipped: `security`, `performance`, `mobile`, `accessibility`, `api`. |
-
-Example `preferences.json`:
-
-```json
-{
-  "locale": "es",
-  "stage1_ac_self_review": true,
-  "stage4_parallel_subagents": true,
-  "stage5_advisor_personas": ["security"]
-}
-```
-
-Set individual flags via the helper:
-
-```bash
-"${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" set-flag stage4_parallel_subagents true
-```
-
-Per-flag protocols live in `skills/doer/SKILL.md` and the relevant stage file.
-
----
-
-## Versioning & Auto-Migration
-
-The skill follows SemVer (MAJOR.MINOR.PATCH). Every ticket persists `skill_version` in its metadata. On every entry point (`continue`, `verify`, any stage execution), the **Migration Check** auto-applies any pending migration silently:
-
-| Bump | When | Migration block |
-|------|------|------------------|
-| MAJOR | Renames/removes stages, changes the shape of `metadata.json`, removes/renames artifact files | REQUIRED |
-| MINOR | Adds capability OR changes the shape of any persistent field | REQUIRED if any persistent format changed |
-| PATCH | Bug fix to orchestrator behavior, no format change | None |
-
-If a bump changes the shape of any persistent field, a migration block is registered. Tickets in flight are auto-upgraded the next time they're touched. The dev never has to migrate by hand.
-
-The migration also runs Phase 2 auto-reverify: spot-checks completed stages whose `verified_with` is older than the current SKILL version.
-
-- **In-flight tickets**: spot-checks fire automatically before resume.
-- **Closed tickets**: the orchestrator asks once whether to reverify.
-
-**Current version: 6.8.1.** All migrations are idempotent and run automatically the next time any in-flight ticket is touched. See [`CHANGELOG.md`](./CHANGELOG.md) for per-version detail.
-
----
-
-## Design Notes
-
-- **One branch, one ticket.** Stages with real code commit; stages with only `.doer/` artifacts skip.
-- **All commits use `--no-verify`.** Pre-commit hooks would interrupt mid-stage. The dev runs the real checks manually before the PR.
-- **Orchestrator is the sole voice.** Subagents write artifacts and return JSON summaries; only the orchestrator prompts the user.
-- **Iteration as a turn.** A full doer/reviewer iteration runs in a single turn. Works identically in CLI and IDE plugins.
-- **No hidden state.** Everything lives on disk in `./.doer/`. Context compression cannot lose progress; closing the session = pausing.
-- **Anti-compaction.** A heartbeat self-check at every stage transition forces re-hydration (locale, SKILL section, metadata) if compaction dropped them from context.
-- **No push, no PR, no deploy.** `/wk:doer` stops after wrapup. Push manually or run `/wk:publish <TICKET-ID>` to push the branch, build the PR/MR body from metadata, and optionally transition the linked Jira ticket.
-
----
+7.0.0 removed the migration machinery along with the `load`, `advise`, `review`, and `publish` satellites, cost tracking, and the heartbeat/lock/inbox protocols. Completed 6.x tickets need nothing. An in-flight 6.x ticket cannot be auto-resumed under 7.0.0: finish it by hand or recreate it with `/wk:doer`. The 6.x changelog is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
 ## License
 

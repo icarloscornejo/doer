@@ -1,86 +1,51 @@
 # Doer Work Kit (`wk`)
 
-Claude Code plugin for end-to-end execution of development tickets. Takes a pre-defined ticket from acceptance criteria to implementation-ready code on a feature branch, just before the PR.
+Claude Code plugin with three work skills: `/wk:doer` (ticket execution, 5 stages), `/wk:bugfix` (bug triage from Jira, fix-or-spike), `/wk:protologs` (temporary runtime debug logs). Plus three config skills: `/wk:setup` (guided), `/wk:locale`, `/wk:jira`.
 
 ## Install
 
 ```bash
-# 1. Register the marketplace
 claude plugin marketplace add https://github.com/icarloscornejo/doer.git
-
-# 2. Install the plugin
 claude plugin install wk@wk
-
-# 3. Verify
 claude plugin list
 ```
 
-After installing, the 5 skills are available:
-
-```
-/wk:doer ABC-123       # 9-stage pipeline orchestrator (core skill)
-/wk:load <ID>          # import a ticket from Jira / Linear / GitHub (operational)
-/wk:advise             # review specs/ACs/code with configurable personas (operational)
-/wk:review <pr-ref>    # review external PRs (operational)
-/wk:publish ABC-123    # create PR/MR + transition Jira (opt-in, operational)
-```
-
-All 4 satellite skills (`load`, `advise`, `review`, `publish`) shipped in 6.0.0 via tickets WK-7 through WK-10 and are operational. See `CHANGELOG.md` for per-version detail.
-
-## Initial setup
-
-After installing:
-
-- Set the locale with `/wk:doer locale es` (or any ISO 639-1 code). The setting persists at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (outside the versioned plugin cache, so it survives upgrades).
-- Set opt-in flags via the helper if you want them: `${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh set-flag stage4_parallel_subagents true`.
-- `lessons/`: the 5 initial lessons ship with the plugin. The plugin accumulates more as tickets close.
+Initial setup (locale, per-project Jira config) is in `README.md` → Setup.
 
 ## Repo structure
 
 ```
 doer/
 |- .claude-plugin/{plugin,marketplace}.json
-|- skills/                              # 5 user-invocable skills
-|  |- doer/SKILL.md                     # 9-stage orchestrator (lean dispatcher)
-|  |  |- stages/                        # per-stage protocols loaded on demand
-|  |  |  |- 01-ac-confirm.md ... 09-wrapup.md
-|  |  |  |- _intake.md, _resume.md, _commands.md
-|  |- load/{SKILL.md, examples.md, lib/extract-acs.sh}
-|  |- advise/SKILL.md
-|  |- review/{SKILL.md, examples.md}
-|  |- publish/{SKILL.md, examples.md, reuse.md, edge-cases.md}
-|- lib/                                 # shared protocols
-|  |- principles.md                     # Core principles
-|  |- narration.md                      # locale + em-dash rule
-|  |- workspace-guard.md                # install check + .doer/ exclude
-|  |- memory-paths.md                   # canonical paths + metadata.json schema
-|  |- heartbeat.md                      # anti-compaction
-|  |- stage-checklist.md                # Stage Finalization Checklist
-|  |- loop.md                           # doer/reviewer convergence pattern
-|  |- debugging.md                      # root-cause protocol for fixers
-|  |- migrations.md                     # active migrations (>=5.0.0) + protocol header
-|  |- migrations/legacy.md              # archived migrations (1.x -> 5.0.0), lazy-loaded
-|  |- lock.md, inbox.md, cost.md        # per-ticket coordination
-|  |- jira-transition.md                # Jira REST sub-protocol (loaded by /wk:publish)
-|  |- cost-rates.json
-|  |- helpers/                          # executable: lock.sh, inbox.sh, cost.sh,
-|  |                                    #   cost-transcript.sh, preferences.sh
-|  |- advisor-personas/                 # JSON personas for /wk:advise and /wk:review
-|- scripts/refresh-rates.sh
-|- lessons/                             # global, cross-project (5 files)
-|- tests/{helpers.sh, fixtures/}
+|- skills/
+|  |- doer/SKILL.md                    # 5-stage orchestrator (lean dispatcher)
+|  |  |- stages/                       # per-stage protocols, loaded on demand
+|  |  |  |- 01-ac.md 02-plan.md 03-build.md 04-verify.md 05-wrapup.md
+|  |  |  |- _resume.md, _commands.md
+|  |- bugfix/{SKILL.md, analyze.md, templates/mini-spike.md}
+|  |- protologs/SKILL.md
+|  |- setup/SKILL.md, locale/SKILL.md, jira/SKILL.md   # config skills
+|- lib/                                # shared protocols
+|  |- principles.md                    # core principles (10)
+|  |- narration.md                     # turn boundaries + locale + em-dash rule
+|  |- workspace-guard.md               # .doer/ exclusion + per-ticket lock (inline bash)
+|  |- state.md                         # schemas: metadata.json, bugfix.json, layout, required fields
+|  |- loop.md                          # doer/reviewer convergence pattern (Stage 3)
+|  |- debugging.md                     # no fix without root cause
+|  |- helpers/{preferences.sh, jira.sh}
+|- lessons/                            # global, cross-project
+|- tests/helpers.sh                    # smoke tests for the two helpers
+|- docs/CHANGELOG-archive-6x.md        # archived 1.x-6.x history
 |- AGENTS.md, README.md, CHANGELOG.md, LICENSE
 ```
 
-Personal preferences (locale, opt-in flags) live OUTSIDE the repo and outside the versioned plugin cache: `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json` (since 6.2.0).
+Personal preference (locale only) lives OUTSIDE the repo at `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json`, global across every project. Jira config (base URL + token env var name; the token itself is never stored) is per-project at `./.doer/config.json`, since different repos can point at different Jira instances.
 
 ## For a Claude session that received this repo
 
-If the user pastes the URL of this repo and says "install this", run the ritual above.
-
-If they ask "help me use it", read `skills/doer/SKILL.md` (lean dispatcher; it points to per-stage protocols under `skills/doer/stages/`).
-
-If they ask "add a feature to the plugin", read `CHANGELOG.md` for the most recent shipped version, then propose a new minor/major version with a descriptive slug (NOT a `WK-N` ticket, the WK-1..WK-11 series is closed).
+- "Install this" → run the ritual above.
+- "Help me use it" → read `skills/doer/SKILL.md` (dispatcher; it points at the per-stage files).
+- "Add a feature to the plugin" → read `CHANGELOG.md` for the latest version, propose a new SemVer bump with a descriptive slug. There is no migration machinery: if a change breaks the `metadata.json` schema, bump MAJOR (in-flight tickets refuse to resume across MAJORs and say so).
 
 ## License
 

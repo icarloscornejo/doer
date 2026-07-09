@@ -7,7 +7,7 @@
     {
       "name": "wk",
       "source": "./",
-      "description": "Doer Work Kit: ticket execution orchestrator + satellite skills."
+      "description": "Doer Work Kit: ticket execution (doer), bug triage (bugfix), runtime debug logs (protologs)."
     }
   ]
 }
