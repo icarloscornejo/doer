@@ -1,6 +1,6 @@
 # Stage 3. Build (Tests + Code + Review Loop)
 
-**Goal:** implement the plan with tests, converge through the doer/reviewer loop, exit with the full suite green. Uses the loop pattern in `lib/loop.md` (max 3 iterations). Commits real code on the feature branch.
+**Goal:** implement the plan with tests, converge through the doer/reviewer loop, exit with the full suite green. Uses the loop pattern in `lib/loop.md` (max 3 iterations). Commits real code on the feature branch, one commit per step (tests, implementation, each round of review fixes), not a single commit at the end: per-step commits make it possible to tell exactly which step introduced a regression, and the wrapup squash (`05-wrapup.md` step 5) collapses them into one PR-ready commit anyway.
 
 ## Test order (one-line criterion, no ritual)
 
@@ -16,6 +16,12 @@ The change has observable behavior (user-facing flow, bug with repro, conditiona
 - NEVER include `AC-N` labels in test files (names, comments, KDoc); the `covers` field in the JSON output is the only place they belong. No `// RED:`-style meta comments. Em-dashes forbidden. Artifacts in English.
 - Return `{"tests_added": [{"name", "file", "covers"}], "changelog_appendix": {...}, "status", "summary"}`.
 
+Commit once the test-writer returns:
+```bash
+git add -A && git commit --no-verify -m "doer(<TICKET-ID>): BDD scenarios + failing tests"
+```
+(code-first mode: skip this commit here and fold it into the code-writer commit below, message `"doer(<TICKET-ID>): regression tests (direct)"` becomes part of the combined message.)
+
 **2. Code-writer.** Prompt inlines `metadata.ac`, `metadata.plan`, test file paths, last 2 changelog entries. Key instructions:
 
 - Implement the plan; scenario names are the contract in tests-first mode. Follow codebase conventions; no new dependencies unless the plan names them (flag in changelog if unavoidable).
@@ -24,6 +30,12 @@ The change has observable behavior (user-facing flow, bug with repro, conditiona
 - When gating a function behind a flag or condition, grep ALL call sites before marking the step done (event observers are the most-missed). When updating a doc or comment block, scan the whole file for stale references to the changed concept.
 - When fixing a failing test or broken behavior, include verbatim: *"Before proposing any fix: read `${CLAUDE_PLUGIN_ROOT}/lib/debugging.md` and follow the protocol. No fix without root cause."*
 - Read budget: 15 source files + lessons. Return changelog_appendix + status.
+
+Commit once the suite is green:
+```bash
+git add -A && git commit --no-verify -m "doer(<TICKET-ID>): implementation (BDD green)"
+```
+(code-first mode: `"doer(<TICKET-ID>): regression tests + implementation (direct)"`, covering both the tests and the code in one commit since they were written together.)
 
 **3. Deterministic pre-review checks** (orchestrator, no LLM). Any BLOCKER here skips the reviewer and goes straight to the next iteration's fixer:
 
@@ -48,11 +60,17 @@ Findings come back as BLOCKER / AUTO_FIX / SUGGESTION / INFO per `lib/loop.md`. 
 
 One combined fixer-reviewer Agent per `lib/loop.md` (prior findings inlined, re-scan only touched lines). Convergence = zero BLOCKERs; SUGGESTIONs never block.
 
+Commit after each iteration's fixes, only if the fixer changed anything:
+```bash
+git add -A && git commit --no-verify -m "doer(<TICKET-ID>): address code review"
+```
+No changes to commit (the reviewer had nothing left to flag) → skip, no empty commit.
+
 ## On convergence
 
-1. Commit:
+1. If anything is left uncommitted (a stray edit outside the iteration loop), commit it as a straggler:
    ```bash
-   git add -A && git commit --no-verify -m "doer(<TICKET-ID>): implementation with tests"
+   git add -A && git commit --no-verify -m "doer(<TICKET-ID>): address code review"
    ```
 2. Run the full suite once more if anything changed since the last green run; then persist `metadata.last_green_sha` (full 40-char `git rev-parse HEAD`) and `metadata.last_green_test_command`. A red suite here re-enters the loop; do not advance.
 3. Validate required fields per `lib/state.md`, set `stages.3` complete (`iterations`, `loop_outcome`), narrate *"Stage 3 complete: converged in <i> iteration(s), <N>/<N> tests green. Continuing to Stage 4..."* and auto-proceed: read `04-verify.md` and ONLY that file.

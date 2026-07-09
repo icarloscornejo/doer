@@ -2,6 +2,8 @@
 
 Entered when `/doer <TICKET-ID>` finds an existing `./.doer/tickets/<TICKET-ID>/metadata.json`. No separate "continue" verb needed.
 
+0. Run the **Transition Sync** (`lib/sync.md`) first: narrate "Transition Sync.", then proceed to step 1 below (its metadata read satisfies the sync's step 2).
+
 1. Read `metadata.json`.
 
 2. **Version stamp check.** Compare the MAJOR of `metadata.skill_version` against the MAJOR of the SKILL frontmatter version. If they differ, STOP and narrate: *"This ticket was created with skill v<old> and its schema is incompatible with v<current>. Finish it by hand or recreate it with /doer."* Do not attempt to auto-migrate.

@@ -5,7 +5,7 @@ description: >-
   (e.g. /wk:jira https://jira.example.com). Per-project, not global: different
   repos can point at different Jira instances. Does not touch the token; use
   "/wk:setup" for the full guided flow including the token env var name.
-version: 7.0.0
+version: 7.1.0
 user-invocable: true
 allowed-tools: [Read, Bash]
 ---
@@ -18,4 +18,4 @@ Per-project, git-excluded. Run the Workspace Guard's exclude-rule steps first (s
 2. Confirm the saved URL.
 3. If no `<url>` was given, ask for one (plain chat); there is nothing sensible to default to.
 
-This does not set or check the token. The token is full-env only (`$JIRA_PAT` by default, or whatever `jira_token_env` names) and is never persisted; use `/wk:setup` for the guided flow that also covers the token env var name and verification.
+This does not set or check the token. The token is full-env only (`$JIRA_PAT` by default, or whatever `jira_token_env` names) and is never persisted; use `/wk:setup` for the guided flow that also covers the token env var name, the Atlassian Cloud auth email (`set-auth-email`, required for `*.atlassian.net`), and verification.

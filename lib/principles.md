@@ -2,7 +2,7 @@
 
 Operating rules that apply across every wk skill. Narration discipline and the em-dash prohibition live in `lib/narration.md`.
 
-1. **One branch, one ticket.** All work happens on a single feature branch. Stages that produce real code commit it; stages whose only output is `.doer/` do not commit.
+1. **One branch, one ticket.** All work happens on a single feature branch. Stages that produce real code commit it as they go, one commit per step (not one commit at the end of the stage): each test-writer/code-writer/review-fix step gets its own commit, so a regression can be traced to the exact step that introduced it. Stages whose only output is `.doer/` do not commit. The wrapup squash collapses everything into one PR-ready commit before the team ever sees it.
 2. **Delta-aware reviewers.** After iteration 1, reviewers receive prior findings plus the latest changelog entries inline; they verify fixes and scan touched lines, never re-analyze from scratch.
 3. **Bounded loops.** The build loop caps at 3 iterations. If it has not converged, the dev decides.
 4. **Lessons accumulate.** Every ticket captures what went well and what did not, into the global pool at `${CLAUDE_PLUGIN_ROOT}/lessons/`. Future tickets read the applicable ones before planning.

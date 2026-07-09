@@ -3,12 +3,14 @@ name: protologs
 description: >-
   Injects temporary debug logs (tag PROTOLOG) into the vertical slice of the
   current diff to verify runtime behavior on device. Two modes:
-  - /wk:protologs          -> injects logs (asks to confirm base branch)
-  - /wk:protologs cleanup  -> deletes every line containing "PROTOLOG - ",
-    leaving the code identical to its original state, and verifies no trace
-    remains. Also invoked by /wk:doer Stage 4 and /wk:bugfix Stage 6 for
-    on-device runtime verification.
-version: 7.0.0
+  - /wk:protologs          -> injects logs (asks to confirm base branch),
+    commits them as a [TEMP] commit so multiple rounds of logs and any
+    fixes requested in between stay individually trackable.
+  - /wk:protologs cleanup  -> reverts every [TEMP] commit (sed removal is
+    only a fallback), leaving the code identical to its original state, and
+    verifies no trace remains. Also invoked by /wk:doer Stage 4 and
+    /wk:bugfix Stage 6 for on-device runtime verification.
+version: 7.1.0
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -245,6 +247,37 @@ One println per call site. Values go inside the string via interpolation.
 NEVER use the app's logging framework (Timber, log4j, structlog, winston,
 direct Logcat, etc.). Use ONLY the language's basic stdout.
 
+== VALID LINE SHAPES (only these two exist) ==
+
+Every PROTOLOG line occupies its own full line, with nothing else on it, so that
+deleting it (by text match on "PROTOLOG - ") leaves the surrounding code exactly
+as it was:
+
+1. A standalone print call: `println("PROTOLOG - <message>")`.
+2. A standalone `.also { println("PROTOLOG - <message>") }` continuing the
+   expression on the PREVIOUS line (Kotlin/Swift allow a leading-dot
+   continuation). This is the sanctioned way to log a return value, a `when`
+   branch result, or a constructor call WITHOUT refactoring anything: deleting
+   the line leaves the original expression syntactically complete.
+   ```kotlin
+   // when branch:
+   FeatureEntity.HandlerType.PROMOTION_LIST_FOR_YOU -> PROMOTION_LIST_FOR_YOU
+       .also { println("PROTOLOG - [${Thread.currentThread().name}] FeaturesMapper: branch PROMOTION_LIST_FOR_YOU") }
+
+   // return / constructor:
+   return PromotionList.Item(
+       ...
+   )
+       .also { println("PROTOLOG - [${Thread.currentThread().name}] PromotionListMapper: exit value=$it") }
+   ```
+
+Never write the `.also { println(...) }` on the SAME line as the code it is
+attached to (e.g. `X -> Y.also { println(...) }` or `).also { println(...) }`
+glued to a closing paren). That mixes a PROTOLOG line with business logic on
+one physical line; deleting it by text match deletes the logic with it. This is
+exactly the bug that broke a `when` block and two constructor calls in a real
+incident. The `.also {}` ALWAYS goes on its own line below.
+
 == DO NOT RULES (critical for perfect cleanup) ==
 
 FORBIDDEN:
@@ -260,15 +293,26 @@ FORBIDDEN:
    BAD:  val r = foo()
          println("PROTOLOG - result=$r")
          return r
-   GOOD: println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: about to call foo"); return foo()
+   GOOD: println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: about to call foo")
+         return foo()
+   ALSO GOOD (when the returned/emitted value itself needs logging, use the
+   standalone `.also {}` form from VALID LINE SHAPES above, never inline it):
+   BAD:  return foo().also { println("PROTOLOG - result=$it") }
+   GOOD: return foo()
+             .also { println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: result=$it") }
 
 3. Adding helpers, factories, or any extra function. The only permitted change
-   is println/print/console.log lines.
+   is println/print/console.log lines (standalone or standalone `.also {}`).
 
 4. Modifying existing business logic, imports, or comments.
 
+5. Mixing a PROTOLOG line with business logic on the same physical line. Every
+   `.also { println("PROTOLOG - ...") }` is on its own line (see VALID LINE
+   SHAPES). Never `X -> Y.also { ... }`, never a println joined by `;` to real
+   code, never a println hanging off the line that closes a constructor call.
+
 Every modified file must be such that deleting all lines containing "PROTOLOG - "
-restores it to its exact prior state.
+restores it to a syntactically identical state to its exact prior state.
 
 A "gap" is a slice hop where it is TECHNICALLY IMPOSSIBLE to add a log without
 violating the rules above (not merely difficult or inconvenient). The bar for
@@ -333,7 +377,9 @@ functions, creates intermediate variables only to print their value, or adds emp
 the `sed` cleanup and corrupt the code. This check catches them before compilation.
 
 After the agent returns its JSON but BEFORE compiling, the orchestrator (NOT the agent)
-runs this check for every file in `files_touched`:
+runs TWO checks for every file in `files_touched`:
+
+**Check A (non-PROTOLOG additions):**
 
 ```bash
 git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep -v "PROTOLOG - "
@@ -346,9 +392,44 @@ git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep -v "PROTOLOG - "
   original form; intermediate variables eliminated). Re-run the check until it passes.
   Only then compile.
 
-Skip the check for any file present in `/tmp/protolog-workdir-<branch>.patch` (it had
+**Check B (PROTOLOG mixed with business logic on the same line, DO NOT RULE #5):**
+
+```bash
+git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep "PROTOLOG - " \
+  | grep -vE '^\+[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)'
+```
+
+A line only survives this filter if it contains `PROTOLOG - ` but is NOT a bare
+`println(...)` / `print(...)` / etc. or a bare `.also { println(...) }` continuation
+line. Non-empty output means the injection put PROTOLOG on the same physical line as
+real code (e.g. `X -> Y.also { println("PROTOLOG - ...") }` inline, or `).also {
+println(...) }` glued to a closing paren). Do NOT compile. Move the `.also {}` (or the
+println) to its own line per VALID LINE SHAPES, re-run BOTH checks until they pass, only
+then compile. This is the exact failure mode that broke a `when` block and two
+constructor calls in a real incident; Check A alone missed it because the offending
+line does contain `PROTOLOG - `.
+
+Skip both checks for any file present in `/tmp/protolog-workdir-<branch>.patch` (it had
 uncommitted changes before the injection, so the agent's additions cannot be cleanly
 distinguished from the pre-existing ones).
+
+### Step 4.6 - Commit this round as [TEMP]
+
+Once both Step 4.5 checks pass and the touched modules compile clean, commit the round:
+
+```bash
+git add -A && git commit --no-verify -m "[TEMP] PROTOLOG debug logs (round <N>). DO NOT MERGE"
+```
+
+`<N>` starts at 1 and increments each time inject mode runs again on the same branch
+without an intervening cleanup (the dev asking for more logs after reviewing the first
+batch is the common case: `git log --oneline --grep '\[TEMP\] PROTOLOG'` tells you the
+current count). This is what makes cleanup a plain revert instead of a text-matching
+sed pass, and what keeps a fix the dev asks for mid-verification cleanly separated from
+the logs: a `[TEMP]` commit contains ONLY PROTOLOG lines, never a fix. If the dev asks
+for a fix while logs are live, that fix is committed separately (its own message,
+no `[TEMP]` tag, never mixed into a logging commit) before or after the next round of
+logs, whichever order the dev requests it in.
 
 ### Step 5 - Narrate result
 
@@ -398,7 +479,38 @@ revert with the backup patch.
 
 Activated when the user types `/wk:protologs cleanup`, or when the invoking skill reaches its cleanup step.
 
-### Step 1 - Find files with the tag
+The primary path is reverting the `[TEMP]` commits made during inject (Step 4.6). This
+is exact by construction: a `[TEMP]` commit contains only PROTOLOG lines, so reverting
+it removes exactly those lines and nothing else, regardless of how many rounds of logs
+or interleaved fixes happened in between. The `sed` text-match pass is only a fallback
+for sessions where no `[TEMP]` commit exists (interrupted inject, pre-7.1.0 session).
+
+### Step 1 - Enumerate [TEMP] commits
+
+```bash
+git log --format='%H %s' HEAD | grep '\[TEMP\] PROTOLOG'
+```
+
+If one or more are found, go to Step 2 (revert path). If none are found, narrate
+*"No [TEMP] PROTOLOG commits found; falling back to text-match cleanup."* and go to
+Step 2-fallback.
+
+### Step 2 - Revert path
+
+Revert each `[TEMP]` commit found in Step 1, most recent first:
+
+```bash
+git revert --no-edit <sha>
+```
+
+Fixes the dev requested mid-verification live in separate, non-`[TEMP]` commits and are
+untouched by these reverts. If a revert conflicts (rare: a fix touched the same lines as
+a log), run `git revert --abort` and fall through to Step 2-fallback for the affected
+files only. Collapsing each `[TEMP]`/revert pair out of history is left to the wrapup
+squash (doer) or to the dev directly (standalone); cleanup's job is just to remove the
+logs, not to rewrite history.
+
+### Step 2-fallback - Text-match removal (only when no [TEMP] commit applies)
 
 ```bash
 # tracked files
@@ -415,21 +527,37 @@ Deduplicate. If no file has the tag, narrate:
 *"No lines with `PROTOLOG - ` found in the repo. The code is already clean."*
 and stop.
 
-### Step 2 - Delete every line with the tag
-
-For each found file, remove lines containing `PROTOLOG - `:
+For each found file, first check for embedded (non-standalone) PROTOLOG lines, since a
+blind `sed` delete on those corrupts the file (the exact incident this rule prevents):
 
 ```bash
-# macOS / BSD sed
-sed -i '' '/PROTOLOG - /d' "<file>"
-
-# Linux sed (if the above fails)
-sed -i '/PROTOLOG - /d' "<file>"
+grep -n "PROTOLOG - " "<file>" \
+  | grep -vE '^[0-9]+:[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)'
 ```
+
+- No matches: every PROTOLOG line is standalone. Remove with:
+  ```bash
+  sed -i '' '/PROTOLOG - /d' "<file>"   # macOS / BSD
+  sed -i '/PROTOLOG - /d' "<file>"      # Linux, if the above fails
+  ```
+- Matches found: these are `.also { println("PROTOLOG - ...") }` lines glued to real
+  code (should not happen under the 7.1.0 inject rules, but a manual edit or an older
+  session can still produce one). Strip only the PROTOLOG suffix, keep the line:
+  ```bash
+  sed -i '' -E 's/\.also \{ println\("PROTOLOG - [^"]*"\) \}//g' "<file>"   # macOS / BSD
+  sed -i -E 's/\.also \{ println\("PROTOLOG - [^"]*"\) \}//g' "<file>"      # Linux
+  ```
+  Then re-run the grep above on that file to confirm no PROTOLOG trace and no broken
+  syntax (e.g. a dangling `.also {` fragment); if the pattern does not match cleanly,
+  stop and fix that file with the Edit tool by hand instead of guessing with sed.
 
 Narrate the processed files.
 
 ### Step 3 - Verify complete cleanup
+
+Mandatory regardless of which path (revert or fallback) was used. This is the check
+that was skipped in the real incident: cleanup was reported as done without confirming
+the result actually compiles.
 
 ```bash
 git grep -n "PROTOLOG - " 2>/dev/null || true
@@ -445,10 +573,12 @@ grep -rn "PROTOLOG - " . --include="*.kt" --include="*.java" \
 
 ### Step 3b - Restore files outside the original diff
 
-**This step is mandatory.** The logger-agent intentionally instruments files outside
-the branch diff (callers, use cases, repositories). After `sed` removes the PROTOLOG
-lines those files may still appear dirty in `git status`. Every phantom file must be
-fully restored so the working tree returns to its exact pre-inject state.
+**This step is mandatory when the fallback (Step 2-fallback) ran.** When the revert
+path (Step 2) ran, the reverted `[TEMP]` commit already restored exactly the files it
+touched, so there is nothing left to reconcile; skip straight to Step 4. Only the sed
+fallback needs this reconciliation, because the logger-agent intentionally instruments
+files outside the branch diff (callers, use cases, repositories) and `sed` has no
+concept of "this file's changes came from one commit".
 
 **Determine `<BASE>`**: run the same auto-detection as inject Step 1 (upstream
 tracking -> develop -> main -> master). If multiple candidates are found, show them
@@ -505,10 +635,25 @@ git status --short
   *"Working tree is clean of PROTOLOG. Only your intended branch changes remain."*
 - If unexpected files still appear -> show them and ask the user to decide.
 
-### Step 5 - Optional build confirmation
+### Step 5 - Mandatory compile verification before reporting success
 
-Offer (same command as Step 6 of inject mode):
-*"Do you want to compile to confirm the cleanup did not affect the syntax?"*
+**Never narrate the working tree as clean without running this step.** Reporting
+cleanup success without validating the result is exactly what let the earlier incident
+(corrupted `when` block, unclosed constructor calls) go unnoticed until the next build.
+
+Detect the affected modules from the files touched by the reverted `[TEMP]` commits (or,
+on the fallback path, from `files_touched` in the original inject JSON) and run the same
+per-project-type check as inject Step 4's compile verification, e.g. for Gradle:
+
+```bash
+./gradlew :<module>:compileDebugKotlin --stacktrace 2>&1 | tail -40
+```
+
+- Compiles clean -> narrate *"Working tree is clean of PROTOLOG and compiles clean."*
+- Fails -> narrate the exact error, do NOT report cleanup as done, fix the offending
+  file (fallback path: re-check for an embedded PROTOLOG line the first pass missed;
+  revert path: this should not happen since Step 4.6 already required a clean compile
+  before committing) and re-run this step until it passes.
 
 ---
 
@@ -517,4 +662,8 @@ Offer (same command as Step 6 of inject mode):
 - Begin each action with a short English line describing what is being done.
 - Never use em dashes in any response.
 - Build or git errors are always narrated; never silenced.
-- This skill never commits or pushes. Changes stay in the working tree.
+- This skill's only commits are its own `[TEMP]` PROTOLOG commits (inject) and their
+  reverts (cleanup). It never commits or pushes business logic, and it never pushes
+  anything to a remote. Any real fix the dev asks for mid-verification is committed
+  separately by whichever workflow owns that change (doer's Stage 3/4 loop, or the dev
+  directly when the skill runs standalone).

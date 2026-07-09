@@ -7,7 +7,7 @@ description: >-
   Jira access and offers an auto-detect fallback for the token env var name
   if none is loaded. Use "/wk:locale <code>" or "/wk:jira <url>" instead for
   a one-shot change to a single piece.
-version: 7.0.0
+version: 7.1.0
 user-invocable: true
 allowed-tools: [Read, Bash, AskUserQuestion]
 ---
@@ -27,6 +27,10 @@ Plain-chat ask: *"Jira base URL for this project? (e.g. https://jira.example.com
 ## Step 3. Jira token env var name (this project)
 
 Only if step 2 was not skipped. Explain: the token is never written to disk, only the *name* of the env var that holds it. Default is `JIRA_PAT`. Plain-chat ask: *"Does your token already live in a different env var (e.g. JIRA_PROD_PAT)? Name it, or say 'use JIRA_PAT'."* On a custom name, run `jira.sh set-token-env <name>`.
+
+## Step 3.5. Atlassian Cloud auth (only if the URL matches `*.atlassian.net`)
+
+Cloud rejects Bearer tokens (403 "Failed to parse Connect Session Auth Token"); it requires HTTP Basic with `email:api_token`. Plain-chat ask: *"This looks like Atlassian Cloud. What email is your API token for? (from id.atlassian.com/manage-profile/security/api-tokens)"*. On an answer, run `jira.sh set-auth-email <email>`.
 
 ## Step 4. Verify + auto-detect fallback
 

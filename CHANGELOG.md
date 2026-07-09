@@ -2,6 +2,21 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.1.0
+
+Fixes from the first round of 7.0.0 field reports: an auth gap, a cleanup incident, and three things "the great slimming" cut too close.
+
+### Fixed
+
+- **`jira.sh` now supports Atlassian Cloud.** It only spoke Bearer auth (Jira Server/DC); Cloud (`*.atlassian.net`) rejects Bearer with a 403 and requires HTTP Basic (`email:api_token`). New optional config key `jira_auth_email` + `jira.sh set-auth-email <email>` switches the three curl calls (fetch/download/comment) to Basic; unset, behavior is unchanged. Errors now point Cloud users at the right fix.
+- **Protologs cleanup could corrupt code.** The inject agent sometimes wrote `.also { println("PROTOLOG - ...") }` glued to the same line as a `when` branch or a constructor's closing paren; the cleanup `sed` deleted the whole line, taking real code with it, and the Step 4.5 safety check didn't catch it because the offending line does contain the `PROTOLOG - ` tag. Fixed on three fronts: the skill now only allows two line shapes (a bare `println(...)`, or a bare `.also { println(...) }` on its OWN line continuing the previous expression); Step 4.5 gained a second check that flags any `PROTOLOG - ` line that isn't one of those two shapes; and inject now commits each round of logs as a `[TEMP]` commit, so cleanup reverts them instead of text-matching with `sed` (sed remains a fallback for sessions with no `[TEMP]` commit). Multiple rounds of "more logs" and any fix requested mid-verification each land in their own commit, so a revert never touches the other. Cleanup no longer reports success without a clean `git grep` AND a clean compile.
+
+### Restored (regressions from 7.0.0's slimming)
+
+- **Per-step commits in Stage 3 (Build).** The convergence commit collapsed tests + implementation + review fixes into one commit; restored to one commit per step (tests, implementation, each review-fix round) so a regression traces to the exact step, same as pre-7.0.0. The wrapup squash still collapses everything before the PR.
+- **AC self-review (Stage 1).** A cheap agent-based review comparing the AC draft against the original description/ACs, one round (a second only if it found something structural), applying safe fixes and promoting real contradictions to Open Questions before the dev ever sees the draft.
+- **Transition Sync.** A minimal, unconditional re-hydration step (`lib/sync.md`) at every stage transition and resume: re-read metadata, re-read the current stage file, and now an explicit rule that a finished stage auto-proceeds in the same turn instead of silently stopping (the failure mode that had devs asking manually whether a ticket had actually finished).
+
 ## 7.0.0
 
 The great slimming. Doer 6.x had grown to ~58,000 words of protocol and its maintenance cost outgrew its value; 7.0.0 rebuilds the kit around what actually earned its keep, and absorbs the two standalone skills that outperformed it in daily use.

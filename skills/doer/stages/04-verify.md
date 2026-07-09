@@ -13,15 +13,21 @@ On skip: `stages.4.status = "skipped"`, `skipped_reason`, `skipped_acknowledged_
 
 ## On run
 
-1. **Inject:** invoke `wk:protologs` via the Skill tool (inject mode). It confirms the base branch, instruments the full vertical slice of the diff (entry point → boundary → observable result, per AC), backs up pre-inject state to /tmp, and commits the logs as a `[TEMP]` commit. If protologs reports uninstrumented gaps in a slice, surface them to the dev BEFORE exercising; an uninstrumented hop is lost runtime information.
+1. **Inject:** invoke `wk:protologs` via the Skill tool (inject mode). It confirms the base branch, instruments the full vertical slice of the diff (entry point → boundary → observable result, per AC), backs up pre-inject state to /tmp, and commits the logs as a `[TEMP]` commit (round 1).
+   If protologs reports uninstrumented gaps in a slice, surface them to the dev BEFORE exercising; an uninstrumented hop is lost runtime information.
 2. **Hand off:** narrate build/run instructions and the log filter (protologs prints it, e.g. `adb logcat | grep "PROTOLOG - "`). Ask the dev to exercise each AC and paste the filtered output. Persist the build command as `metadata.runtime_build_command` the first time.
 3. **Analyze:** dispatch a log-analyzer Agent with `metadata.ac`, `metadata.plan`, and the pasted logs inline (read budget: 0 source files; pure analysis). It returns:
    ```json
    {"ac_verdicts": {"AC-1": "PASS | FAIL | NOT_EXERCISED"}, "evidence": {...}, "anomalies": [...],
     "recommendation": "APPROVE | RETURN_TO_BUILD | NEED_MORE_DATA", "rationale": "<one paragraph>"}
    ```
-4. **Decide:** present the recommendation (translate AC labels to their behavior when narrating). `APPROVE` → cleanup. `RETURN_TO_BUILD` → cleanup first, then re-enter Stage 3 with the findings as BLOCKERs. `NEED_MORE_DATA` → keep logs, back to step 2. The dev can override; record the reason.
-5. **Cleanup:** invoke `wk:protologs cleanup` via the Skill tool. It deletes every `PROTOLOG - ` line, reverts the temp commit, and verifies zero trace remains (including drift: helper vars or split expressions added only to enable logging). Do not advance while any residue exists.
+4. **Decide:** present the recommendation (translate AC labels to their behavior when narrating).
+   - `APPROVE` → cleanup (step 5).
+   - `NEED_MORE_DATA` → invoke `wk:protologs` again (inject mode); it commits an additional `[TEMP]` commit (round N+1) on top of round 1, keeping each round individually revertible. Back to step 2.
+   - The dev may instead ask for a quick fix while logs are still live: apply it and commit it normally (`doer(<TICKET-ID>): fix <what>`, no `[TEMP]` tag), never mixed into a logging commit; then continue exercising.
+   - `RETURN_TO_BUILD` → cleanup first (step 5), then re-enter Stage 3 with the findings as BLOCKERs.
+   The dev can override any recommendation; record the reason.
+5. **Cleanup:** invoke `wk:protologs cleanup` via the Skill tool. It reverts every `[TEMP]` commit from every round (fixes committed separately in step 4 are untouched), verifies zero `PROTOLOG - ` trace remains, and confirms the result compiles before reporting success. Do not advance while any residue exists or the compile check has not run.
 
 ## Finalize
 

@@ -6,7 +6,7 @@ description: >-
   Any ISO 639-1 code. Chat narration only; committed artifacts (code, commit
   messages, PR descriptions) always stay English. Part of the wk plugin's
   configuration surface, alongside "/wk:setup" and "/wk:jira".
-version: 7.0.0
+version: 7.1.0
 user-invocable: true
 allowed-tools: [Read, Bash, AskUserQuestion]
 ---

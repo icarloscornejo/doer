@@ -37,10 +37,10 @@ Read and written only through `lib/helpers/preferences.sh`. Global and personal:
 ## .doer/config.json
 
 ```json
-{"jira_base_url": "https://jira.example.com", "jira_token_env": "JIRA_PROD_PAT"}
+{"jira_base_url": "https://jira.example.com", "jira_token_env": "JIRA_PROD_PAT", "jira_auth_email": null}
 ```
 
-Read and written only through `lib/helpers/jira.sh` (`set-url`, `set-token-env`, `config`). Per-project: different repos can point at different Jira instances. `jira_token_env` names the environment variable holding the bearer token (default `JIRA_PAT` if absent); the token itself is never persisted, only its env var's name. Set up guided via `/wk:setup`, or one-shot via `/wk:jira <url>`.
+Read and written only through `lib/helpers/jira.sh` (`set-url`, `set-token-env`, `set-auth-email`, `config`). Per-project: different repos can point at different Jira instances. `jira_token_env` names the environment variable holding the token (default `JIRA_PAT` if absent); the token itself is never persisted, only its env var's name. `jira_auth_email` is optional and switches auth from Bearer (Jira Server/DC) to HTTP Basic `email:token` (required for Atlassian Cloud, `*.atlassian.net`). Set up guided via `/wk:setup`, or one-shot via `/wk:jira <url>`.
 
 ## metadata.json (doer ticket)
 
@@ -51,12 +51,13 @@ Read and written only through `lib/helpers/jira.sh` (`set-url`, `set-token-env`,
   "branch": "<feature branch>",
   "status": "in_progress | complete",
   "current_stage": 1,
-  "skill_version": "7.0.0",
+  "skill_version": "7.1.0",
   "created_at": "<ISO8601>", "completed_at": null,
   "intake": {"description": "...", "raw_acs": "... | derive", "context": "...",
               "prior_work": {"exists": false}, "tracker": null},
   "ac": {"in_scope": ["AC-1: ..."], "out_of_scope": [], "open_questions_resolved": [],
-          "applicable_lessons": []},
+          "applicable_lessons": [], "self_review": {"ran": true, "rounds": 1, "findings": [],
+          "dev_accepted": [], "dev_rejected": []}},
   "plan": {"files": [], "steps": [], "tests": [], "risks": [], "assumptions": []},
   "stages": {
     "1": {"name": "ac",     "status": "pending"},

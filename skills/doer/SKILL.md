@@ -10,7 +10,7 @@ description: >-
   natural language ("continue", "pause", "keep going with ABC-123"). Stops
   before PR and deploy. For bug triage from a Jira ticket use /wk:bugfix instead.
   For locale or Jira config use /wk:setup, /wk:locale, or /wk:jira instead.
-version: 7.0.0
+version: 7.1.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent, Skill, EnterPlanMode, ExitPlanMode]
 ---
@@ -26,6 +26,7 @@ Executes a single ticket end-to-end on a feature branch: 5 sequential stages, a 
 | Concern | File |
 |---|---|
 | Core principles | `${CLAUDE_PLUGIN_ROOT}/lib/principles.md` |
+| Transition Sync (unconditional re-hydration per stage transition / resume) | `${CLAUDE_PLUGIN_ROOT}/lib/sync.md` |
 | Narration, turn boundaries, AskUserQuestion vs chat, locale | `${CLAUDE_PLUGIN_ROOT}/lib/narration.md` |
 | Workspace Guard + per-ticket lock (bash runs inline at every entry) | `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md` |
 | Doer/Reviewer loop (severity buckets, iteration shapes, read budgets) | `${CLAUDE_PLUGIN_ROOT}/lib/loop.md` |
@@ -44,7 +45,7 @@ Executes a single ticket end-to-end on a feature branch: 5 sequential stages, a 
 | Resume flow | `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/_resume.md` |
 | Aux commands (`status`, `list`, `cleanup-history`) | `${CLAUDE_PLUGIN_ROOT}/skills/doer/stages/_commands.md` |
 
-**Stage transition rule.** When a stage finishes and auto-proceeds to N+1: re-read `metadata.json`, then read ONLY the file for stage N+1. One stage file resident at a time; this keeps peak context bounded and re-hydrates instructions after any compaction.
+**Stage transition rule.** Every stage transition and every resume runs the Transition Sync (`lib/sync.md`) as its first action, unconditionally: re-read `metadata.json`, then read ONLY the file for the current stage. One stage file resident at a time; this keeps peak context bounded and re-hydrates instructions after any compaction. A finished stage auto-proceeds to N+1 in the same turn; stopping between stages without an explicit pause is a sync violation, not a resting point.
 
 ## Entry-point dispatch
 
