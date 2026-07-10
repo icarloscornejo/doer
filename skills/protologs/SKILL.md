@@ -3,14 +3,15 @@ name: protologs
 description: >-
   Injects temporary debug logs (tag PROTOLOG) into the vertical slice of the
   current diff to verify runtime behavior on device. Two modes:
-  - /wk:protologs          -> injects logs (asks to confirm base branch),
-    commits them as a [TEMP] commit so multiple rounds of logs and any
-    fixes requested in between stay individually trackable.
+  - /wk:protologs          -> injects logs (asks to confirm base branch and,
+    optionally, the entry point / root point where the flow starts), commits
+    them as a [TEMP] commit so multiple rounds of logs and any fixes
+    requested in between stay individually trackable.
   - /wk:protologs cleanup  -> reverts every [TEMP] commit (sed removal is
     only a fallback), leaving the code identical to its original state, and
     verifies no trace remains. Also invoked by /wk:doer Stage 4 and
     /wk:bugfix Stage 6 for on-device runtime verification.
-version: 7.1.0
+version: 7.2.0
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -78,12 +79,42 @@ git diff --name-only          # unstaged
 git diff --cached --name-only # staged but not yet committed
 ```
 
-Combine and deduplicate the three lists. If the result is empty, narrate:
-*"No changes between the current branch and `<BASE>`. Nothing to instrument."*
-and stop without touching any files.
+Combine and deduplicate the three lists into `<DIFF_FILES>`. Do not stop yet
+if this is empty; Step 2.5 decides whether an empty diff is fatal.
 
-Show the file list to the user and confirm via `AskUserQuestion`:
-*"I will instrument the vertical slice of these N files vs `<BASE>`. Continue?"*
+### Step 2.5 - Confirm entry point (root point)
+
+Per `lib/narration.md`, the answer here is open free text, so this is a
+**plain-chat question**, not `AskUserQuestion`.
+
+If `/wk:doer` Stage 4 or `/wk:bugfix` Stage 6 invoked this skill and already
+supplied entry points (bugfix's `entry_points[]`, or the AC/flow context from
+doer's plan), skip this question entirely and use what was supplied.
+
+Otherwise ask in chat: *"Where does the flow you want to verify start? Give
+me entry points (file paths, class/function names, or a short flow
+description, e.g. `HomeFragment.onResume` or "the checkout button tap").
+Multiple are fine. Reply `derive` (or leave it empty) to let me infer the
+entry point from the diff instead."*
+
+- If the user gives entry points, store them verbatim as `<ENTRY_POINTS>` for
+  Step 4. They are an anchor that complements the diff, not a replacement for
+  it: `<DIFF_FILES>` is still used.
+- If the user says `derive` (or gives nothing), set `<ENTRY_POINTS>` to
+  `none - derive the entry point from the diff` and proceed exactly as
+  before.
+- If `<DIFF_FILES>` is empty AND `<ENTRY_POINTS>` is also
+  `none - derive the entry point from the diff`, narrate:
+  *"No changes between the current branch and `<BASE>`, and no entry point
+  given. Nothing to instrument."* and stop without touching any files.
+- If `<DIFF_FILES>` is empty but explicit entry points were given, do not
+  stop; proceed to instrument the slice starting from those entry points
+  alone.
+
+Show the file list (`<DIFF_FILES>`, may be empty when entry points carry the
+slice) and any `<ENTRY_POINTS>` to the user and confirm via `AskUserQuestion`:
+*"I will instrument the vertical slice of these N files vs `<BASE>`[, anchored
+at <ENTRY_POINTS>]. Continue?"*
 
 ### Step 3 - Safety backup in /tmp
 
@@ -130,7 +161,15 @@ diagnosed on device.
 <output of `git diff <BASE>...HEAD` + `git diff` + `git diff --cached`>
 
 == Files to instrument ==
-<file list from Step 2>
+<file list from Step 2, <DIFF_FILES>>
+
+== USER-SPECIFIED ENTRY POINTS (authoritative) ==
+<ENTRY_POINTS from Step 2.5, or "none - derive the entry point from the diff">
+
+When entry points are given, they are the ROOT of the slice: start tracing
+there and follow the flow downward through the diff to the boundary. Do NOT
+substitute a different entry point you infer on your own; if the given entry
+point does not reach the diff, log both paths and report it as a gap.
 
 == SLICE SCOPE ==
 
@@ -149,8 +188,10 @@ directions:
   RESULT         HTTP response, record persisted, event fired.
 
 Read every file needed to trace the slice. There is no file limit; completeness
-is the stopping criterion. Follow calls all the way to the real entry point
-(ViewModel, Fragment, Composable, BroadcastReceiver, WorkManager, etc.). Do not
+is the stopping criterion. If USER-SPECIFIED ENTRY POINTS were given above,
+start there instead of inferring your own. Otherwise follow calls all the way
+to the real entry point (ViewModel, Fragment, Composable, BroadcastReceiver,
+WorkManager, etc.). Do not
 stop at the first layer you see.
 
 Stop ONLY at the boundary of third-party frameworks/SDKs/libraries (log the
@@ -436,6 +477,11 @@ logs, whichever order the dev requests it in.
 After the agent returns:
 
 - Show coverage summary: `total_logs_injected` logs across N files.
+- If `<ENTRY_POINTS>` were given in Step 2.5, echo them back next to each
+  slice's `entry`: *"Entry point you gave: `<ENTRY_POINTS>`. Agent anchored
+  at: `<slice_coverage.entry>`."* A mismatch is not necessarily wrong (the
+  agent may have found the exact function inside the file/class you named),
+  but flag it if the two look unrelated.
 - If there are `gaps` in any coverage, show them FIRST:
   *"Gaps (uninstrumented hops): [gap]. That part of the slice will be blind."*
 - List `files_touched` with `reason` and `log_count` per file.

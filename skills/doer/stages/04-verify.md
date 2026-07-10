@@ -13,7 +13,7 @@ On skip: `stages.4.status = "skipped"`, `skipped_reason`, `skipped_acknowledged_
 
 ## On run
 
-1. **Inject:** invoke `wk:protologs` via the Skill tool (inject mode). It confirms the base branch, instruments the full vertical slice of the diff (entry point → boundary → observable result, per AC), backs up pre-inject state to /tmp, and commits the logs as a `[TEMP]` commit (round 1).
+1. **Inject:** invoke `wk:protologs` via the Skill tool (inject mode). It confirms the base branch, instruments the full vertical slice of the diff (entry point → boundary → observable result, per AC), backs up pre-inject state to /tmp, and commits the logs as a `[TEMP]` commit (round 1). If the plan already identifies where an AC's flow starts, pass it as the entry point so protologs' Step 2.5 does not need to ask; otherwise let protologs ask the dev directly.
    If protologs reports uninstrumented gaps in a slice, surface them to the dev BEFORE exercising; an uninstrumented hop is lost runtime information.
 2. **Hand off:** narrate build/run instructions and the log filter (protologs prints it, e.g. `adb logcat | grep "PROTOLOG - "`). Ask the dev to exercise each AC and paste the filtered output. Persist the build command as `metadata.runtime_build_command` the first time.
 3. **Analyze:** dispatch a log-analyzer Agent with `metadata.ac`, `metadata.plan`, and the pasted logs inline (read budget: 0 source files; pure analysis). It returns:

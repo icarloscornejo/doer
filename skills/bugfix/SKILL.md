@@ -129,7 +129,7 @@ Implement `plan.steps` (edit the files, add the tests). Follow repo conventions 
 
 ## Stage 6 - Verify on device (`app_bug` only)
 
-1. Invoke `wk:protologs` (Skill tool, inject mode) to instrument the entire flow, from the `entry_points` upward if the flow starts earlier. If the logging scope is unclear, ask the user how far up/down to instrument first.
+1. Invoke `wk:protologs` (Skill tool, inject mode), passing `entry_points[]` from `bugfix.json` as the user-specified entry points (protologs' Step 2.5 will not re-ask). This instruments the entire flow from those entry points, upward if the flow starts earlier. If the logging scope is unclear, ask the user how far up/down to instrument first.
 2. The user runs the build on device; confirm the logs show the expected flow and the fix behaves.
 3. Invoke `wk:protologs cleanup`; verify no `PROTOLOG` trace remains.
 4. Set `status=complete`, `completed_at`, release the lock (`rm -f .doer/tickets/<KEY>/lock.json`), mark stage 6 complete.
