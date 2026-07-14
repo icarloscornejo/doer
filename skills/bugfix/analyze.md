@@ -92,4 +92,4 @@ Present to the user, concisely:
 - **Root cause** with the key evidence (session delta, file:line).
 - **Plan**: the fix steps + tests, or the spike owner + headline finding.
 
-Get explicit confirmation. On approval → `ExitPlanMode`, persist `verdict` + `plan` into `bugfix.json`, mark stage 4 complete. If the user pushes back, revise within plan mode before exiting.
+Get explicit confirmation. On approval → `ExitPlanMode`, then ONE `metadata.sh write ... --file bugfix.json` that sets `verdict`, `plan`, and `stages.4 = "complete"` together. If the user pushes back, revise within plan mode before exiting.

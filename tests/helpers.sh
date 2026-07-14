@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Smoke tests for wk plugin helper scripts (preferences.sh + jira.sh).
+# Smoke tests for wk plugin helper scripts (preferences.sh + jira.sh + metadata.sh).
 #
 # Run from anywhere:
 #   bash tests/helpers.sh
 #
 # No external frameworks: bash + jq only. preferences.sh runs against a temp
-# global file; jira.sh runs against a temp project directory (it reads/writes
-# ./.doer/config.json relative to cwd). Prints PASS / FAIL per test; exits
-# non-zero on any failure.
+# global file; jira.sh and metadata.sh run against a temp project directory
+# (they read/write ./.doer/... relative to cwd). Prints PASS / FAIL per test;
+# exits non-zero on any failure.
 
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREFS_SH="${REPO_ROOT}/lib/helpers/preferences.sh"
 JIRA_SH="${REPO_ROOT}/lib/helpers/jira.sh"
+METADATA_SH="${REPO_ROOT}/lib/helpers/metadata.sh"
 
 PASS=0
 FAIL=0
@@ -32,6 +33,7 @@ export WK_PREFERENCES_FILE="$TMPDIR_TEST/preferences.json"
 # --- syntax ---
 bash -n "$PREFS_SH" && pass "preferences.sh parses" || fail "preferences.sh parses"
 bash -n "$JIRA_SH" && pass "jira.sh parses" || fail "jira.sh parses"
+bash -n "$METADATA_SH" && pass "metadata.sh parses" || fail "metadata.sh parses"
 
 # --- preferences.sh (locale only, global) ---
 assert_eq "get-locale defaults to en (no file)" "en" "$("$PREFS_SH" get-locale)"
@@ -79,6 +81,53 @@ printf '%s' "$ERR_JSON" | jq -e '.error' > /dev/null \
 
 # --- cross-scope invariant: jira writes (per-project) never touch locale (global) ---
 assert_eq "locale survives jira writes" "es" "$("$PREFS_SH" get-locale)"
+
+# --- metadata.sh (per-ticket state file, lives under ./.doer/tickets/<ID>/) ---
+# Still in $JIRA_PROJECT_DIR (cwd-relative, same convention as jira.sh).
+TARGET_PATH="./.doer/tickets/T-1/metadata.json"
+
+echo '{"a": 1, "b": 2}' | "$METADATA_SH" init T-1 > /dev/null
+assert_eq "init creates the file" "yes" "$([ -f "$TARGET_PATH" ] && echo yes)"
+assert_eq "init: content roundtrip" "1 2" "$(jq -r '"\(.a) \(.b)"' "$TARGET_PATH")"
+
+echo '{"a": 9}' | "$METADATA_SH" init T-1 > /dev/null 2>/dev/null
+assert_eq "init refuses when file already exists" "1 2" "$(jq -r '"\(.a) \(.b)"' "$TARGET_PATH")"
+
+echo 'not json' | "$METADATA_SH" init T-2 > /dev/null 2>/dev/null
+assert_eq "init refuses invalid JSON, no file created" "no" "$([ -f "./.doer/tickets/T-2/metadata.json" ] && echo yes || echo no)"
+
+"$METADATA_SH" write T-1 '.a = 99 | .c = "new"' > /dev/null
+assert_eq "write: single call batches multiple fields" "99 2 new" "$(jq -r '"\(.a) \(.b) \(.c)"' "$TARGET_PATH")"
+
+BEFORE_CONTENT="$(cat "$TARGET_PATH")"
+"$METADATA_SH" write T-1 '.a | invalidfn' > /dev/null 2>/dev/null
+AFTER_CONTENT="$(cat "$TARGET_PATH")"
+assert_eq "write: failed jq filter leaves file byte-identical" "$BEFORE_CONTENT" "$AFTER_CONTENT"
+assert_eq "write: failed jq filter leaves no tmp leftover" "" "$(find "./.doer/tickets/T-1" -name '*.tmp.*' 2>/dev/null)"
+
+echo '{"x": 1}' | "$METADATA_SH" init T-1 --file bugfix.json > /dev/null
+assert_eq "init --file creates the alternate filename" "yes" "$([ -f "./.doer/tickets/T-1/bugfix.json" ] && echo yes)"
+"$METADATA_SH" write T-1 '.x = 2' --file bugfix.json > /dev/null
+assert_eq "write --file roundtrip on the alternate filename" "2" "$(jq -r '.x' "./.doer/tickets/T-1/bugfix.json")"
+assert_eq "default filename untouched by --file writes" "99" "$(jq -r '.a' "$TARGET_PATH")"
+
+FAKE_MV_DIR="$TMPDIR_TEST/fakebin"
+mkdir -p "$FAKE_MV_DIR"
+cat > "$FAKE_MV_DIR/mv" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAKE_MV_DIR/mv"
+BEFORE_CONTENT="$(cat "$TARGET_PATH")"
+LOCK_ERR="$(PATH="$FAKE_MV_DIR:$PATH" "$METADATA_SH" write T-1 '.a = 1' 2>&1 >/dev/null)"
+LOCK_EXIT=$?
+AFTER_CONTENT="$(cat "$TARGET_PATH")"
+assert_eq "simulated lock: exit code 2" "2" "$LOCK_EXIT"
+assert_eq "simulated lock: original file untouched" "$BEFORE_CONTENT" "$AFTER_CONTENT"
+assert_eq "simulated lock: no tmp leftover" "" "$(find "./.doer/tickets/T-1" -name '*.tmp.*' 2>/dev/null)"
+printf '%s' "$LOCK_ERR" | grep -qi "EDR\|Console.app" \
+  && pass "simulated lock: error message points at EDR/Console.app" \
+  || fail "simulated lock: error message points at EDR/Console.app" "got: $LOCK_ERR"
 
 cd "$REPO_ROOT" || exit 1
 

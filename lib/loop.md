@@ -19,6 +19,8 @@ Used by Stage 3 (Build). **Max 3 iterations.** Beyond that, cost outpaces value;
 
 ## Persistence
 
+Writes go through `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write` (`lib/state.md`, "Writing metadata.json"). Each iteration appends both `code_review` and `changelog` in ONE call, e.g. `.code_review += [$review_entry] | .changelog += [$changelog_entry]` with `--argjson`, never two separate writes for the same iteration's close.
+
 Each iteration appends one entry to `metadata.code_review`:
 
 ```json

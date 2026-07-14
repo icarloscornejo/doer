@@ -4,7 +4,7 @@
 
 ## 1. Validate assumptions
 
-For each `metadata.plan.assumptions` entry, mark `VALIDATED`, `INVALIDATED` (with a one-line reason), or `UNVERIFIED` based on what Stages 3-4 showed. Persist as `metadata.assumptions_validation`.
+For each `metadata.plan.assumptions` entry, mark `VALIDATED`, `INVALIDATED` (with a one-line reason), or `UNVERIFIED` based on what Stages 3-4 showed. Hold the result as `metadata.assumptions_validation` (persisted together with `lessons_captured` in step 2, one `metadata.sh write`).
 
 ## 2. Capture lessons
 
@@ -26,6 +26,8 @@ when_it_applies: <short context>
 
 Reference them in `metadata.lessons_captured` (`[{slug, takeaway}]`). Drafting reads only metadata and `git log/diff`, never the codebase.
 
+Persist steps 1 and 2 together in ONE `metadata.sh write`: `metadata.assumptions_validation` and `metadata.lessons_captured`.
+
 ## 3. Docs check (lightweight)
 
 Grep README/CHANGELOG/docs for identifiers the diff removed or renamed, and note any new public surface (exports, CLI flags, routes, env vars) with no doc mention. Nothing found → narrate one line and move on. Something found → propose the specific edits, apply on approval, commit:
@@ -36,7 +38,7 @@ git add -A && git commit --no-verify -m "doer(<TICKET-ID>): sync documentation"
 
 ## 4. Summary
 
-Write `metadata.summary`: one paragraph in English (what was delivered, what actually changed, notable surprises). Set `metadata.status = "complete"`, `metadata.completed_at`.
+Draft `metadata.summary`: one paragraph in English (what was delivered, what actually changed, notable surprises). Hold it along with `metadata.status = "complete"` and `metadata.completed_at` for step 8's single write; do not persist yet (steps 5-7 still need to happen first).
 
 ## 5. Recommended commit message
 
@@ -46,7 +48,7 @@ The dev squashes the per-stage commits into one PR-ready commit. Draft: `<TICKET
 printf '%s' "<draft>" | grep -nE '\bAC-[0-9]+\b|\bPROTOLOG\b|\bDOER\b|\bdoer\('
 ```
 
-A match means an internal label leaked; rewrite and re-validate, never present a matching draft. Present in a fenced code block, persist to `metadata.commit_message`.
+A match means an internal label leaked; rewrite and re-validate, never present a matching draft. Present in a fenced code block, persist to `metadata.commit_message` via a single `metadata.sh write`.
 
 **Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). On yes: skip if only 1 commit; otherwise back up (`git update-ref refs/doer-backup/<TICKET-ID>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
 
@@ -54,7 +56,7 @@ A match means an internal label leaked; rewrite and re-validate, never present a
 
 Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`.
 
-Dispatch a PR-description writer Agent (read budget 0; inline `metadata.ac`, `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N`, no `PROTOLOG`/`DOER`, no stage names, no literal `doer`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present in a fenced block, persist to `metadata.pr_description`. On `skip`, persist the literal `"skipped"`.
+Dispatch a PR-description writer Agent (read budget 0; inline `metadata.ac`, `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N`, no `PROTOLOG`/`DOER`, no stage names, no literal `doer`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present in a fenced block, persist to `metadata.pr_description` via a single `metadata.sh write`. On `skip`, persist the literal `"skipped"` the same way.
 
 ## 7. History cleanup
 
@@ -74,6 +76,6 @@ Verify the log is now empty; narrate the backup ref. Files on disk are never tou
 
 ## 8. Close
 
-Release the lock (`rm -f ./.doer/tickets/<TICKET-ID>/lock.json`). Self-check: `metadata.commit_message` and `metadata.pr_description` are non-null (or `"skipped"`); if either is missing, jump back to that step now, before any closing narration. Validate required fields per `lib/state.md`, set `stages.5` complete.
+Release the lock (`rm -f ./.doer/tickets/<TICKET-ID>/lock.json`). Self-check: `metadata.commit_message` and `metadata.pr_description` are non-null (or `"skipped"`); if either is missing, jump back to that step now, before any closing narration. Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `metadata.summary`, `metadata.status = "complete"`, `metadata.completed_at` (all held from step 4), and `stages.5` complete (`completed_at`); call `metadata.sh write` exactly once.
 
 Closing narration (in the operating locale): render `metadata.summary`, then: *"Ticket <TICKET-ID> complete. <N> commit(s) on `<branch>`. Run your pre-commit checks, use the commit message and PR description above, then push and open the PR manually (or keep everything as is)."*

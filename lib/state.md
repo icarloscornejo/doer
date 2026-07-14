@@ -51,7 +51,7 @@ Read and written only through `lib/helpers/jira.sh` (`set-url`, `set-token-env`,
   "branch": "<feature branch>",
   "status": "in_progress | complete",
   "current_stage": 1,
-  "skill_version": "7.1.0",
+  "skill_version": "7.2.0",
   "created_at": "<ISO8601>", "completed_at": null,
   "intake": {"description": "...", "raw_acs": "... | derive", "context": "...",
               "prior_work": {"exists": false}, "tracker": null},
@@ -76,6 +76,18 @@ Read and written only through `lib/helpers/jira.sh` (`set-url`, `set-token-env`,
 ```
 
 Stage statuses: `pending | in_progress | complete | skipped | imported`. `ac`, `plan`, and later fields start absent and are written by their owning stage. `last_green_sha` is always the full 40-char `git rev-parse HEAD` output (string-equality comparisons break on abbreviation).
+
+## Writing metadata.json (and bugfix.json)
+
+ALWAYS through `lib/helpers/metadata.sh` (`init` to create, `write` to update), NEVER via direct `Edit`/`Write` tool calls on the file, and NEVER more than once per logical stage transition. Applies equally to `bugfix.json` (`metadata.sh ... --file bugfix.json`). Batch every field of one transition (stage status, `completed_at`, the stage's payload, `current_stage` advance) into a SINGLE jq filter and call `write` exactly once; a correction after a successful write is a NEW write, never a retry of the same transition.
+
+Rationale: `.doer/` is a hidden directory, and rapid successive rewrites of the same file from an automated process is a known trigger for corporate EDR ransomware heuristics, which can lock the file at the OS level (observed: macOS `com.apple.provenance` tag + EPERM on all further access, including read, rename, and even creating a new file with the same name — but not other files in the same directory). This is unrelated to and unfixable via git/filesystem permissions. `metadata.sh write` uses tmp-file + atomic `mv` (a single `rename()` syscall, never an in-place rewrite) precisely to minimize this risk.
+
+If `metadata.sh` reports a `write` failure (exit 2, mv failed):
+1. STOP. Do not retry the same write.
+2. Do NOT attempt to self-heal via `mv`, `xattr`, `chflags`, or `rm` on the locked file from inside the session — these are exactly the operations that can escalate or fail to resolve an EDR lock, and in the worst case make it look more suspicious, not less.
+3. Narrate the failure plainly and tell the dev: this is very likely an OS/EDR lock unrelated to the ticket's code. They can check Console.app (filter `endpointsecurity`) around the failure timestamp, or simply wait — these locks are usually time-boxed — and ask you to retry `metadata.sh write` later.
+4. Continue reporting stage results in chat even if the write is blocked; the code/tests are the source of truth, metadata.json is bookkeeping.
 
 ## Required fields before marking a stage `complete`
 

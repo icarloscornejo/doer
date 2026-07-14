@@ -9,7 +9,7 @@ description: >-
   planned, fixed, and verified on device with /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.1.0
+version: 7.2.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -65,7 +65,7 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
 }
 ```
 
-**Rule:** after each stage, update `bugfix.json` (`current_stage`, `stages[n]="complete"`, the fields that stage owns). Keep it lean; raw text goes to `ticket.md`, network dumps stay as `.har`.
+**Rule:** after each stage, update `bugfix.json` in ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<KEY>" '<filter>' --file bugfix.json` call (`current_stage`, `stages[n]="complete"`, the fields that stage owns, all in the same jq filter). Never `Write`/`Edit` `bugfix.json` directly, and never split one stage's close into two writes — see `lib/state.md`, "Writing metadata.json" (applies equally to `bugfix.json`), for why. Keep it lean; raw text goes to `ticket.md`, network dumps stay as `.har`.
 
 ## Stage 0 - Init & Resume
 
@@ -74,6 +74,7 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
 3. Otherwise run the **Workspace Guard + lock** inline (`lib/workspace-guard.md`), then create the folders and the initial `bugfix.json` (`status=in_progress`, `current_stage=0`, all stages pending, `artifacts_dir` set):
    ```bash
    mkdir -p "$HOME/Downloads/<KEY>/charles" "$HOME/Downloads/<KEY>/screenshots" ".doer/tickets/<KEY>"
+   echo '<full JSON document>' | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" init "<KEY>" --file bugfix.json
    ```
 4. Verify Jira access: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" config`. On missing `base_url` or absent token, run the auto-detect pass (env var NAME candidates only, via `env | grep -iE 'JIRA.*(PAT|TOKEN)'` and project memory, never values); if nothing resolves, stop and point the user at `/wk:setup`.
 
@@ -107,7 +108,7 @@ One `AskUserQuestion`: does the user have entry points (files / classes / module
 
 1. Remind: *"Stage 4 runs in plan mode; for the deepest analysis, make sure you're on opusplan."*
 2. `EnterPlanMode`, then **read `analyze.md`** (this skill's directory) and follow it: HAR digest → `evidence[]`, screenshot reading, code correlation at `entry_points`, root cause per `lib/debugging.md`, the `app_bug` vs `not_app_bug` verdict criteria, and the `plan{}` shape.
-3. Present **root cause + verdict + plan**; on approval `ExitPlanMode` and persist `verdict` + `plan` into `bugfix.json`. Mark stage 4 complete.
+3. Present **root cause + verdict + plan**; on approval `ExitPlanMode`, then persist per `analyze.md`'s Confirm step (one batched `metadata.sh write`: `verdict` + `plan` + stage 4 complete).
 
 ## Stage 5 - Execute
 

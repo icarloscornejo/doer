@@ -32,9 +32,9 @@ doer/
 |  |- state.md                         # schemas: metadata.json, bugfix.json, layout, required fields
 |  |- loop.md                          # doer/reviewer convergence pattern (Stage 3)
 |  |- debugging.md                     # no fix without root cause
-|  |- helpers/{preferences.sh, jira.sh}
+|  |- helpers/{preferences.sh, jira.sh, metadata.sh}
 |- lessons/                            # global, cross-project
-|- tests/helpers.sh                    # smoke tests for the two helpers
+|- tests/helpers.sh                    # smoke tests for the three helpers
 |- docs/CHANGELOG-archive-6x.md        # archived 1.x-6.x history
 |- AGENTS.md, README.md, CHANGELOG.md, LICENSE
 ```

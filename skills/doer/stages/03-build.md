@@ -40,7 +40,7 @@ git add -A && git commit --no-verify -m "doer(<TICKET-ID>): implementation (BDD 
 **3. Deterministic pre-review checks** (orchestrator, no LLM). Any BLOCKER here skips the reviewer and goes straight to the next iteration's fixer:
 
 - **Tests:** run the repo's test command; any failure (new or pre-existing) is a BLOCKER.
-- **Lint / typecheck:** run the repo's commands (detect from package.json / build.gradle / pyproject.toml; ask once and persist as `metadata.lint_command` / `metadata.typecheck_command` if unclear). Failures are BLOCKERs.
+- **Lint / typecheck:** run the repo's commands (detect from package.json / build.gradle / pyproject.toml; ask once and persist as `metadata.lint_command` / `metadata.typecheck_command` via a single `metadata.sh write` if unclear). Failures are BLOCKERs.
 - **Scope:** plan file not touched → BLOCKER; file touched outside the plan → INFO for the reviewer.
 - **Secrets:** `git diff <base>..HEAD | grep -nEi '(api[_-]?key|secret|token|password|bearer|aws_)[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{8,}'` → any match is a BLOCKER (dev rotates credentials; never auto-fix).
 - **AC-N leak:** `git diff <base>..HEAD -- . ':(exclude).doer/**' | grep -E '^\+' | grep -E '\bAC-[0-9]+\b'` → BLOCKER; the fixer removes the label and rewrites the comment in plain business language.
@@ -72,7 +72,7 @@ No changes to commit (the reviewer had nothing left to flag) → skip, no empty 
    ```bash
    git add -A && git commit --no-verify -m "doer(<TICKET-ID>): address code review"
    ```
-2. Run the full suite once more if anything changed since the last green run; then persist `metadata.last_green_sha` (full 40-char `git rev-parse HEAD`) and `metadata.last_green_test_command`. A red suite here re-enters the loop; do not advance.
-3. Validate required fields per `lib/state.md`, set `stages.3` complete (`iterations`, `loop_outcome`), narrate *"Stage 3 complete: converged in <i> iteration(s), <N>/<N> tests green. Continuing to Stage 4..."* and auto-proceed: read `04-verify.md` and ONLY that file.
+2. Run the full suite once more if anything changed since the last green run. A red suite here re-enters the loop; do not advance.
+3. Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `metadata.last_green_sha` (full 40-char `git rev-parse HEAD`), `metadata.last_green_test_command`, and `stages.3` complete (`completed_at`, `iterations`, `loop_outcome`); call `metadata.sh write` exactly once. Narrate *"Stage 3 complete: converged in <i> iteration(s), <N>/<N> tests green. Continuing to Stage 4..."* and auto-proceed: read `04-verify.md` and ONLY that file.
 
 If 3 iterations do not converge, follow the max-iteration escape hatch in `lib/loop.md` (dev decides: one more, accept residuals, or pause).

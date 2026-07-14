@@ -2,6 +2,16 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.2.0
+
+### Fixed
+
+- **`metadata.json` / `bugfix.json` writes could get OS/EDR-locked.** Persisting a stage transition as two or more separate `Edit` calls on the same file, inside the hidden `.doer/` directory, matches a corporate EDR ransomware heuristic (automated process + hidden folder + rapid rewrite of the same inode). Observed in the field: the file got tagged `com.apple.provenance` on macOS and locked at the kernel level (EPERM on read, write, rename, even re-creation under the same name), leaving the ticket's `stages.4` inconsistent with `current_stage`. Fixed at the root with a new **`lib/helpers/metadata.sh`** helper (`init`/`read`/`write`/`path`, shared by `metadata.json` and, via `--file bugfix.json`, `wk:bugfix`'s state file): every write is one `jq` transform swapped in atomically via temp-file + `mv` (a single `rename()` syscall, never an in-place rewrite). Every stage's "Finalize"/"Persist" instruction now batches all of that transition's fields into a single `metadata.sh write` call instead of several `Edit` calls. `lib/state.md` gained a "Writing metadata.json" section: always through the helper, never a direct `Edit`/`Write`, and an explicit protocol if a write still fails (stop, do not self-heal via `mv`/`xattr`/`chflags`/`rm`, point the dev at Console.app's `endpointsecurity` filter or a cooldown retry).
+
+### Added
+
+- **`wk:protologs` entry point restored.** Step 2.5 asks (plain chat, optional) for an entry point/root point anchoring the vertical-slice trace, complementing the git-diff-based scope; skipped when the invoker (`wk:doer` Stage 4, `wk:bugfix` Stage 6) already supplies one.
+
 ## 7.1.0
 
 Fixes from the first round of 7.0.0 field reports: an auth gap, a cleanup incident, and three things "the great slimming" cut too close.

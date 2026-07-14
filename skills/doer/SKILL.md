@@ -10,7 +10,7 @@ description: >-
   natural language ("continue", "pause", "keep going with ABC-123"). Stops
   before PR and deploy. For bug triage from a Jira ticket use /wk:bugfix instead.
   For locale or Jira config use /wk:setup, /wk:locale, or /wk:jira instead.
-version: 7.1.0
+version: 7.2.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent, Skill, EnterPlanMode, ExitPlanMode]
 ---
@@ -30,7 +30,7 @@ Executes a single ticket end-to-end on a feature branch: 5 sequential stages, a 
 | Narration, turn boundaries, AskUserQuestion vs chat, locale | `${CLAUDE_PLUGIN_ROOT}/lib/narration.md` |
 | Workspace Guard + per-ticket lock (bash runs inline at every entry) | `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md` |
 | Doer/Reviewer loop (severity buckets, iteration shapes, read budgets) | `${CLAUDE_PLUGIN_ROOT}/lib/loop.md` |
-| `metadata.json` / `bugfix.json` schemas, `.doer/` layout, required fields | `${CLAUDE_PLUGIN_ROOT}/lib/state.md` |
+| `metadata.json` / `bugfix.json` schemas, `.doer/` layout, required fields, write discipline | `${CLAUDE_PLUGIN_ROOT}/lib/state.md` |
 | Root-cause discipline for any fix | `${CLAUDE_PLUGIN_ROOT}/lib/debugging.md` |
 
 ## Stages
@@ -67,11 +67,11 @@ Every `/doer ...` invocation, in order:
 
 ## Agent invocation contract
 
-Sub-agents receive the relevant `metadata.json` slices inlined in their prompt (no sidecar reads), write real artifacts directly to the working tree, and return JSON with a `changelog_appendix` plus stage-specific output. Doer agents also return `{"status": "success" | "failed", "summary": "<one line>"}`. Sub-agents never call `AskUserQuestion`; the orchestrator is the sole user-facing voice. Heavy artifact work (planning happens in plan mode; test/code writing, reviewing, log analysis go through Agent) is delegated; the orchestrator itself only does state reads/writes, deterministic validation, narration, and transitions.
+Sub-agents receive the relevant `metadata.json` slices inlined in their prompt (no sidecar reads), write real artifacts directly to the working tree, and return JSON with a `changelog_appendix` plus stage-specific output. Doer agents also return `{"status": "success" | "failed", "summary": "<one line>"}`. Sub-agents never call `AskUserQuestion`; the orchestrator is the sole user-facing voice. Heavy artifact work (planning happens in plan mode; test/code writing, reviewing, log analysis go through Agent) is delegated; the orchestrator itself only does state reads/writes (via `lib/helpers/metadata.sh`, never a direct `Edit`/`Write` on `metadata.json`), deterministic validation, narration, and transitions.
 
 ## Error handling
 
 - **Agent error:** narrate it, end turn; the user decides (retry max 3, or pause).
 - **Git failure:** narrate, present options (resolve manually, pause, abort stage).
-- **Test command unknown:** ask once, persist as `metadata.test_command`.
+- **Test command unknown:** ask once, persist as `metadata.test_command` via a single `metadata.sh write`.
 - **Halt signal:** narrate current position and stop. Resume later with `/doer <ID>`.

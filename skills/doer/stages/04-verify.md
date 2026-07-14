@@ -9,13 +9,13 @@ Classify the diff first (UX only, not a skip decision): paths like `*.md`, `docs
 - **All non-runtime:** *"The diff is docs/config only; likely nothing to exercise on device."* Options: `Skip Stage 4 (Recommended)` / `Run it anyway`.
 - **Any runtime path:** *"Exercise the ACs on a device/simulator now?"* Options: `Run Stage 4 (Recommended)` / `Skip (you own runtime correctness)`.
 
-On skip: `stages.4.status = "skipped"`, `skipped_reason`, `skipped_acknowledged_by = "dev"`; narrate and proceed to Stage 5. Silent auto-skip is forbidden: the heuristic can misjudge a file, and this is the only on-device check in the pipeline.
+On skip: one `metadata.sh write` sets `stages.4.status = "skipped"`, `skipped_reason`, `skipped_acknowledged_by = "dev"`; narrate and proceed to Stage 5. Silent auto-skip is forbidden: the heuristic can misjudge a file, and this is the only on-device check in the pipeline.
 
 ## On run
 
 1. **Inject:** invoke `wk:protologs` via the Skill tool (inject mode). It confirms the base branch, instruments the full vertical slice of the diff (entry point → boundary → observable result, per AC), backs up pre-inject state to /tmp, and commits the logs as a `[TEMP]` commit (round 1). If the plan already identifies where an AC's flow starts, pass it as the entry point so protologs' Step 2.5 does not need to ask; otherwise let protologs ask the dev directly.
    If protologs reports uninstrumented gaps in a slice, surface them to the dev BEFORE exercising; an uninstrumented hop is lost runtime information.
-2. **Hand off:** narrate build/run instructions and the log filter (protologs prints it, e.g. `adb logcat | grep "PROTOLOG - "`). Ask the dev to exercise each AC and paste the filtered output. Persist the build command as `metadata.runtime_build_command` the first time.
+2. **Hand off:** narrate build/run instructions and the log filter (protologs prints it, e.g. `adb logcat | grep "PROTOLOG - "`). Ask the dev to exercise each AC and paste the filtered output. The first time, persist the build command as `metadata.runtime_build_command` via a single `metadata.sh write`.
 3. **Analyze:** dispatch a log-analyzer Agent with `metadata.ac`, `metadata.plan`, and the pasted logs inline (read budget: 0 source files; pure analysis). It returns:
    ```json
    {"ac_verdicts": {"AC-1": "PASS | FAIL | NOT_EXERCISED"}, "evidence": {...}, "anomalies": [...],
@@ -31,4 +31,4 @@ On skip: `stages.4.status = "skipped"`, `skipped_reason`, `skipped_acknowledged_
 
 ## Finalize
 
-Persist `stages.4.ac_verdicts`, validate required fields per `lib/state.md`, set `stages.4` complete, narrate *"Stage 4 complete: <verdict summary>. Continuing to Stage 5..."* and auto-proceed: read `05-wrapup.md` and ONLY that file.
+Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `stages.4.status = "complete"`, `stages.4.completed_at`, `stages.4.ac_verdicts`, and `stages.4.recommendation`; call `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<TICKET-ID>" '<filter>'` exactly once (never `Write`/`Edit` `metadata.json` directly — see `lib/state.md`, "Writing metadata.json", for why: this is the exact transition that triggered a corporate EDR file lock when done as two separate edits). Narrate *"Stage 4 complete: <verdict summary>. Continuing to Stage 5..."* and auto-proceed: read `05-wrapup.md` and ONLY that file.

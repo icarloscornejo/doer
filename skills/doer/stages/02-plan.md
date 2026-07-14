@@ -14,9 +14,9 @@ Call `EnterPlanMode`. Inside it:
 
 Call `ExitPlanMode`. The dev's approval of the plan file is the stage's quality gate; there is no separate reviewer.
 
-## Step 2. Persist the structured plan
+## Step 2. Structure the plan
 
-After approval, translate the approved plan into `metadata.plan`:
+After approval, translate the approved plan into the `metadata.plan` shape (held for Step 4's single write, not persisted yet):
 
 ```json
 "plan": {
@@ -38,4 +38,4 @@ Run these mechanically before advancing; fix trivial mismatches in place, and re
 
 ## Step 4. Finalize
 
-Validate required fields per `lib/state.md`, set `stages.2` complete, narrate *"Stage 2 complete: N files, M tests planned. Continuing to Stage 3..."* and auto-proceed: read `03-build.md` and ONLY that file.
+Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `metadata.plan` (Step 2) and `stages.2` complete (with `completed_at`); call `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<TICKET-ID>" '<filter>'` exactly once (never `Write`/`Edit` `metadata.json` directly). Narrate *"Stage 2 complete: N files, M tests planned. Continuing to Stage 3..."* and auto-proceed: read `03-build.md` and ONLY that file.
