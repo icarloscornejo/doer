@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.2.1
+
+### Fixed
+
+- **`metadata.sh` threw "unbound variable" on macOS's system bash.** `init`, `read`, and `path` (any call whose `ARGS` ends up empty, i.e. no trailing jq-args) failed under `/bin/bash` (3.2, frozen there for licensing reasons) because expanding an empty array under `set -u` throws in bash 3.2, unlike bash >=4. `write` happened to dodge it since its `ARGS` is never empty. Switched to the array-safe expansion idiom `"${ARGS[@]+"${ARGS[@]}"}"`. Added a regression test that runs the affected commands under `/bin/bash` explicitly, since the rest of the suite runs under `$PATH`'s (usually newer) bash and never exercised this.
+
 ## 7.2.0
 
 ### Fixed
