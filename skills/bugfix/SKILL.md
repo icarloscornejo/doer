@@ -9,7 +9,7 @@ description: >-
   planned, fixed, and verified on device with /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.2.1
+version: 7.2.2
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---

@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.2.2
+
+### Fixed
+
+- **Per-ticket lock could get stuck for 30 minutes on a killed session, which invited an unsafe manual bypass.** Ctrl+C never releases `lock.json` (only wrapup does), so the next session had to wait out the full staleness window even though the other process was provably dead. Worse: without a way to prove that, a session was seen improvising `rm -f lock.json` on the dev's unverifiable word that the other session was closed, exactly the "no retry, no prompt" bypass the Workspace Guard forbids, and a real risk if that word is ever wrong (two sessions racing on the same `metadata.json`). Fixed with a liveness check: the lock now records `$PPID` (the long-lived `claude` process, not the transient per-Bash-call `$$`, which dies within the same command and would make every lock look dead instantly) and, on the same host, checks it's still a `claude` process via `ps -o comm=` before honoring the 30-minute window. A dead recorded process (same host) is stolen immediately, no waiting, no trust required; a different/absent host still falls back to the original 30-minute rule, never weaker than before. `lib/workspace-guard.md` also now explicitly forbids deleting or rewriting `lock.json` by hand to route around a `LOCKED` result. Note: locks written by 7.2.1 and earlier record a shell PID that's already dead by the time they're read, so they'll be stolen immediately after upgrading; no migration needed.
+
 ## 7.2.1
 
 ### Fixed
