@@ -61,7 +61,7 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-set -- "${ARGS[@]}"
+set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 TICKET_DIR="./.doer/tickets/${TICKET_ID}"
 TARGET="${TICKET_DIR}/${FILE_NAME}"

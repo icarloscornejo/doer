@@ -105,6 +105,19 @@ AFTER_CONTENT="$(cat "$TARGET_PATH")"
 assert_eq "write: failed jq filter leaves file byte-identical" "$BEFORE_CONTENT" "$AFTER_CONTENT"
 assert_eq "write: failed jq filter leaves no tmp leftover" "" "$(find "./.doer/tickets/T-1" -name '*.tmp.*' 2>/dev/null)"
 
+# Regression: macOS's system /bin/bash is 3.2, where expanding an empty
+# array under `set -u` throws "unbound variable" (bash >=4 doesn't). The rest
+# of this suite runs under $PATH's bash (usually a newer Homebrew build),
+# which never exercises that path -- exercise /bin/bash explicitly for the
+# commands whose ARGS end up empty (init/read/path take no jq-args).
+if [ -x /bin/bash ]; then
+  echo '{"regress": true}' | /bin/bash "$METADATA_SH" init T-3 > /dev/null 2>&1
+  assert_eq "bash 3.2: init with empty ARGS does not throw unbound variable" "yes" "$([ -f "./.doer/tickets/T-3/metadata.json" ] && echo yes || echo no)"
+  /bin/bash "$METADATA_SH" read T-3 > /dev/null 2>&1
+  READ_EXIT=$?
+  assert_eq "bash 3.2: read with empty ARGS does not throw unbound variable" "0" "$READ_EXIT"
+fi
+
 echo '{"x": 1}' | "$METADATA_SH" init T-1 --file bugfix.json > /dev/null
 assert_eq "init --file creates the alternate filename" "yes" "$([ -f "./.doer/tickets/T-1/bugfix.json" ] && echo yes)"
 "$METADATA_SH" write T-1 '.x = 2' --file bugfix.json > /dev/null
