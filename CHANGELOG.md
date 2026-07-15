@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.2.4
+
+### Fixed
+
+- **Plugin failed to load: "Duplicate hooks file detected."** 7.2.3 added an explicit `"hooks": "./hooks/hooks.json"` entry to `.claude-plugin/plugin.json`, but `hooks/hooks.json` is auto-discovered by convention; declaring it again in the manifest made Claude Code try to load it twice. Removed the manifest entry, the file at the standard path is enough on its own.
+
 ## 7.2.3
 
 ### Fixed
