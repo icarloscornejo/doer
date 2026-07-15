@@ -2,6 +2,17 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.2.3
+
+### Fixed
+
+- **`wk:bugfix` Stage 5 never committed the fix before Stage 6 handed off to `wk:protologs`.** `wk:protologs`' `[TEMP]` commit mechanism (inject Step 4.6) assumes the fix underneath it is already committed, so its diff contains only PROTOLOG lines and cleanup's revert is a clean no-op. With no commit at the end of Stage 5, the fix and the injected logs landed in the same working-tree diff and had to be split apart by hand after cleanup (field incident on PDE-2841). Stage 5's `app_bug` branch now commits the fix (`--no-verify`) before Stage 6 runs.
+- **`wk:bugfix` Stage 6 never squashed after `wk:protologs cleanup`.** Cleanup's revert path already documented that collapsing each `[TEMP]`/revert pair is "left to the wrapup squash (doer) or to the dev directly (standalone)" (`skills/protologs/SKILL.md`), but standalone `wk:bugfix` had no squash step of its own, leaving `[TEMP]`/revert pairs sitting in history. Stage 6 now offers the same squash-and-backup-ref pattern as `wk:doer`'s wrapup step 5.
+
+### Added
+
+- **`git commit` without `--no-verify` is now denied at the tool-call level**, not just documented (`lib/principles.md` #6). Ships as a plugin `PreToolUse` hook (`hooks/hooks.json` + `hooks/git-commit-no-verify-guard.sh`) so it travels with the plugin to every machine it's installed on, instead of relying on a markdown instruction surviving context drift across a long session. A commit without the flag can be silently cancelled by a repo's own pre-commit hook, which looks like a no-op failure if you're not watching for it.
+
 ## 7.2.2
 
 ### Fixed

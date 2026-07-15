@@ -9,7 +9,7 @@ description: >-
   planned, fixed, and verified on device with /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.2.2
+version: 7.2.3
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -116,7 +116,17 @@ Branch on `verdict`:
 
 ### `app_bug`
 
-Implement `plan.steps` (edit the files, add the tests). Follow repo conventions and `lib/debugging.md` (no fix without root cause). Run the relevant module tests / build. Record what changed in `notes`. Mark stage 5 complete → Stage 6.
+Implement `plan.steps` (edit the files, add the tests). Follow repo conventions and `lib/debugging.md` (no fix without root cause). Run the relevant module tests / build. Record what changed in `notes`.
+
+Commit the fix before Stage 6 runs:
+
+```bash
+git add -A && git commit --no-verify -m "<KEY>: <subject>"
+```
+
+This must land as its own commit, separate from anything Stage 6 adds. `wk:protologs`' `[TEMP]` commit mechanism (Step 4.6) assumes the fix underneath it is already committed, so its diff contains only PROTOLOG lines and cleanup's revert is a clean no-op. An uncommitted fix gets tangled with the injected logs in the same working-tree diff and has to be split apart by hand afterward.
+
+Mark stage 5 complete → Stage 6.
 
 ### `not_app_bug`
 
@@ -133,7 +143,8 @@ Implement `plan.steps` (edit the files, add the tests). Follow repo conventions 
 1. Invoke `wk:protologs` (Skill tool, inject mode), passing `entry_points[]` from `bugfix.json` as the user-specified entry points (protologs' Step 2.5 will not re-ask). This instruments the entire flow from those entry points, upward if the flow starts earlier. If the logging scope is unclear, ask the user how far up/down to instrument first.
 2. The user runs the build on device; confirm the logs show the expected flow and the fix behaves.
 3. Invoke `wk:protologs cleanup`; verify no `PROTOLOG` trace remains.
-4. Set `status=complete`, `completed_at`, release the lock (`rm -f .doer/tickets/<KEY>/lock.json`), mark stage 6 complete.
+4. **Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). Cleanup leaves a `[TEMP]`/revert pair per logging round sitting on top of the Stage 5 fix commit; protologs' own cleanup step explicitly defers this collapse to the invoking skill (`skills/protologs/SKILL.md`, cleanup Step 2). On yes: skip if only 1 commit since `<base>` (same base branch confirmed in protologs inject Step 1); otherwise back up (`git update-ref refs/bugfix-backup/<KEY>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<KEY>: <subject>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
+5. Set `status=complete`, `completed_at`, release the lock (`rm -f .doer/tickets/<KEY>/lock.json`), mark stage 6 complete.
 
 ## Notes
 
