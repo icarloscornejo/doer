@@ -2,6 +2,17 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.2.5
+
+### Fixed
+
+- **`wk:protologs` Step 4.5's Check A/B existed but nothing forced them to actually run.** A real incident: the logger-agent violated the "no refactor" rules in 5 files (expression to block conversions, an empty `init {}`, a println split across lines, a `when` block rewrapped), and deleting only the `PROTOLOG - ` tagged lines afterward did not restore the files, it left dangling empty blocks and broken syntax. The checks that exist to catch exactly this were never run before the `[TEMP]` commit landed; a markdown "MUST run this" instruction does not survive a long session. Ships as a `PreToolUse` hook (`hooks/protolog-temp-commit-integrity-guard.sh`) that intercepts any `git commit` with a `[TEMP] PROTOLOG` message and re-runs both checks against the staged diff itself, denying the commit if a forbidden refactor or a PROTOLOG line glued to real code slips through. Applies to `wk:doer` Stage 4 and `wk:bugfix` Stage 6 alike, since both go through the same commit message pattern.
+- **A code-writer's "this is technically impossible" excuse for skipping a planned step went unverified.** A real incident: a code-writer skipped implementing an interface on a new component, claiming a non-null property made it "legitimately" impossible; the reviewer traced the actual call graph and found the one production construction site always passed a non-null value, so the excuse was false and the skipped step was trivial. `wk:doer` Stage 3's code-writer now must cite real call sites and type definitions (file:line, not a paraphrase) in the changelog when claiming a planned step is inapplicable; the reviewer's scope gained a dedicated "Deviation verification" check that reads those citations itself before accepting the deviation as anything other than a BLOCKER.
+
+### Added
+
+- **The global lessons pool now self-prunes by MAJOR version.** `lessons/` is gitignored and local per machine, so a manual cleanup on one clone never reached any other machine with the plugin installed. Each lesson captured at `wk:doer` wrapup now stamps a `skill_version` field; Stage 1's AC confirm step, the only point in the pipeline that scans the full pool, deletes any lesson whose MAJOR is behind the current skill's MAJOR (or missing the field entirely) before loading applicable lessons. A schema/architecture rework (e.g. the 6.x to 7.0.0 collapse from 9 stages to 5) can invalidate lesson advice tied to the old pipeline, so a lesson no longer outlives a MAJOR bump on any machine that runs a ticket past it.
+
 ## 7.2.4
 
 ### Fixed

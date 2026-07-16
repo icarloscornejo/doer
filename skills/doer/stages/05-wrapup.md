@@ -17,6 +17,7 @@ Write each accepted lesson to the GLOBAL pool `${CLAUDE_PLUGIN_ROOT}/lessons/{sl
 slug: <kebab-case>
 captured_from: <TICKET-ID>
 captured_at: <ISO8601>
+skill_version: <this SKILL.md's frontmatter version at capture time, e.g. "7.2.5">
 when_it_applies: <short context>
 ---
 ## What happened

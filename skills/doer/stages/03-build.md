@@ -29,6 +29,7 @@ git add -A && git commit --no-verify -m "doer(<TICKET-ID>): BDD scenarios + fail
 - Comment economy: comments explain WHY, ~2 lines max, no restating code, no ticket numbers, no `AC-N` (Core Principle 10).
 - When gating a function behind a flag or condition, grep ALL call sites before marking the step done (event observers are the most-missed). When updating a doc or comment block, scan the whole file for stale references to the changed concept.
 - When fixing a failing test or broken behavior, include verbatim: *"Before proposing any fix: read `${CLAUDE_PLUGIN_ROOT}/lib/debugging.md` and follow the protocol. No fix without root cause."*
+- If a planned step turns out technically impossible or inapplicable (an interface constraint, a type that "can't" support the planned shape, a pattern that "can't" be followed), do not silently skip it. Grep the real call sites and type/interface definitions that back the claim and cite them verbatim in the changelog (file:line, not a paraphrase). A deviation without cited evidence gets treated as unverified by the reviewer, not as a documented tradeoff.
 - Read budget: 15 source files + lessons. Return changelog_appendix + status.
 
 Commit once the suite is green:
@@ -48,11 +49,12 @@ git add -A && git commit --no-verify -m "doer(<TICKET-ID>): implementation (BDD 
 **4. Reviewer** (only when pre-checks are clean). Prompt inlines ac, plan, last 2 changelog entries, the diff. Scope, in order:
 
 1. AC match: trace each AC to test + code.
-2. Correctness: edge cases, error paths, concurrency, null handling.
-3. Test integrity: were tests weakened to pass?
-4. Semantic error handling: are handlers specific and meaningful, or silent swallows?
-5. One logical unit: does the diff mix unrelated work that should split?
-6. Comment quality: stale/misleading comments, restated code, over-long comments → AUTO_FIX to SHORTEN (never to add caveats).
+2. Deviation verification: for any changelog entry that skips or reinterprets a planned step citing a technical constraint ("this interface can't...", "this type doesn't support..."), do not trust the stated justification. Read the cited call sites and type definitions yourself. If no real construction site in production code actually exercises the blocking condition, the deviation is a BLOCKER, not a documented tradeoff, regardless of how plausible the justification reads.
+3. Correctness: edge cases, error paths, concurrency, null handling.
+4. Test integrity: were tests weakened to pass?
+5. Semantic error handling: are handlers specific and meaningful, or silent swallows?
+6. One logical unit: does the diff mix unrelated work that should split?
+7. Comment quality: stale/misleading comments, restated code, over-long comments → AUTO_FIX to SHORTEN (never to add caveats).
 
 Findings come back as BLOCKER / AUTO_FIX / SUGGESTION / INFO per `lib/loop.md`. Read budget: 5 files beyond the diff.
 

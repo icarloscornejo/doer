@@ -10,7 +10,7 @@ description: >-
   natural language ("continue", "pause", "keep going with ABC-123"). Stops
   before PR and deploy. For bug triage from a Jira ticket use /wk:bugfix instead.
   For locale or Jira config use /wk:setup, /wk:locale, or /wk:jira instead.
-version: 7.2.4
+version: 7.2.5
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent, Skill, EnterPlanMode, ExitPlanMode]
 ---
