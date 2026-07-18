@@ -11,7 +11,7 @@ description: >-
     only a fallback), leaving the code identical to its original state, and
     verifies no trace remains. Also invoked by /wk:doer Stage 4 and
     /wk:bugfix Stage 6 for on-device runtime verification.
-version: 7.2.0
+version: 7.2.6
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -43,6 +43,8 @@ Fallback: Android Studio Logcat with filter `PROTOLOG - `.
 ## Mode: inject (default)
 
 Activated when the user types `/wk:protologs` with no arguments, or when `/wk:doer` Stage 4 / `/wk:bugfix` Stage 6 invokes this skill in inject mode.
+
+Before Step 1, run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" start protologs`. This activates this plugin's PreToolUse guards for the session (they are inert otherwise, see `lib/workspace-guard.md`). Safe to run even when `/wk:doer`/`/wk:bugfix` already started their own marker for this session; it is idempotent per session pid.
 
 ### Step 1 - Confirm base branch
 
@@ -525,6 +527,8 @@ revert with the backup patch.
 
 Activated when the user types `/wk:protologs cleanup`, or when the invoking skill reaches its cleanup step.
 
+Before Step 1, run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" start protologs` (same idempotent call as inject; covers the case where cleanup runs in a separate invocation from inject, e.g. a fresh session).
+
 The primary path is reverting the `[TEMP]` commits made during inject (Step 4.6). This
 is exact by construction: a `[TEMP]` commit contains only PROTOLOG lines, so reverting
 it removes exactly those lines and nothing else, regardless of how many rounds of logs
@@ -543,18 +547,49 @@ Step 2-fallback.
 
 ### Step 2 - Revert path
 
-Revert each `[TEMP]` commit found in Step 1, most recent first:
+Revert each `[TEMP]` commit found in Step 1, most recent first. Always use the auto-abort
+wrapper below so a conflict never leaves the repo sitting in a half-resolved revert:
 
 ```bash
-git revert --no-edit <sha>
+git revert --no-edit <sha> || { git revert --abort 2>/dev/null; echo "CONFLICT: <sha>"; }
 ```
 
 Fixes the dev requested mid-verification live in separate, non-`[TEMP]` commits and are
-untouched by these reverts. If a revert conflicts (rare: a fix touched the same lines as
-a log), run `git revert --abort` and fall through to Step 2-fallback for the affected
-files only. Collapsing each `[TEMP]`/revert pair out of history is left to the wrapup
-squash (doer) or to the dev directly (standalone); cleanup's job is just to remove the
-logs, not to rewrite history.
+untouched by these reverts.
+
+**ON CONFLICT (mandatory, no exceptions):**
+
+If a revert conflicts (rare: a fix touched the same lines as a log), the wrapper above has
+already run `git revert --abort`. From that point on:
+
+FORBIDDEN:
+1. Resolving the conflict by hand (editing the conflicted file, `git add` on it).
+2. Running `git revert --continue` or `git revert --quit`.
+3. Running `git commit` while a revert is still in progress.
+   BAD:  fix the conflict markers with the Edit tool, `git add`, `git revert --continue`
+   GOOD: confirm the abort took, then run Step 2-fallback for that commit's files only
+
+The ONLY permitted path: confirm the abort took (`git rev-parse -q --verify REVERT_HEAD`
+prints nothing), keep reverting the remaining `[TEMP]` commits with the same wrapper, then
+run Step 2-fallback for the files touched by the conflicted commit only
+(`git show --name-only --format= <sha>`). Step 3b is mandatory for those files, exactly as
+for any other fallback-cleaned file.
+
+Why this is absolute even when the conflict looks trivial to resolve: cleanup's guarantee
+rests on exactly two verified mechanisms, a revert is exact by construction (a `[TEMP]`
+commit contains only PROTOLOG lines), or the sed fallback carries its own checks (embedded-
+line grep, Step 3b phantom reconciliation, Step 5 compile gate). A hand-resolved revert is
+a third, unverified mechanism: its content is whatever was typed, yet Step 3b then skips
+reconciliation because it assumes the revert path was exact. In a real incident an agent
+hand-resolved a conflicting revert and ran `git revert --continue`; the end state happened
+to be correct, but nothing in the flow verified it. Any command that completes the revert
+with hand-chosen content is the same violation, whatever it is spelled as. A PreToolUse
+hook (`hooks/protolog-revert-conflict-guard.sh`) also denies `--continue`/`--quit`/`git
+commit` while `REVERT_HEAD` points at a `[TEMP] PROTOLOG` commit, as a backstop.
+
+Collapsing each `[TEMP]`/revert pair out of history is left to the wrapup squash (doer) or
+to the dev directly (standalone); cleanup's job is just to remove the logs, not to rewrite
+history.
 
 ### Step 2-fallback - Text-match removal (only when no [TEMP] commit applies)
 
@@ -604,6 +639,18 @@ Narrate the processed files.
 Mandatory regardless of which path (revert or fallback) was used. This is the check
 that was skipped in the real incident: cleanup was reported as done without confirming
 the result actually compiles.
+
+Before anything else, confirm no revert is still in progress. A live revert here means
+Step 2's ON CONFLICT rule was not followed:
+
+```bash
+git rev-parse -q --verify REVERT_HEAD && echo "REVERT IN PROGRESS" || true
+git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' || true
+```
+
+If either prints anything, STOP: do not verify, do not report cleanup as done. Narrate
+that a revert is in flight, run `git revert --abort`, and return to Step 2's ON CONFLICT
+block.
 
 ```bash
 git grep -n "PROTOLOG - " 2>/dev/null || true
@@ -700,6 +747,14 @@ per-project-type check as inject Step 4's compile verification, e.g. for Gradle:
   file (fallback path: re-check for an embedded PROTOLOG line the first pass missed;
   revert path: this should not happen since Step 4.6 already required a clean compile
   before committing) and re-run this step until it passes.
+
+### Step 6 - Release the session marker (standalone only)
+
+If this cleanup run was invoked directly (`/wk:protologs cleanup` typed by the user),
+run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`. If it was invoked by `/wk:doer`
+Stage 4 or `/wk:bugfix` Stage 6, skip this: those skills own the marker's lifecycle and
+release it themselves at their own wrapup, since the parent session is still active after
+this cleanup step returns.
 
 ---
 

@@ -13,7 +13,13 @@
 # markdown "MUST run this" instruction does not survive a long session; this
 # closes the gap at the tool-call level, the same way
 # git-commit-no-verify-guard.sh does for principles.md #6.
+#
+# Scoped to wk sessions only: inert unless a live session marker
+# (./.doer/wk-session-<pid>.json) exists for the current process, see
+# git-commit-no-verify-guard.sh for the full rationale.
 set -euo pipefail
+
+[ -f ".doer/wk-session-${PPID}.json" ] || exit 0
 
 input="$(cat)"
 cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"

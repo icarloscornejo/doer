@@ -9,7 +9,7 @@ description: >-
   planned, fixed, and verified on device with /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.2.5
+version: 7.2.6
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -60,6 +60,7 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
   "evidence": [],
   "entry_points": [],
   "plan": null,
+  "commit_message": null, "pr_description": null,
   "stages": {"0": "pending", "1": "pending", "2": "pending", "3": "pending", "4": "pending", "5": "pending", "6": "pending"},
   "notes": []
 }
@@ -118,7 +119,7 @@ Branch on `verdict`:
 
 Implement `plan.steps` (edit the files, add the tests). Follow repo conventions and `lib/debugging.md` (no fix without root cause). Run the relevant module tests / build. Record what changed in `notes`.
 
-Commit the fix before Stage 6 runs:
+Commit the fix before Stage 6 runs (a working message; the PR-ready message is chosen in Stage 6):
 
 ```bash
 git add -A && git commit --no-verify -m "<KEY>: <subject>"
@@ -136,15 +137,24 @@ Mark stage 5 complete → Stage 6.
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" comment <KEY> "$HOME/Downloads/<KEY>/spike.md"
    ```
-   Mark `status=complete`. **A spike does not go to device; stop here.**
+   Mark `status=complete`, release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the
+   session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`). **A spike does not
+   go to device; stop here.**
 
-## Stage 6 - Verify on device (`app_bug` only)
+## Stage 6 - Verify on device & Deliver (`app_bug` only)
 
 1. Invoke `wk:protologs` (Skill tool, inject mode), passing `entry_points[]` from `bugfix.json` as the user-specified entry points (protologs' Step 2.5 will not re-ask). This instruments the entire flow from those entry points, upward if the flow starts earlier. If the logging scope is unclear, ask the user how far up/down to instrument first.
 2. The user runs the build on device; confirm the logs show the expected flow and the fix behaves.
 3. Invoke `wk:protologs cleanup`; verify no `PROTOLOG` trace remains.
-4. **Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). Cleanup leaves a `[TEMP]`/revert pair per logging round sitting on top of the Stage 5 fix commit; protologs' own cleanup step explicitly defers this collapse to the invoking skill (`skills/protologs/SKILL.md`, cleanup Step 2). On yes: skip if only 1 commit since `<base>` (same base branch confirmed in protologs inject Step 1); otherwise back up (`git update-ref refs/bugfix-backup/<KEY>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<KEY>: <subject>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
-5. Set `status=complete`, `completed_at`, release the lock (`rm -f .doer/tickets/<KEY>/lock.json`), mark stage 6 complete.
+4. **Recommended commit message.** Draft THREE candidates, each `<KEY>: <subject ≤72 chars>`, specific to the actual change, in plain business language. Each candidate takes a genuinely different angle (the user-visible symptom fixed, the component changed, the root cause addressed), not rewordings of the same sentence. Validate all three before presenting (Core Principle 10):
+   ```bash
+   printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" \
+     | grep -nE '\bAC-[0-9]+\b|\bPROTOLOG\b|\bDOER\b|\bdoer\('
+   ```
+   A match means an internal label leaked; rewrite that candidate and re-validate, never present a matching draft. Present the three candidates in the chat as plain text, numbered 1-3, each in its own fenced code block. Drafts NEVER go inside `AskUserQuestion`, only the selection does. Ask via `AskUserQuestion` with short labels (`Option 1` / `Option 2` / `Option 3`), marking the strongest `(Recommended)`; the tool's auto-appended "Other" is the edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally valid. Re-run the grep on any edited text before accepting it. Hold the chosen message for step 7's single write.
+5. **Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). Cleanup leaves a `[TEMP]`/revert pair per logging round sitting on top of the Stage 5 fix commit; protologs' own cleanup step explicitly defers this collapse to the invoking skill (`skills/protologs/SKILL.md`, cleanup Step 2). On yes: skip if only 1 commit since `<base>` (same base branch confirmed in protologs inject Step 1); otherwise back up (`git update-ref refs/bugfix-backup/<KEY>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
+6. **PR description.** Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 2). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no stage names, no verdict jargon like `app_bug`). Validate with the same grep as step 4 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. On `skip`, hold the literal `"skipped"` for step 7's write.
+7. **Close.** ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 4's choice), `pr_description` (step 6's result, or `"skipped"`), and `stages.6="complete"`. Release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`).
 
 ## Notes
 

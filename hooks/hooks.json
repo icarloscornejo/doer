@@ -13,6 +13,16 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protolog-temp-commit-integrity-guard.sh",
             "if": "Bash(git commit*)"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protolog-revert-conflict-guard.sh",
+            "if": "Bash(git revert*)"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protolog-revert-conflict-guard.sh",
+            "if": "Bash(git commit*)"
           }
         ]
       }

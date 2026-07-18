@@ -15,6 +15,7 @@ ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/
 
 ./.doer/                               # per-repo, excluded via .git/info/exclude
 ├── config.json                       # per-project Jira config (schema below)
+├── wk-session-{pid}.json             # session marker (lib/helpers/session.sh), scopes PreToolUse guards
 └── tickets/{TICKET-ID}/
     ├── metadata.json                  # doer tickets (schema below)
     ├── bugfix.json                    # bugfix tickets (schema in skills/bugfix/SKILL.md)
@@ -33,6 +34,21 @@ ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/
 ```
 
 Read and written only through `lib/helpers/preferences.sh`. Global and personal: the same locale applies whichever repo you're in.
+
+## .doer/wk-session-{pid}.json
+
+```json
+{"pid": 12345, "host": "example.local", "skill": "doer", "touched_at": 1737100000}
+```
+
+Read and written only through `lib/helpers/session.sh` (`start <skill>`, `stop`). One file
+per live wk session in this repo, named by the session's long-lived claude process pid
+(`$PPID` as seen by the session, same value the hook sees as its own `$PPID`). This
+plugin's PreToolUse guards (`hooks/*.sh`) check for a live marker before doing anything
+else, so a normal Claude Code session with the plugin installed but no wk skill active is
+never affected by them. Written by `lib/workspace-guard.md` step 4 (doer/bugfix) and by
+`skills/protologs/SKILL.md` (standalone); released at each skill's wrapup, or pruned on
+the next `start` in this repo if the process died without cleaning up.
 
 ## .doer/config.json
 
