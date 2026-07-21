@@ -4,10 +4,10 @@
 
 ## Step 1. Enter plan mode
 
-Call `EnterPlanMode`. Inside it:
+Call `EnterPlanMode`. Inside it, use only read-only tools (`Read`/`Grep`/`Glob`), never `Bash`: plan mode does not inherit the session's own permission mode, so a `Bash` call in here prompts for approval on every invocation and turns the stage into a click-through instead of a one-shot.
 
 1. Re-read `metadata.ac` and `metadata.intake`; read the lesson files listed in `ac.applicable_lessons` in full.
-2. Explore the codebase relevant to the ticket (read budget: ~10 source files; grep freely).
+2. Explore the codebase relevant to the ticket (read budget: ~10 source files; grep freely via the `Grep` tool).
 3. When the ticket integrates an SDK or library whose mechanism the ticket does not document, explore its sources (e.g. `~/.gradle/caches/`, `node_modules/`) to find the API that controls the behavior BEFORE planning, and capture the finding as an assumption.
 4. When the ticket contains a wire-format contract (JSON schema, WebSocket payload), derive field names from the contract, never from AC prose.
 5. Write the plan to the plan file, covering: files to change, ordered steps, tests per AC, risks, and assumptions.

@@ -1,49 +1,20 @@
 # Stage 4 - Investigation, Analysis & Verdict
 
-Read this only when you reach Stage 4. You are in **plan mode (Opus)**. Goal: reach a defensible **root cause** and a **verdict**, then produce a `plan{}`. Do not edit code here - planning only.
+Read this only when you reach Stage 4. You are in **plan mode (Opus)**. Goal: reach a defensible **root cause** and a **verdict**, then produce a `plan{}`. Do not edit code here - planning only. Plan mode is read-only tools only (`Read`/`Grep`/`Glob`); no `Bash`. Everything that needed `Bash` (downloading, converting, parsing the HARs) already ran in Stage 3, before `EnterPlanMode`, since plan mode does not inherit the session's own permission mode and a `Bash` call in here would prompt for approval on every invocation.
 
-Inputs already on disk: `bugfix.json` (`signals`, `attachments`, `entry_points`), `ticket.md` (raw description + comments), `charles/*.har`, `screenshots/*.png`.
-
----
-
-## 1. Build the evidence digest from the HARs
-
-For each converted `.har`, extract ONLY the requests that matter - filter by `signals.technical` (endpoint ids, BO/context ids, flag names). Never read a whole HAR into context; they are huge.
-
-```bash
-python3 - "<charles/name.har>" "<term1>" "<term2>" <<'PY'
-import json,sys
-har=json.load(open(sys.argv[1])); terms=[t.lower() for t in sys.argv[2:]]
-for e in har["log"]["entries"]:
-    req=e["request"]; url=req["url"]
-    blob=(url+" "+(e.get("response",{}).get("content",{}).get("text","") or "")).lower()
-    if any(t in blob for t in terms):
-        print(req["method"], e["response"]["status"], url[:160])
-PY
-```
-
-Refine iteratively: grep response bodies for the specific identifiers (e.g. a context id present in one session and absent in another; a flag value; a status code). Distill each finding into a **one-line** entry in `evidence[]`:
-
-```json
-{"session": "repro",  "finding": "context=6x3Srun... never appears as a p13n request (0 calls)"}
-{"session": "fixed",  "finding": "context=6x3Srun... fires x6 (logout+login, en-US/en-CA/fr-CA)"}
-```
-
-Prefer a comparative shape when the ticket has a repro vs fixed/working session - the delta between sessions is usually the whole story.
-
-Read screenshots only if they add signal the HARs and text don't (UI state, error copy, toggle states).
+Inputs already on disk: `bugfix.json` (`signals`, `attachments`, `entry_points`, `evidence` - the HAR/screenshot digest Stage 3 already built), `ticket.md` (raw description + comments). Do not re-parse `charles/*.har` or `screenshots/*.png` here; if the existing `evidence[]` is missing something only a re-parse would give, note the gap and its effect on confidence instead of running `Bash`.
 
 ---
 
-## 2. Correlate with the code
+## 1. Correlate with the code
 
-Locate the code that governs the observed behavior:
+Locate the code that governs the observed behavior, using `Read`/`Grep`/`Glob` on the repo:
 - If `entry_points` are real paths → start there. If it is `"search"` → find the owning code from `signals.technical` (grep for the flag/function/endpoint names).
-- Trace from the network behavior back to the branch/gate/mapper that decides it. Identify the exact line(s) responsible.
+- Trace from the network behavior in `evidence[]` back to the branch/gate/mapper that decides it. Identify the exact line(s) responsible.
 
 ---
 
-## 3. Decide the verdict
+## 2. Decide the verdict
 
 Weigh the evidence honestly. The verdict is data-driven, not a default.
 
@@ -62,7 +33,7 @@ If confidence is low, say so and state what additional evidence (a specific requ
 
 ---
 
-## 4. Produce the plan
+## 3. Produce the plan
 
 ### verdict = `app_bug`
 ```json
@@ -85,7 +56,7 @@ If confidence is low, say so and state what additional evidence (a specific requ
 
 ---
 
-## 5. Confirm
+## 4. Confirm
 
 Present to the user, concisely:
 - **Verdict** + confidence.

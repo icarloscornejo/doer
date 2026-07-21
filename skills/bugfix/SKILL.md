@@ -4,12 +4,13 @@ description: >-
   End-to-end bug triage from a Jira ticket. Invoke as "/wk:bugfix <jira-url-or-key>"
   (e.g. /wk:bugfix PDE-2779 or a full browse URL). Pulls the ticket (title,
   description, comments), downloads every Charles session (.chls) attached or
-  mentioned in text, converts them to .har, distills the signals, asks for entry
-  points, then investigates in plan mode to reach a verdict. A real app bug gets
+  mentioned in text, converts them to .har, distills the signals, digests the
+  evidence, asks for entry points, then investigates in plan mode (read-only,
+  code correlation and verdict only) to reach a verdict. A real app bug gets
   planned, fixed, and verified on device with /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.2.6
+version: 7.3.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -18,7 +19,7 @@ allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, 
 
 A deterministic pipeline: **Jira ticket → ordered context → investigation (plan mode) → verdict → fix-or-spike**.
 
-- **Best run in opusplan.** Stages 0-3 and 5-6 are mechanical. Stage 4 uses `EnterPlanMode` so the investigation runs on the strongest model; execution drops back on `ExitPlanMode`. The skill cannot force the session model; at the top of Stage 4 it reminds the user.
+- **Best run in opusplan.** Stages 0-3 and 5-6 are mechanical. Stage 4 uses `EnterPlanMode` so the investigation runs on the strongest model; execution drops back on `ExitPlanMode`. The skill cannot force the session model; at the top of Stage 4 it reminds the user. Everything that needs `Bash` (downloads, `.chls` conversion, HAR parsing) runs before Stage 4, in Stages 0-3, since plan mode does not inherit the session's own permission mode: a `Bash` call inside `EnterPlanMode` prompts for approval on every single invocation, turning the investigation into a click-through instead of a one-shot. Stage 4 only ever uses `Read`/`Grep`/`Glob` on the already-gathered evidence and the codebase.
 - **Single source of truth:** one lean `bugfix.json` per ticket. Heavy raw data (full description, comments, HAR bodies) lives in files on disk and is read **on demand only**, never inlined into the JSON.
 - **Jira access** goes through `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh"`, configured **per-project** at `./.doer/config.json` (git-excluded), via `/wk:setup` or `/wk:jira <url>`. The token is full-env: `$JIRA_PAT` by default, or whatever `jira_token_env` names; never persisted. If `jira.sh config` reports missing `base_url` or `token_present: false`, run the auto-detect pass (candidate env var NAMEs only, never values; see `/wk:setup`'s `SKILL.md`) before giving up and pointing the user at `/wk:setup`.
 
@@ -101,14 +102,41 @@ Skip with a note if `attachments[]` has no `.chls` and no screenshots (`stages.2
    Neither available → note it, keep the `.chls` for manual conversion, continue (the investigation can still work from ticket text + screenshots).
 3. Set `done` / `converted` per attachment. Mark stage 2 complete.
 
-## Stage 3 - Entry Points
+## Stage 3 - Evidence Digest & Entry Points
 
-One `AskUserQuestion`: does the user have entry points (files / classes / modules / feature area) to focus the investigation? Offer the area inferred from `signals` (if any) and "search the codebase yourself". Save into `entry_points[]` (paths, or the literal `"search"`). Mark stage 3 complete.
+Runs entirely outside plan mode, since it is the stage that does the actual `Bash`-heavy parsing.
+
+1. **HAR evidence digest** (skip with a note if `attachments[]` has no converted `.har` and no screenshots; `evidence` stays `[]`). For each converted `.har`, extract ONLY the requests that matter, filter by `signals.technical` (endpoint ids, BO/context ids, flag names). Never read a whole HAR into context; they are huge.
+
+   ```bash
+   python3 - "<charles/name.har>" "<term1>" "<term2>" <<'PY'
+   import json,sys
+   har=json.load(open(sys.argv[1])); terms=[t.lower() for t in sys.argv[2:]]
+   for e in har["log"]["entries"]:
+       req=e["request"]; url=req["url"]
+       blob=(url+" "+(e.get("response",{}).get("content",{}).get("text","") or "")).lower()
+       if any(t in blob for t in terms):
+           print(req["method"], e["response"]["status"], url[:160])
+   PY
+   ```
+
+   Refine iteratively: grep response bodies for the specific identifiers (e.g. a context id present in one session and absent in another; a flag value; a status code). Distill each finding into a **one-line** entry in `evidence[]`:
+
+   ```json
+   {"session": "repro",  "finding": "context=6x3Srun... never appears as a p13n request (0 calls)"}
+   {"session": "fixed",  "finding": "context=6x3Srun... fires x6 (logout+login, en-US/en-CA/fr-CA)"}
+   ```
+
+   Prefer a comparative shape when the ticket has a repro vs fixed/working session, the delta between sessions is usually the whole story. Read screenshots only if they add signal the HARs and text don't (UI state, error copy, toggle states); fold anything relevant into `evidence[]` the same way.
+
+2. **Entry points.** One `AskUserQuestion`: does the user have entry points (files / classes / modules / feature area) to focus the investigation? Offer the area inferred from `signals` and `evidence` (if any) and "search the codebase yourself". Save into `entry_points[]` (paths, or the literal `"search"`).
+
+3. **Persist.** ONE `metadata.sh write` sets `evidence[]`, `entry_points[]`, and `stages.3 = "complete"` together.
 
 ## Stage 4 - Investigation, Analysis & Verdict (plan mode)
 
 1. Remind: *"Stage 4 runs in plan mode; for the deepest analysis, make sure you're on opusplan."*
-2. `EnterPlanMode`, then **read `analyze.md`** (this skill's directory) and follow it: HAR digest → `evidence[]`, screenshot reading, code correlation at `entry_points`, root cause per `lib/debugging.md`, the `app_bug` vs `not_app_bug` verdict criteria, and the `plan{}` shape.
+2. `EnterPlanMode`, then **read `analyze.md`** (this skill's directory) and follow it: code correlation at `entry_points` using the `evidence[]` already gathered in Stage 3, root cause per `lib/debugging.md`, the `app_bug` vs `not_app_bug` verdict criteria, and the `plan{}` shape. Read-only tools only (`Read`/`Grep`/`Glob`); no `Bash`, the evidence is already on disk in `bugfix.json`.
 3. Present **root cause + verdict + plan**; on approval `ExitPlanMode`, then persist per `analyze.md`'s Confirm step (one batched `metadata.sh write`: `verdict` + `plan` + stage 4 complete).
 
 ## Stage 5 - Execute

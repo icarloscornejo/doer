@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.3.0
+
+### Fixed
+
+- **`wk:bugfix` Stage 4's `EnterPlanMode` no longer meant one-shot.** `analyze.md` ran the HAR evidence digest, iterative `python3` parsing of network captures, inside plan mode. Plan mode does not inherit the session's own permission mode, so every one of those `Bash` calls prompted for approval individually, turning the investigation into a click-through instead of an unattended pass, even for a dev running in an auto-accept mode outside plan mode. The digest now runs in a new Stage 3 step (`Evidence Digest & Entry Points`), before `EnterPlanMode` is ever called; Stage 4 and `analyze.md` are read-only tools only (`Read`/`Grep`/`Glob`) against the codebase and the evidence Stage 3 already gathered. `wk:doer` Stage 2's `EnterPlanMode` block was audited too: it was already read-only-only (`Read`/`Grep` against the project, no `Bash`), so only the instruction wording was tightened to make that explicit and prevent the same drift.
+
 ## 7.2.6
 
 ### Fixed

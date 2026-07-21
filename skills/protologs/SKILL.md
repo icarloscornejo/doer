@@ -11,7 +11,7 @@ description: >-
     only a fallback), leaving the code identical to its original state, and
     verifies no trace remains. Also invoked by /wk:doer Stage 4 and
     /wk:bugfix Stage 6 for on-device runtime verification.
-version: 7.2.6
+version: 7.3.0
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
