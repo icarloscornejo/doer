@@ -70,7 +70,7 @@ Config (not doer-specific, see Setup above): `/wk:setup` (guided), `/wk:locale <
        -> 4 Investigate (plan mode) -> verdict -> 5 Fix OR mini-spike -> 6 Verify on device
 ```
 
-Designed to run in **opusplan**: the mechanical stages run cheap, the investigation runs on the strongest model. Stage 2 is opportunistic: whatever evidence the ticket happens to have gets pulled in; a ticket with nothing attached just moves on to Stage 3. Stage 3 digests it by grepping for the ticket's technical signals, never read whole, before plan mode starts, so Stage 4 never needs `Bash`. Network captures (Charles `.chls`, converted to `.har` via `makehar` or Charles.app when available) and screenshots are the common case, not a requirement. The verdict is data-driven: `app_bug` → plan + fix + `protologs` verification; `not_app_bug` (API / CMS / backend / data / env) → an evidence-first mini-spike in Jira markup, posted as a comment only with your explicit yes.
+Designed to run in **opusplan**: the mechanical stages run cheap, the investigation runs on the strongest model. Stage 2 is opportunistic: whatever evidence the ticket happens to have gets pulled in; a ticket with nothing attached just moves on to Stage 3. Stage 3 digests it by grepping for the ticket's technical signals, never read whole, before plan mode starts, so Stage 4 never needs `Bash`. Network captures (Charles `.chls`, converted to `.har` via `makehar` or Charles.app when available) and screenshots are the common case, not a requirement. Stage 3 also recovers known investigation entry points for the ticket's topic from the per-repo `./.doer/entry-points.json` store (a "for X always start at file Y" mapping the dev builds up over tickets) and offers them by default, instead of asking cold every time. The verdict is data-driven: `app_bug` → plan + fix + `protologs` verification; `not_app_bug` (API / CMS / backend / data / env) → an evidence-first mini-spike in Jira markup, posted as a comment only with your explicit yes.
 
 Control state lives in `./.doer/tickets/<KEY>/` (never reaches git); heavy artifacts (network captures, screenshots, the spike) in `~/Downloads/<KEY>/` for easy manual inspection.
 
@@ -90,6 +90,7 @@ ${CLAUDE_PLUGIN_ROOT}/               # plugin install
 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/preferences.json    # locale only, global
 
 ./.doer/config.json                  # per-repo Jira config (base URL + token env var name)
+./.doer/entry-points.json            # per-repo bugfix entry-point map (topic -> files)
 ./.doer/tickets/{ID}/                # per-repo control state (metadata.json | bugfix.json)
 ~/Downloads/{KEY}/                   # bugfix heavy artifacts
 ```

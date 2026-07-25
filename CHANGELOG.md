@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.4.0
+
+### Added
+
+- **`wk:bugfix` entry points now persist across tickets, per repo.** Previously Stage 3 asked "do you have entry points to focus the investigation" fresh on every ticket, and the answer died with `bugfix.json` once the ticket closed, even for a topic the dev had already mapped by hand in a prior ticket ("for X always start at file Y"). A new per-repo store, `./.doer/entry-points.json` (git-excluded, same as `config.json`), holds a topic -> keywords/paths/note mapping, written only through a new helper, `lib/helpers/entrypoints.sh` (`match`/`list`/`save`/`forget`, atomic tmp+`mv` writes, same pattern as `metadata.sh`). Stage 3 now recovers matching entries before asking (validating stored paths still exist on disk, since staleness here means a file moved, not that the skill's pipeline shape changed) and offers them as the default. Capture is context-aware, not a blanket extra question: a brand-new topic prompts once to save it as a standing rule; a repeat topic where the dev accepts the stored paths as-is asks nothing and just records the confirming ticket; only a genuine change (new/different paths) prompts what to do with them. Stage 5/6 close also offers, once, to fold in a root-cause file that Stage 4 found but wasn't in the stored set, so the mapping improves with use instead of freezing at the first guess. This is a separate mechanism from `wk:doer`'s cross-project lessons pool: an entry point is a structured, per-repo file-path mapping (only ever valid in this checkout), not narrative cross-project advice.
+
 ## 7.3.0
 
 ### Fixed

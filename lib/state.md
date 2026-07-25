@@ -15,6 +15,7 @@ ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/
 
 ./.doer/                               # per-repo, excluded via .git/info/exclude
 ├── config.json                       # per-project Jira config (schema below)
+├── entry-points.json                 # per-repo bugfix entry-point map (schema below)
 ├── wk-session-{pid}.json             # session marker (lib/helpers/session.sh), scopes PreToolUse guards
 └── tickets/{TICKET-ID}/
     ├── metadata.json                  # doer tickets (schema below)
@@ -57,6 +58,28 @@ the next `start` in this repo if the process died without cleaning up.
 ```
 
 Read and written only through `lib/helpers/jira.sh` (`set-url`, `set-token-env`, `set-auth-email`, `config`). Per-project: different repos can point at different Jira instances. `jira_token_env` names the environment variable holding the token (default `JIRA_PAT` if absent); the token itself is never persisted, only its env var's name. `jira_auth_email` is optional and switches auth from Bearer (Jira Server/DC) to HTTP Basic `email:token` (required for Atlassian Cloud, `*.atlassian.net`). Set up guided via `/wk:setup`, or one-shot via `/wk:jira <url>`.
+
+## .doer/entry-points.json
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "topic": "home page offer banner",
+      "keywords": ["offer banner", "hpmktg", "promotionlist", "home"],
+      "paths": ["app/.../GetHomeUseCaseImpl.kt", "app/.../GetTransformedBeautyOffersContentUseCaseImpl.kt"],
+      "note": "seccion CMS-driven, arrancar por el use case",
+      "captured_from": ["PDE-2917"],
+      "updated_at": "<ISO8601>"
+    }
+  ]
+}
+```
+
+Read and written only through `lib/helpers/entrypoints.sh` (`match`, `list`, `save`, `forget`). Per-repo, used by `skills/bugfix/SKILL.md` Stage 3 to recover and offer known investigation entry points for a topic the dev has already mapped in a previous ticket. `captured_from` accumulates the ticket keys that confirmed or extended the entry; a path is validated (`test -f`) at recovery time and dropped/flagged if it no longer exists, since staleness here means the file moved or was renamed, not that the skill's pipeline shape changed.
+
+This is a **different mechanism** from the cross-project lessons pool (`${CLAUDE_PLUGIN_ROOT}/lessons/{slug}.md`): a lesson is narrative (`What happened / Why it matters / Takeaway`) and applies across any repo; an entry point is a structured topic-to-file-path mapping that is only ever valid in this exact checkout, so it lives per-repo in `.doer/`, not in the plugin install.
 
 ## metadata.json (doer ticket)
 

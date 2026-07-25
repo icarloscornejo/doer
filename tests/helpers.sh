@@ -15,6 +15,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREFS_SH="${REPO_ROOT}/lib/helpers/preferences.sh"
 JIRA_SH="${REPO_ROOT}/lib/helpers/jira.sh"
 METADATA_SH="${REPO_ROOT}/lib/helpers/metadata.sh"
+ENTRYPOINTS_SH="${REPO_ROOT}/lib/helpers/entrypoints.sh"
 
 PASS=0
 FAIL=0
@@ -34,6 +35,7 @@ export WK_PREFERENCES_FILE="$TMPDIR_TEST/preferences.json"
 bash -n "$PREFS_SH" && pass "preferences.sh parses" || fail "preferences.sh parses"
 bash -n "$JIRA_SH" && pass "jira.sh parses" || fail "jira.sh parses"
 bash -n "$METADATA_SH" && pass "metadata.sh parses" || fail "metadata.sh parses"
+bash -n "$ENTRYPOINTS_SH" && pass "entrypoints.sh parses" || fail "entrypoints.sh parses"
 
 # --- preferences.sh (locale only, global) ---
 assert_eq "get-locale defaults to en (no file)" "en" "$("$PREFS_SH" get-locale)"
@@ -141,6 +143,50 @@ assert_eq "simulated lock: no tmp leftover" "" "$(find "./.doer/tickets/T-1" -na
 printf '%s' "$LOCK_ERR" | grep -qi "EDR\|Console.app" \
   && pass "simulated lock: error message points at EDR/Console.app" \
   || fail "simulated lock: error message points at EDR/Console.app" "got: $LOCK_ERR"
+
+# --- entrypoints.sh (per-repo store, lives under ./.doer/entry-points.json) ---
+ENTRYPOINTS_PROJECT_DIR="$TMPDIR_TEST/entrypoints-project"
+mkdir -p "$ENTRYPOINTS_PROJECT_DIR"
+cd "$ENTRYPOINTS_PROJECT_DIR" || exit 1
+
+assert_eq "path prints the resolved file path" ".doer/entry-points.json" "$("$ENTRYPOINTS_SH" path)"
+assert_eq "list on missing store returns empty array" "[]" "$("$ENTRYPOINTS_SH" list)"
+assert_eq "match on missing store returns empty array, no file created" "[]" "$("$ENTRYPOINTS_SH" match banner)"
+assert_eq "match against a missing store creates no file" "no" "$([ -f "./.doer/entry-points.json" ] && echo yes || echo no)"
+
+"$ENTRYPOINTS_SH" save --topic "home page offer banner" --paths "app/Foo.kt,app/Bar.kt" \
+  --keywords "offer banner,hpmktg" --from "PDE-2917" > /dev/null
+assert_eq "save creates the store file" "yes" "$([ -f "./.doer/entry-points.json" ] && echo yes)"
+jq -e . "./.doer/entry-points.json" > /dev/null && pass "store file is valid JSON" || fail "store file is valid JSON"
+assert_eq "save: paths roundtrip" "app/Bar.kt app/Foo.kt" "$("$ENTRYPOINTS_SH" list | jq -r '.[0].paths | sort | join(" ")')"
+assert_eq "save: captured_from roundtrip" "PDE-2917" "$("$ENTRYPOINTS_SH" list | jq -r '.[0].captured_from | join(",")')"
+
+assert_eq "match by keyword substring finds the entry" "home page offer banner" "$("$ENTRYPOINTS_SH" match hpmktg | jq -r '.[0].topic')"
+assert_eq "match by unrelated term returns empty" "[]" "$("$ENTRYPOINTS_SH" match "totalmente distinto")"
+
+"$ENTRYPOINTS_SH" save --topic "home page offer banner" --paths "app/Bar.kt,app/Baz.kt" \
+  --from "PDE-3000" > /dev/null
+assert_eq "save merge: paths are unioned and deduped" "app/Bar.kt app/Baz.kt app/Foo.kt" \
+  "$("$ENTRYPOINTS_SH" list | jq -r '.[0].paths | sort | join(" ")')"
+assert_eq "save merge: captured_from accumulates" "PDE-2917,PDE-3000" "$("$ENTRYPOINTS_SH" list | jq -r '.[0].captured_from | join(",")')"
+assert_eq "save merge: keywords survive an update with no --keywords" "hpmktg,offer banner" \
+  "$("$ENTRYPOINTS_SH" list | jq -r '.[0].keywords | sort | join(",")')"
+
+"$ENTRYPOINTS_SH" save --topic "home page offer banner" --paths "app/OnlyOne.kt" --mode replace > /dev/null
+assert_eq "save --mode replace: paths become exactly the given set" "app/OnlyOne.kt" \
+  "$("$ENTRYPOINTS_SH" list | jq -r '.[0].paths | join(",")')"
+assert_eq "save --mode replace: captured_from is untouched (no --from)" "PDE-2917,PDE-3000" \
+  "$("$ENTRYPOINTS_SH" list | jq -r '.[0].captured_from | join(",")')"
+
+"$ENTRYPOINTS_SH" save --topic "second topic" --paths "app/Other.kt" > /dev/null
+assert_eq "list returns both topics" "2" "$("$ENTRYPOINTS_SH" list | jq 'length')"
+
+"$ENTRYPOINTS_SH" forget --topic "second topic" > /dev/null
+assert_eq "forget removes only the named topic" "home page offer banner" "$("$ENTRYPOINTS_SH" list | jq -r '.[0].topic')"
+assert_eq "list after forget has exactly one entry" "1" "$("$ENTRYPOINTS_SH" list | jq 'length')"
+
+"$ENTRYPOINTS_SH" forget --topic "home page offer banner" > /dev/null
+assert_eq "forget the last entry leaves an empty array" "[]" "$("$ENTRYPOINTS_SH" list)"
 
 cd "$REPO_ROOT" || exit 1
 

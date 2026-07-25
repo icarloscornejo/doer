@@ -10,7 +10,7 @@ description: >-
   planned, fixed, and verified on device with /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.3.0
+version: 7.4.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -60,12 +60,15 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
   ],
   "evidence": [],
   "entry_points": [],
+  "entry_points_topic": null,
   "plan": null,
   "commit_message": null, "pr_description": null,
   "stages": {"0": "pending", "1": "pending", "2": "pending", "3": "pending", "4": "pending", "5": "pending", "6": "pending"},
   "notes": []
 }
 ```
+
+`entry_points[]` can arrive pre-populated from `./.doer/entry-points.json` (per-repo store, see `lib/state.md` and Stage 3 Step 2 below), not just from the dev typing them fresh. `entry_points_topic` holds the matched/chosen topic key from that store when applicable (`null` when `entry_points` is `"search"` or came from an ad hoc answer with no stored topic); Stage 5/6 close uses it to offer refining the stored entry.
 
 **Rule:** after each stage, update `bugfix.json` in ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<KEY>" '<filter>' --file bugfix.json` call (`current_stage`, `stages[n]="complete"`, the fields that stage owns, all in the same jq filter). Never `Write`/`Edit` `bugfix.json` directly, and never split one stage's close into two writes — see `lib/state.md`, "Writing metadata.json" (applies equally to `bugfix.json`), for why. Keep it lean; raw text goes to `ticket.md`, network dumps stay as `.har`.
 
@@ -129,9 +132,22 @@ Runs entirely outside plan mode, since it is the stage that does the actual `Bas
 
    Prefer a comparative shape when the ticket has a repro vs fixed/working session, the delta between sessions is usually the whole story. Read screenshots only if they add signal the HARs and text don't (UI state, error copy, toggle states); fold anything relevant into `evidence[]` the same way.
 
-2. **Entry points.** One `AskUserQuestion`: does the user have entry points (files / classes / modules / feature area) to focus the investigation? Offer the area inferred from `signals` and `evidence` (if any) and "search the codebase yourself". Save into `entry_points[]` (paths, or the literal `"search"`).
+2. **Entry points**, in three steps:
 
-3. **Persist.** ONE `metadata.sh write` sets `evidence[]`, `entry_points[]`, and `stages.3 = "complete"` together.
+   **2a. Recover before asking.** Run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/entrypoints.sh" match <terms>` with `signals.technical` terms plus keywords from `title`. For each hit, validate every path with `test -f`: a path that no longer exists gets narrated plainly (`"<path> from the '<topic>' entry point no longer exists, was it moved/renamed?"`) and the dev is offered to fix or drop it right there, in the same turn. This replaces MAJOR-version pruning (what `wk:doer`'s lessons pool uses): an entry point does not go stale because the skill got a version bump, it goes stale because the file moved. Surviving paths become the **recommended** option in the `AskUserQuestion` below, shown with their `topic` and `captured_from` so the dev knows where they came from.
+
+      No hits → fall back to the current behavior: offer the area inferred from `signals`/`evidence` and "search the codebase yourself".
+
+   **2b. Ask.** One `AskUserQuestion` offering: the recovered paths (if any, recommended), the inferred area, and "search the codebase yourself". Save the answer into `entry_points[]` (paths, or the literal `"search"`).
+
+      Then, only when the answer is real paths (never on `"search"`), a **second, conditional** question about persisting it, one case at a time:
+      - **No stored entry for this topic** and the dev gave real paths: ask whether to save it as a standing rule for future tickets on `<proposed topic>` (options: *save* / *just this ticket*; the tool's "Other" is the edit-the-topic path). On save → `entrypoints.sh save --topic <t> --paths <p> --keywords <k> --from <KEY>`; set `entry_points_topic` to `<t>`.
+      - **Stored entry exists and the dev accepted its paths as-is:** ask nothing. Just `entrypoints.sh save --topic <t> --paths <same paths> --from <KEY>` (a no-op merge that appends `<KEY>` to `captured_from`, confirming the entry without friction) and set `entry_points_topic` to `<t>`.
+      - **Stored entry exists and the dev gave additional or different paths:** ask what to do, showing the current stored count (options: *merge the new ones in* / *replace* / *leave the stored entry as-is*). Apply via `entrypoints.sh save --topic <t> --paths <p> --from <KEY> [--mode replace]`, or skip the write on "leave as-is"; set `entry_points_topic` to `<t>` whenever a write happened.
+
+   **2c. Refinement hook for later.** Stage 5/6 close checks whether Stage 4's root cause lives in a file that was NOT in the `entry_points_topic` entry's stored `paths`; if so it offers, once, adding it (see Stage 5/6).
+
+3. **Persist.** ONE `metadata.sh write` sets `evidence[]`, `entry_points[]`, `entry_points_topic`, and `stages.3 = "complete"` together.
 
 ## Stage 4 - Investigation, Analysis & Verdict (plan mode)
 
@@ -161,7 +177,8 @@ Mark stage 5 complete → Stage 6.
 
 1. Read `templates/mini-spike.md` (this skill's directory) and write `~/Downloads/<KEY>/spike.md` in Jira wiki markup, filled from `signals`, `evidence`, the root cause, and `plan.spike_owner`.
 2. Iterate with the user on content and formatting; rewrite `spike.md` each round.
-3. When satisfied, **ask** whether to post it as a Jira comment. Only on explicit yes:
+3. **Entry-points refinement (2c).** If `entry_points_topic` is set and the root cause in `plan.root_cause` names a file not already in that topic's stored `paths`, ask once whether to add it (`entrypoints.sh save --topic <entry_points_topic> --paths <existing+new> --from <KEY>`). Skip silently when `entry_points_topic` is `null`, or the root-cause file is already covered.
+4. When satisfied, **ask** whether to post it as a Jira comment. Only on explicit yes:
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" comment <KEY> "$HOME/Downloads/<KEY>/spike.md"
    ```
@@ -174,15 +191,16 @@ Mark stage 5 complete → Stage 6.
 1. Invoke `wk:protologs` (Skill tool, inject mode), passing `entry_points[]` from `bugfix.json` as the user-specified entry points (protologs' Step 2.5 will not re-ask). This instruments the entire flow from those entry points, upward if the flow starts earlier. If the logging scope is unclear, ask the user how far up/down to instrument first.
 2. The user runs the build on device; confirm the logs show the expected flow and the fix behaves.
 3. Invoke `wk:protologs cleanup`; verify no `PROTOLOG` trace remains.
-4. **Recommended commit message.** Draft THREE candidates, each `<KEY>: <subject ≤72 chars>`, specific to the actual change, in plain business language. Each candidate takes a genuinely different angle (the user-visible symptom fixed, the component changed, the root cause addressed), not rewordings of the same sentence. Validate all three before presenting (Core Principle 10):
+4. **Entry-points refinement (2c).** If `entry_points_topic` is set and `plan.root_cause` names a file not already in that topic's stored `paths`, ask once whether to add it (`entrypoints.sh save --topic <entry_points_topic> --paths <existing+new> --from <KEY>`). Skip silently when `entry_points_topic` is `null`, or the root-cause file is already covered.
+5. **Recommended commit message.** Draft THREE candidates, each `<KEY>: <subject ≤72 chars>`, specific to the actual change, in plain business language. Each candidate takes a genuinely different angle (the user-visible symptom fixed, the component changed, the root cause addressed), not rewordings of the same sentence. Validate all three before presenting (Core Principle 10):
    ```bash
    printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" \
      | grep -nE '\bAC-[0-9]+\b|\bPROTOLOG\b|\bDOER\b|\bdoer\('
    ```
-   A match means an internal label leaked; rewrite that candidate and re-validate, never present a matching draft. Present the three candidates in the chat as plain text, numbered 1-3, each in its own fenced code block. Drafts NEVER go inside `AskUserQuestion`, only the selection does. Ask via `AskUserQuestion` with short labels (`Option 1` / `Option 2` / `Option 3`), marking the strongest `(Recommended)`; the tool's auto-appended "Other" is the edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally valid. Re-run the grep on any edited text before accepting it. Hold the chosen message for step 7's single write.
-5. **Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). Cleanup leaves a `[TEMP]`/revert pair per logging round sitting on top of the Stage 5 fix commit; protologs' own cleanup step explicitly defers this collapse to the invoking skill (`skills/protologs/SKILL.md`, cleanup Step 2). On yes: skip if only 1 commit since `<base>` (same base branch confirmed in protologs inject Step 1); otherwise back up (`git update-ref refs/bugfix-backup/<KEY>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
-6. **PR description.** Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 2). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no stage names, no verdict jargon like `app_bug`). Validate with the same grep as step 4 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. On `skip`, hold the literal `"skipped"` for step 7's write.
-7. **Close.** ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 4's choice), `pr_description` (step 6's result, or `"skipped"`), and `stages.6="complete"`. Release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`).
+   A match means an internal label leaked; rewrite that candidate and re-validate, never present a matching draft. Present the three candidates in the chat as plain text, numbered 1-3, each in its own fenced code block. Drafts NEVER go inside `AskUserQuestion`, only the selection does. Ask via `AskUserQuestion` with short labels (`Option 1` / `Option 2` / `Option 3`), marking the strongest `(Recommended)`; the tool's auto-appended "Other" is the edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally valid. Re-run the grep on any edited text before accepting it. Hold the chosen message for step 8's single write.
+6. **Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). Cleanup leaves a `[TEMP]`/revert pair per logging round sitting on top of the Stage 5 fix commit; protologs' own cleanup step explicitly defers this collapse to the invoking skill (`skills/protologs/SKILL.md`, cleanup Step 2). On yes: skip if only 1 commit since `<base>` (same base branch confirmed in protologs inject Step 1); otherwise back up (`git update-ref refs/bugfix-backup/<KEY>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
+7. **PR description.** Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 2). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no stage names, no verdict jargon like `app_bug`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. On `skip`, hold the literal `"skipped"` for step 8's write.
+8. **Close.** ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 5's choice), `pr_description` (step 7's result, or `"skipped"`), and `stages.6="complete"`. Release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`).
 
 ## Notes
 
