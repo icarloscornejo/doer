@@ -10,7 +10,7 @@ description: >-
   planned, fixed, and verified on device with /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.4.0
+version: 7.5.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -70,7 +70,7 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
 
 `entry_points[]` can arrive pre-populated from `./.doer/entry-points.json` (per-repo store, see `lib/state.md` and Stage 3 Step 2 below), not just from the dev typing them fresh. `entry_points_topic` holds the matched/chosen topic key from that store when applicable (`null` when `entry_points` is `"search"` or came from an ad hoc answer with no stored topic); Stage 5/6 close uses it to offer refining the stored entry.
 
-**Rule:** after each stage, update `bugfix.json` in ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<KEY>" '<filter>' --file bugfix.json` call (`current_stage`, `stages[n]="complete"`, the fields that stage owns, all in the same jq filter). Never `Write`/`Edit` `bugfix.json` directly, and never split one stage's close into two writes — see `lib/state.md`, "Writing metadata.json" (applies equally to `bugfix.json`), for why. Keep it lean; raw text goes to `ticket.md`, network dumps stay as `.har`.
+**Rule:** after each stage, update `bugfix.json` in ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<KEY>" '<filter>' --file bugfix.json` call (`current_stage`, `stages[n]="complete"`, the fields that stage owns, all in the same jq filter). Never `Write`/`Edit` `bugfix.json` directly, and never split one stage's close into two writes: see `lib/state.md`, "Writing metadata.json" (applies equally to `bugfix.json`), for why. Keep it lean; raw text goes to `ticket.md`, network dumps stay as `.har`.
 
 ## Stage 0 - Init & Resume
 
@@ -161,15 +161,23 @@ Branch on `verdict`:
 
 ### `app_bug`
 
-Implement `plan.steps` (edit the files, add the tests). Follow repo conventions and `lib/debugging.md` (no fix without root cause). Run the relevant module tests / build. Record what changed in `notes`.
+Tests first, TDD order, driven by `plan.tests` from Stage 4:
 
-Commit the fix before Stage 6 runs (a working message; the PR-ready message is chosen in Stage 6):
+1. Write every test in `plan.tests.bug` and `plan.tests.regression`. Run them: `tests.bug` entries **must fail** (they exercise the not-yet-fixed defect); `tests.regression` entries **must pass** (they lock the sibling behaviors that already work today). A `bug` test that already passes means the root cause is wrong, go back to `lib/debugging.md`, do not proceed. A `regression` test that already fails is a distinct pre-existing bug, narrate it and let the dev decide before continuing.
+2. Commit the tests:
+   ```bash
+   git add -A && git commit --no-verify -m "<KEY>: <subject>"
+   ```
+3. Implement `plan.steps`. Follow repo conventions and `lib/debugging.md` (no fix without root cause).
+4. Run the full relevant suite: everything green, `bug` and `regression` tests together. Green regressions after the fix are the evidence nothing sibling broke; a regression going red means the fix broke that sibling, fix it before advancing, never weaken the test to make it pass.
+5. Commit the fix, separate from the tests commit:
+   ```bash
+   git add -A && git commit --no-verify -m "<KEY>: <subject>"
+   ```
 
-```bash
-git add -A && git commit --no-verify -m "<KEY>: <subject>"
-```
+Record what changed in `notes`.
 
-This must land as its own commit, separate from anything Stage 6 adds. `wk:protologs`' `[TEMP]` commit mechanism (Step 4.6) assumes the fix underneath it is already committed, so its diff contains only PROTOLOG lines and cleanup's revert is a clean no-op. An uncommitted fix gets tangled with the injected logs in the same working-tree diff and has to be split apart by hand afterward.
+Both commits land before Stage 6 runs (working messages; the PR-ready message is chosen in Stage 6). They must stay separate from anything Stage 6 adds. `wk:protologs`' `[TEMP]` commit mechanism (Step 4.6) assumes the fix underneath it is already committed, so its diff contains only PROTOLOG lines and cleanup's revert is a clean no-op. An uncommitted fix gets tangled with the injected logs in the same working-tree diff and has to be split apart by hand afterward.
 
 Mark stage 5 complete → Stage 6.
 
@@ -192,15 +200,15 @@ Mark stage 5 complete → Stage 6.
 2. The user runs the build on device; confirm the logs show the expected flow and the fix behaves.
 3. Invoke `wk:protologs cleanup`; verify no `PROTOLOG` trace remains.
 4. **Entry-points refinement (2c).** If `entry_points_topic` is set and `plan.root_cause` names a file not already in that topic's stored `paths`, ask once whether to add it (`entrypoints.sh save --topic <entry_points_topic> --paths <existing+new> --from <KEY>`). Skip silently when `entry_points_topic` is `null`, or the root-cause file is already covered.
-5. **Recommended commit message.** Draft THREE candidates, each `<KEY>: <subject ≤72 chars>`, specific to the actual change, in plain business language. Each candidate takes a genuinely different angle (the user-visible symptom fixed, the component changed, the root cause addressed), not rewordings of the same sentence. Validate all three before presenting (Core Principle 10):
+5. **Recommended commit message.** Draft THREE candidates, each `<KEY>: <Subject ≤72 chars>` with the subject starting uppercase, specific to the actual change, in plain business language. Each candidate takes a genuinely different angle (the user-visible symptom fixed, the component changed, the root cause addressed), not rewordings of the same sentence. Validate all three before presenting (Core Principle 10):
    ```bash
    printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" \
      | grep -nE '\bAC-[0-9]+\b|\bPROTOLOG\b|\bDOER\b|\bdoer\('
    ```
    A match means an internal label leaked; rewrite that candidate and re-validate, never present a matching draft. Present the three candidates in the chat as plain text, numbered 1-3, each in its own fenced code block. Drafts NEVER go inside `AskUserQuestion`, only the selection does. Ask via `AskUserQuestion` with short labels (`Option 1` / `Option 2` / `Option 3`), marking the strongest `(Recommended)`; the tool's auto-appended "Other" is the edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally valid. Re-run the grep on any edited text before accepting it. Hold the chosen message for step 8's single write.
 6. **Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). Cleanup leaves a `[TEMP]`/revert pair per logging round sitting on top of the Stage 5 fix commit; protologs' own cleanup step explicitly defers this collapse to the invoking skill (`skills/protologs/SKILL.md`, cleanup Step 2). On yes: skip if only 1 commit since `<base>` (same base branch confirmed in protologs inject Step 1); otherwise back up (`git update-ref refs/bugfix-backup/<KEY>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
-7. **PR description.** Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 2). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no stage names, no verdict jargon like `app_bug`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. On `skip`, hold the literal `"skipped"` for step 8's write.
-8. **Close.** ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 5's choice), `pr_description` (step 7's result, or `"skipped"`), and `stages.6="complete"`. Release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`).
+7. **PR description.** Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 2). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no stage names, no verdict jargon like `app_bug`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `pr_description` or running step 8 before the dev's reply is prohibited. On requested changes, rewrite, re-validate with the same grep, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks step 8; on `skip`, hold the literal `"skipped"` for step 8's write.
+8. **Close.** Precondition: step 7 has the dev's explicit approval (or `"skipped"`); if not, this step does not run. ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 5's choice), `pr_description` (step 7's approved result, or `"skipped"`), and `stages.6="complete"`. Release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`).
 
 ## Notes
 

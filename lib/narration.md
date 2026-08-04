@@ -17,6 +17,7 @@ The only events that end a turn:
 1. An `AskUserQuestion` call (the tool itself ends the turn).
 2. An Agent returned an error the user must see before retrying.
 3. The user typed a halt signal (`stop`, `wait`, `hold on`).
+4. A plain-chat question asking for approval, edits, or rejection of an already-drafted team-facing artifact (PR description, spike). The artifact goes to chat as plain text and the turn ends right there; persisting it or closing the ticket before the dev's reply is prohibited.
 
 Everything else, including stage transitions and loop iterations, chains in the same turn. MUST NOT ask "Continue?" / "Shall I proceed?" / "Ready for Stage N?" between stages or iterations; the user opted in by starting the ticket. Narrate *"Stage N complete. Continuing to Stage N+1..."* and keep going.
 
@@ -29,6 +30,7 @@ After a turn DID end, interpret the next user message as: a halt signal → stop
 | A closed set of 2-4 mutually exclusive options, or binary | `AskUserQuestion` |
 | Open free text (a command, a branch name, pasted content, edit instructions) | Plain-chat question |
 | Long or multiline (an artifact the dev pastes) | Plain-chat question |
+| Approval of a long artifact the orchestrator drafted (PR description, spike) | Plain-chat question, AND a turn boundary (see event 4 above); never `AskUserQuestion`, a draft never goes inside the tool |
 | "Continue? / Proceed?" between stages | NEITHER; auto-proceed |
 
 `AskUserQuestion` rules: the tool auto-appends a free-text "Other" (never hand-author one); 4 real options max; mark the recommended choice `(Recommended)`.

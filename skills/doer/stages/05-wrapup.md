@@ -44,7 +44,7 @@ Draft `metadata.summary`: one paragraph in English (what was delivered, what act
 ## 5. Recommended commit message
 
 The dev squashes the per-stage commits into one PR-ready commit. Draft THREE candidates,
-each `<TICKET-ID>: <subject ≤72 chars>`, specific to the actual change, in plain business
+each `<TICKET-ID>: <Subject ≤72 chars>` with the subject starting uppercase, specific to the actual change, in plain business
 language. Each candidate takes a genuinely different angle (the user-visible behavior, the
 component changed, the problem solved), not rewordings of the same sentence. Validate all
 three before presenting (Core Principle 10):
@@ -69,7 +69,7 @@ the grep on any edited text before accepting it. Persist ONLY the chosen message
 
 Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`.
 
-Dispatch a PR-description writer Agent (read budget 0; inline `metadata.ac`, `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N`, no `PROTOLOG`/`DOER`, no stage names, no literal `doer`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it (e.g. a "How to test" snippet), renders literally in chat and copies verbatim. Persist to `metadata.pr_description` via a single `metadata.sh write`. On `skip`, persist the literal `"skipped"` the same way.
+Dispatch a PR-description writer Agent (read budget 0; inline `metadata.ac`, `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N`, no `PROTOLOG`/`DOER`, no stage names, no literal `doer`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it (e.g. a "How to test" snippet), renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `metadata.pr_description` before the dev's reply is prohibited. On requested changes, rewrite, re-validate with the same grep, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks persisting: on ok, `metadata.sh write` the approved text to `metadata.pr_description`; on `skip`, persist the literal `"skipped"` the same way.
 
 ## 7. History cleanup
 
@@ -89,6 +89,6 @@ Verify the log is now empty; narrate the backup ref. Files on disk are never tou
 
 ## 8. Close
 
-Release the lock (`rm -f ./.doer/tickets/<TICKET-ID>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`). Self-check: `metadata.commit_message` and `metadata.pr_description` are non-null (or `"skipped"`); if either is missing, jump back to that step now, before any closing narration. Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `metadata.summary`, `metadata.status = "complete"`, `metadata.completed_at` (all held from step 4), and `stages.5` complete (`completed_at`); call `metadata.sh write` exactly once.
+Precondition: step 6 has the dev's explicit approval of the PR description (or `"skipped"`); if not, this step does not run. Release the lock (`rm -f ./.doer/tickets/<TICKET-ID>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`). Self-check: `metadata.commit_message` and `metadata.pr_description` are non-null (or `"skipped"`); if either is missing, jump back to that step now, before any closing narration. Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `metadata.summary`, `metadata.status = "complete"`, `metadata.completed_at` (all held from step 4), and `stages.5` complete (`completed_at`); call `metadata.sh write` exactly once.
 
 Closing narration (in the operating locale): render `metadata.summary`, then: *"Ticket <TICKET-ID> complete. <N> commit(s) on `<branch>`. Run your pre-commit checks, use the commit message and PR description above, then push and open the PR manually (or keep everything as is)."*

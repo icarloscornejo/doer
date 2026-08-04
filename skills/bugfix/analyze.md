@@ -12,6 +12,10 @@ Locate the code that governs the observed behavior, using `Read`/`Grep`/`Glob` o
 - If `entry_points` are real paths → start there. If it is `"search"` → find the owning code from `signals.technical` (grep for the flag/function/endpoint names).
 - Trace from the network behavior in `evidence[]` back to the branch/gate/mapper that decides it. Identify the exact line(s) responsible.
 
+### Sibling behaviors
+
+Once the responsible gate/branch/mapper is identified, enumerate its **sibling behaviors**: the other states or values that same decision point handles today and that the fix's diff will pass through (logged-in vs logged-out, flag on/off, locales, user-type variants, null vs present). Read the conditional and its call sites with `Grep`, never from memory. Each sibling found becomes a behavior to shield in `plan.tests.regression` below. A fix that touches one branch of a conditional with siblings and does not list them is an incomplete plan; go back and finish this step before presenting.
+
 ---
 
 ## 2. Decide the verdict
@@ -40,10 +44,16 @@ If confidence is low, say so and state what additional evidence (a specific requ
 "plan": {
   "type": "fix",
   "root_cause": "<one paragraph, cites the responsible file:line and the evidence>",
+  "sibling_behaviors": [{"behavior": "<one-line>", "where": "<File.kt:120-140>", "covered_today": true}],
   "steps": [{"order": 1, "what": "<change>", "where": "<File.kt:120-140>"}],
-  "tests": ["<what to add/adjust and which behavior it locks>"]
+  "tests": {
+    "bug": [{"name": "<test name>", "what": "<one-line>", "must_fail_before_fix": true}],
+    "regression": [{"name": "<test name>", "sibling": "<matching sibling_behaviors.behavior>", "must_pass_before_fix": true}]
+  }
 }
 ```
+
+`covered_today` marks whether that sibling already has a test in the repo; if not, its regression test is mandatory in `tests.regression`. Every entry in `sibling_behaviors` needs a matching entry in `tests.regression` unless `covered_today` is true and the existing test is confirmed still green after the fix.
 
 ### verdict = `not_app_bug`
 ```json
@@ -62,5 +72,6 @@ Present to the user, concisely:
 - **Verdict** + confidence.
 - **Root cause** with the key evidence (session delta, file:line).
 - **Plan**: the fix steps + tests, or the spike owner + headline finding.
+- **Sibling behaviors** (`app_bug` only): each one found, and which `tests.regression` entry shields it. This is the part the dev needs to be able to push back on before any code exists.
 
 Get explicit confirmation. On approval → `ExitPlanMode`, then ONE `metadata.sh write ... --file bugfix.json` that sets `verdict`, `plan`, and `stages.4 = "complete"` together. If the user pushes back, revise within plan mode before exiting.
