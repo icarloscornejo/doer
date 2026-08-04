@@ -11,7 +11,7 @@ description: >-
     only a fallback), leaving the code identical to its original state, and
     verifies no trace remains. Also invoked by /wk:doer Stage 4 and
     /wk:bugfix Stage 6 for on-device runtime verification.
-version: 7.3.0
+version: 7.3.1
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -361,17 +361,24 @@ A "gap" is a slice hop where it is TECHNICALLY IMPOSSIBLE to add a log without
 violating the rules above (not merely difficult or inconvenient). The bar for
 declaring a gap is high: exhaust all nearby alternatives first.
 
-== MANDATORY COMPILE VERIFICATION ==
+== SINGLE-PASS COMPILE VERIFICATION (exactly 1 compile, no retries) ==
 
-After injecting all logs, compile/typecheck ONLY the parts of the project that
-contain files you modified. Do NOT return the JSON until everything you touched
-compiles cleanly. Detect the project type and use the narrowest check available:
+After injecting ALL logs across ALL files, run EXACTLY ONE compile/typecheck pass
+that batches every touched module/target into a SINGLE invocation, so the
+JVM/daemon cold-start cost is paid once this round, never once per file or per
+fix. Do NOT attempt to fix and recompile if it fails; see below. Detect the
+project type and use the narrowest batched check available:
 
   Gradle (build.gradle[.kts] present):
     derive the module per touched file (replace `/` with `:` from the repo root
-    up to the directory containing build.gradle, prefixed with `:`;
-    e.g. feature/home/data/... -> :feature:home:data) and run:
-      ./gradlew :<module>:compileDebugKotlin 2>&1 | tail -60
+    up to the directory containing build.gradle, prefixed with `:`; e.g.
+    feature/home/data/... -> :feature:home:data), deduplicate the module list,
+    and compile ALL of them in ONE gradle invocation (never one command per
+    module, never one command per file):
+      ./gradlew :modA:compileDebugKotlin :modB:compileDebugKotlin 2>&1 | tail -80
+    Never pass `--no-daemon`; the Gradle daemon must persist so only the first
+    compile of the whole session pays Kotlin daemon/dependency-resolution
+    cold-start, not each round.
     (if JAVA_HOME is unset and Android Studio exists, export
      JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home")
   Xcode / SwiftPM:  xcodebuild build (scheme of the touched target) or swift build
@@ -380,19 +387,21 @@ compiles cleanly. Detect the project type and use the narrowest check available:
   Go / Rust:        go build ./... | cargo check
   Anything else:    the repo's documented build/typecheck command
 
-If the check fails:
-1. Read the exact error (file + line number + message).
-2. Fix ONLY the PROTOLOG line that caused it -- never touch business logic.
-3. Re-compile that same module.
-4. Repeat until it is green.
-
-Common PROTOLOG mistakes to check before compiling:
+Common PROTOLOG mistakes to avoid while writing lines (there is no recompile to
+catch these after the fact, so get them right the first time):
 - .size on a String (use .length instead)
 - .isSuccessful / .code() / .body() on non-Retrofit types (use .toString())
 - ?. on a non-nullable receiver
 - String interpolation calling a method not available on that type
 
-Only after every touched module compiles cleanly, return the JSON.
+If the pass fails, do NOT fix and recompile. Read every error in the output
+(file + line + message) and return the JSON with them listed under a top-level
+`"compile_errors"` key instead. The orchestrator surfaces them to the user, who
+decides whether to fix manually or ask for a new round, rather than the agent
+spending another compile trying to self-correct.
+
+Return the JSON immediately after this single pass, whether it came back green
+or with errors captured in `compile_errors`.
 
 Return ONLY this JSON (do not write any summary file):
 
@@ -408,9 +417,12 @@ Return ONLY this JSON (do not write any summary file):
       "hops_covered": <int>,
       "gaps": ["<hop that COULD NOT be instrumented (technically impossible) and why>"]
     }
-  }
+  },
+  "compile_errors": ["<file:line: message, only present if red after the one retry>"]
 }
 ```
+
+Omit `compile_errors` entirely (not an empty array) when the pass came back green.
 
 ### Step 4.5 - Detect forbidden refactors (mandatory, before compiling)
 
@@ -458,7 +470,13 @@ distinguished from the pre-existing ones).
 
 ### Step 4.6 - Commit this round as [TEMP]
 
-Once both Step 4.5 checks pass and the touched modules compile clean, commit the round:
+If the agent's JSON carries a `compile_errors` key, do NOT commit. Show the
+errors to the user and ask whether to retry the round or continue uncommitted
+so they can inspect/fix manually; committing a round known to be red defeats
+the purpose of the compile gate.
+
+Once both Step 4.5 checks pass and the touched modules compile clean (no
+`compile_errors` key), commit the round:
 
 ```bash
 git add -A && git commit --no-verify -m "[TEMP] PROTOLOG debug logs (round <N>). DO NOT MERGE"
@@ -735,18 +753,21 @@ cleanup success without validating the result is exactly what let the earlier in
 (corrupted `when` block, unclosed constructor calls) go unnoticed until the next build.
 
 Detect the affected modules from the files touched by the reverted `[TEMP]` commits (or,
-on the fallback path, from `files_touched` in the original inject JSON) and run the same
-per-project-type check as inject Step 4's compile verification, e.g. for Gradle:
+on the fallback path, from `files_touched` in the original inject JSON), deduplicate them,
+and run the same batched, single-pass check as inject's compile verification (see
+Step 4), one gradle invocation covering every affected module, e.g.:
 
 ```bash
-./gradlew :<module>:compileDebugKotlin --stacktrace 2>&1 | tail -40
+./gradlew :modA:compileDebugKotlin :modB:compileDebugKotlin --stacktrace 2>&1 | tail -60
 ```
 
 - Compiles clean -> narrate *"Working tree is clean of PROTOLOG and compiles clean."*
-- Fails -> narrate the exact error, do NOT report cleanup as done, fix the offending
-  file (fallback path: re-check for an embedded PROTOLOG line the first pass missed;
-  revert path: this should not happen since Step 4.6 already required a clean compile
-  before committing) and re-run this step until it passes.
+- Fails -> narrate the exact error and STOP. Do NOT report cleanup as done and do NOT
+  recompile automatically (fallback path: this likely means an embedded PROTOLOG line
+  the first pass missed; revert path: this should not happen since Step 4.6 already
+  required a clean compile before committing, so treat it as noteworthy). Hand the
+  error off to the user to decide the fix rather than looping recompiles -- this
+  mirrors inject's single-pass cap.
 
 ### Step 6 - Release the session marker (standalone only)
 
