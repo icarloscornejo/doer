@@ -1,6 +1,6 @@
 # Doer Work Kit (`wk`)
 
-**Three skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.3.0.
+**Three skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.6.0.
 
 | Slash command | Purpose |
 |---|---|
@@ -76,7 +76,7 @@ Control state lives in `./.doer/tickets/<KEY>/` (never reaches git); heavy artif
 
 ## `/wk:protologs`
 
-Instruments the COMPLETE vertical slice of your current diff (entry point → boundary → observable result), with saturation-level density (function entry/exit, every branch, every nullable, every emit), using only the language's basic stdout with the tag `PROTOLOG - `. Backs up the pre-inject state to /tmp, compiles what it touched, and prints the filter command (`adb logcat | grep "PROTOLOG - "`). `cleanup` deletes every tagged line, restores files it touched outside your diff, and verifies zero trace remains. Never commits or pushes.
+Instruments a targeted diagnostic slice of your current diff (entry point → boundary → observable result, capped at 3 hops upward, cut at the first external boundary downward), with a flat density (function entry/exit, branches taken, catches, plus collections/nullables/suspend points/emits only when the value sits on the verified data path), using only the language's basic stdout with the tag `PROTOLOG - `. Hops cut by the hop budget are reported, not silently dropped, and you can ask for an extra round on any of them. Backs up the pre-inject state to /tmp, compiles what it touched, and prints the filter command (`adb logcat | grep "PROTOLOG - "`). `cleanup` deletes every tagged line, restores files it touched outside your diff, and verifies zero trace remains. Never commits or pushes.
 
 ## State layout
 

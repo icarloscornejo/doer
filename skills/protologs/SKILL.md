@@ -11,7 +11,7 @@ description: >-
     only a fallback), leaving the code identical to its original state, and
     verifies no trace remains. Also invoked by /wk:doer Stage 4 and
     /wk:bugfix Stage 6 for on-device runtime verification.
-version: 7.3.1
+version: 7.6.0
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -153,11 +153,111 @@ Agent prompt (fill in the `<...>` markers):
 
 ```
 You are the logger-agent. Your ONLY function is to add temporary debug lines
-with the tag "PROTOLOG - " to the vertical slice of the change described below.
+with the tag "PROTOLOG - " to a targeted diagnostic slice of the change
+described below.
 
-PHILOSOPHY: MORE IS BETTER. When in doubt between adding or skipping a log,
-ADD IT. The goal is coverage saturation so that any behavioral issue can be
-diagnosed on device.
+== INVIOLABLE RULES (read first, apply to every line you write) ==
+
+VALID LINE SHAPES (only these two exist). Every PROTOLOG line occupies its own
+full line, with nothing else on it, so that deleting it (by text match on
+"PROTOLOG - ") leaves the surrounding code exactly as it was:
+
+1. A standalone print call: `println("PROTOLOG - <message>")`.
+2. A standalone `.also { println("PROTOLOG - <message>") }` continuing the
+   expression on the PREVIOUS line (Kotlin/Swift allow a leading-dot
+   continuation). This is the sanctioned way to log a return value, a `when`
+   branch result, or a constructor call WITHOUT refactoring anything: deleting
+   the line leaves the original expression syntactically complete.
+   ```kotlin
+   // when branch:
+   FeatureEntity.HandlerType.PROMOTION_LIST_FOR_YOU -> PROMOTION_LIST_FOR_YOU
+       .also { println("PROTOLOG - [${Thread.currentThread().name}] FeaturesMapper: branch PROMOTION_LIST_FOR_YOU") }
+
+   // return / constructor:
+   return PromotionList.Item(
+       ...
+   )
+       .also { println("PROTOLOG - [${Thread.currentThread().name}] PromotionListMapper: exit value=$it") }
+   ```
+   Never write the `.also { println(...) }` on the SAME line as the code it is
+   attached to (e.g. `X -> Y.also { println(...) }` or `).also { println(...) }`
+   glued to a closing paren). That mixes a PROTOLOG line with business logic on
+   one physical line; deleting it by text match deletes the logic with it. This
+   is exactly the bug that broke a `when` block and two constructor calls in a
+   real incident. The `.also {}` ALWAYS goes on its own line below.
+
+FORBIDDEN:
+1. Creating a variable ONLY to print its value.
+   BAD:  val endpoint = if (x) "a" else "b"
+         println("PROTOLOG - endpoint=$endpoint")
+   GOOD: println("PROTOLOG - endpoint=${if (x) "a" else "b"}")
+
+2. Refactoring existing code to enable a log. Do not split returns, method chains,
+   or long expressions. If a log would require a refactor, find the NEAREST
+   previous or subsequent point where you CAN log without changing logic.
+   NEVER skip that slice node entirely.
+   BAD:  val r = foo()
+         println("PROTOLOG - result=$r")
+         return r
+   GOOD: println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: about to call foo")
+         return foo()
+   ALSO GOOD (when the returned/emitted value itself needs logging, use the
+   standalone `.also {}` form above, never inline it):
+   BAD:  return foo().also { println("PROTOLOG - result=$it") }
+   GOOD: return foo()
+             .also { println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: result=$it") }
+
+3. Adding helpers, factories, or any extra function. The only permitted change
+   is println/print/console.log lines (standalone or standalone `.also {}`).
+
+4. Modifying existing business logic, imports, or comments.
+
+5. Mixing a PROTOLOG line with business logic on the same physical line. Every
+   `.also { println("PROTOLOG - ...") }` is on its own line (see VALID LINE
+   SHAPES). Never `X -> Y.also { ... }`, never a println joined by `;` to real
+   code, never a println hanging off the line that closes a constructor call.
+
+Every modified file must be such that deleting all lines containing
+"PROTOLOG - " restores it to a syntactically identical state to its exact
+prior state. When a log would require breaking one of these rules, log at the
+NEAREST legal point instead; never skip the slice node in silence and never
+bend a rule to fit it in.
+
+A "gap" is a slice hop where it is TECHNICALLY IMPOSSIBLE to add a log without
+violating the rules above (not merely difficult or inconvenient). The bar for
+declaring a gap is high: exhaust all nearby alternatives first. This is
+distinct from a hop skipped by the hop budget below (see SLICE SCOPE):
+report each under its own `reason` in `slice_coverage.gaps`.
+
+== SELF-CHECK BEFORE RETURNING (mandatory, before compiling) ==
+
+Before you compile and before you return the JSON, run these two checks
+yourself against every file you touched, and fix anything they catch. A
+structural violation can compile clean and only break later at cleanup time,
+so catching it here (not after the orchestrator's own backstop) is what keeps
+a round mergeable.
+
+Check A (non-PROTOLOG additions):
+```bash
+git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep -v "PROTOLOG - "
+```
+Empty output means the file is clean. Non-empty means you added a non-PROTOLOG
+line (a forbidden refactor, FORBIDDEN #2): revert it with the Edit tool and
+re-run the check.
+
+Check B (PROTOLOG mixed with business logic on the same line, FORBIDDEN #5):
+```bash
+git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep "PROTOLOG - " \
+  | grep -vE '^\+[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)'
+```
+Empty output means every PROTOLOG line is a bare standalone call or a bare
+`.also {}` continuation. Non-empty means a line got glued to real code: move
+it to its own line per VALID LINE SHAPES and re-run both checks.
+
+Repeat both checks until they pass, on every touched file, before moving on
+to compilation. Report the outcome in the JSON's `self_check` field: `"clean"`
+if both passed with nothing to fix, or the list of what you found and
+corrected.
 
 == Full diff ==
 <output of `git diff <BASE>...HEAD` + `git diff` + `git diff --cached`>
@@ -173,10 +273,9 @@ there and follow the flow downward through the diff to the boundary. Do NOT
 substitute a different entry point you infer on your own; if the given entry
 point does not reach the diff, log both paths and report it as a gap.
 
-== SLICE SCOPE ==
+== SLICE SCOPE (hop budget, not exhaustive) ==
 
-Do not limit yourself to the diff. Trace the COMPLETE vertical slice in BOTH
-directions:
+Trace the vertical slice in BOTH directions, but under a budget:
 
   ENTRY POINT    the action that triggers the flow (tap, click, call, event,
                  scheduled job, etc.)
@@ -189,51 +288,64 @@ directions:
   OBSERVABLE     the visible result: UI rendered, state emitted,
   RESULT         HTTP response, record persisted, event fired.
 
-Read every file needed to trace the slice. There is no file limit; completeness
-is the stopping criterion. If USER-SPECIFIED ENTRY POINTS were given above,
-start there instead of inferring your own. Otherwise follow calls all the way
-to the real entry point (ViewModel, Fragment, Composable, BroadcastReceiver,
-WorkManager, etc.). Do not
-stop at the first layer you see.
+UPWARD budget: at most 3 hops from the function the diff touches up to the
+entry point. If USER-SPECIFIED ENTRY POINTS were given above, ignore the hop
+count and start there instead, since the entry point is authoritative and may
+sit further than 3 hops away.
 
-Stop ONLY at the boundary of third-party frameworks/SDKs/libraries (log the
-call into them and the result they return, but do not descend into their code).
+DOWNWARD: stop at the first external boundary (network, DB, filesystem, IPC)
+or at the boundary of a third-party framework/SDK/library. Log the call into
+it and the result it returns; do not descend into its code.
 
-== MANDATORY MINIMUM-DENSITY CHECKLIST ==
+Any hop that falls outside the upward budget is NOT a gap under the technical-
+impossibility bar above: it is a scope cut. Report it in `slice_coverage.gaps`
+with `"reason": "hop budget"` and the file:function where you stopped, so the
+orchestrator can offer the dev an extra round anchored there. Do not silently
+skip it without reporting.
 
-For EVERY function in the slice (not just the changed ones), you MUST log:
+== DENSITY (one level for the whole slice) ==
 
-  [ ] Entry to the function with ALL relevant arguments (name=value)
+MANDATORY, for every function in the slice:
+
+  [ ] Entry to the function with the relevant arguments (name=value)
   [ ] Exit of the function (value returned or "returning void")
-  [ ] Every conditional branch taken (if/else/when/guard) with the condition and its value
-  [ ] Every collection: its size BEFORE and AFTER operating on it
-  [ ] Every nullable: whether it is null or non-null at the point of use
-  [ ] Every call to an in-slice function: what is called and with what args
-  [ ] Every state change (StateFlow.emit, LiveData.value=, MutableState, etc.)
-  [ ] Every suspension point in coroutines (before AND after each suspend fun call)
+  [ ] Every branch actually taken (if/else/when/guard), with the condition and its value
   [ ] Every catch/exception: exception type and message
-  [ ] Every Result/Either/sealed class: which variant was received
-  [ ] Every flow collect/map/filter: the value going in and the value coming out
 
-== MANDATORY KOTLIN PATTERNS ==
+CONDITIONAL, only when the value sits on the data path being verified (it
+flows from or to the diff or the entry point, not incidental local state):
 
-For Kotlin specifically, in addition to the checklist above:
+  [ ] Collection size before/after an operation on it
+  [ ] Whether a nullable is null or non-null at the point of use
+  [ ] Before AND after a suspend fun call
+  [ ] A StateFlow/SharedFlow/LiveData emission
+  [ ] Which Result/Either/sealed class variant was received
+  [ ] The value going into and coming out of a flow collect/map/filter
+
+When a value is not on that path, do not log it. This is a change in kind
+from "log everything you can": skip anything off the verified path even if it
+would be easy to add.
+
+== KOTLIN LINE FORMS ==
+
+Use these forms wherever the DENSITY section above calls for a log. This is
+format, not an independent list of things to log.
 
   Message format - include the current thread name in EVERY log line:
     println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: description key=value")
   When coroutine debug mode is on, the thread name shows as `main @coroutine#N`,
   which is invaluable for tracing async flows. One println per site, no refactor.
 
-  Coroutines - log before AND after each suspend fun call:
+  Coroutines - log before AND after each suspend fun call (when on the verified path):
     println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: calling suspendFoo(arg=$arg)")
     val result = suspendFoo(arg)
     println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: suspendFoo returned=$result")
 
-  StateFlow/SharedFlow - log on every emit:
+  StateFlow/SharedFlow - when logging an emission:
     println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: emitting state=${newState}")
     _state.emit(newState)
 
-  When exhaustive - log each branch with the matched value:
+  When branch (mandatory, per DENSITY) - log each branch actually taken with the matched value:
     when (x) {
         is Foo -> {
             println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: when branch=Foo, x=$x")
@@ -245,10 +357,10 @@ For Kotlin specifically, in addition to the checklist above:
         }
     }
 
-  Lists/collections - log before operating:
+  Lists/collections - when logging a size, before operating:
     println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: list.size=${list.size}, isEmpty=${list.isEmpty()}")
 
-  Nullable - log inside each ?.let and ?: run:
+  Nullable - when logging null/non-null, inside each ?.let and ?: run:
     val x = maybeNull?.let {
         println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: maybeNull is non-null, value=$it")
         it.process()
@@ -257,10 +369,10 @@ For Kotlin specifically, in addition to the checklist above:
         fallback()
     }
 
-  Data classes - log with toString() if <= 6 properties, or field by field if larger:
+  Data classes - when logging one, use toString() if <= 6 properties, or field by field if larger:
     println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: model=$model")
 
-  Result/sealed class - log each variant:
+  Result/sealed class (mandatory when on the verified path, per DENSITY) - log each variant:
     result.fold(
         onSuccess = {
             println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: result=Success, data=$it")
@@ -289,77 +401,6 @@ One println per call site. Values go inside the string via interpolation.
 
 NEVER use the app's logging framework (Timber, log4j, structlog, winston,
 direct Logcat, etc.). Use ONLY the language's basic stdout.
-
-== VALID LINE SHAPES (only these two exist) ==
-
-Every PROTOLOG line occupies its own full line, with nothing else on it, so that
-deleting it (by text match on "PROTOLOG - ") leaves the surrounding code exactly
-as it was:
-
-1. A standalone print call: `println("PROTOLOG - <message>")`.
-2. A standalone `.also { println("PROTOLOG - <message>") }` continuing the
-   expression on the PREVIOUS line (Kotlin/Swift allow a leading-dot
-   continuation). This is the sanctioned way to log a return value, a `when`
-   branch result, or a constructor call WITHOUT refactoring anything: deleting
-   the line leaves the original expression syntactically complete.
-   ```kotlin
-   // when branch:
-   FeatureEntity.HandlerType.PROMOTION_LIST_FOR_YOU -> PROMOTION_LIST_FOR_YOU
-       .also { println("PROTOLOG - [${Thread.currentThread().name}] FeaturesMapper: branch PROMOTION_LIST_FOR_YOU") }
-
-   // return / constructor:
-   return PromotionList.Item(
-       ...
-   )
-       .also { println("PROTOLOG - [${Thread.currentThread().name}] PromotionListMapper: exit value=$it") }
-   ```
-
-Never write the `.also { println(...) }` on the SAME line as the code it is
-attached to (e.g. `X -> Y.also { println(...) }` or `).also { println(...) }`
-glued to a closing paren). That mixes a PROTOLOG line with business logic on
-one physical line; deleting it by text match deletes the logic with it. This is
-exactly the bug that broke a `when` block and two constructor calls in a real
-incident. The `.also {}` ALWAYS goes on its own line below.
-
-== DO NOT RULES (critical for perfect cleanup) ==
-
-FORBIDDEN:
-1. Creating a variable ONLY to print its value.
-   BAD:  val endpoint = if (x) "a" else "b"
-         println("PROTOLOG - endpoint=$endpoint")
-   GOOD: println("PROTOLOG - endpoint=${if (x) "a" else "b"}")
-
-2. Refactoring existing code to enable a log. Do not split returns, method chains,
-   or long expressions. If a log would require a refactor, find the NEAREST
-   previous or subsequent point where you CAN log without changing logic.
-   NEVER skip that slice node entirely.
-   BAD:  val r = foo()
-         println("PROTOLOG - result=$r")
-         return r
-   GOOD: println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: about to call foo")
-         return foo()
-   ALSO GOOD (when the returned/emitted value itself needs logging, use the
-   standalone `.also {}` form from VALID LINE SHAPES above, never inline it):
-   BAD:  return foo().also { println("PROTOLOG - result=$it") }
-   GOOD: return foo()
-             .also { println("PROTOLOG - [${Thread.currentThread().name}] ClassName.fn: result=$it") }
-
-3. Adding helpers, factories, or any extra function. The only permitted change
-   is println/print/console.log lines (standalone or standalone `.also {}`).
-
-4. Modifying existing business logic, imports, or comments.
-
-5. Mixing a PROTOLOG line with business logic on the same physical line. Every
-   `.also { println("PROTOLOG - ...") }` is on its own line (see VALID LINE
-   SHAPES). Never `X -> Y.also { ... }`, never a println joined by `;` to real
-   code, never a println hanging off the line that closes a constructor call.
-
-Every modified file must be such that deleting all lines containing "PROTOLOG - "
-restores it to a syntactically identical state to its exact prior state.
-
-A "gap" is a slice hop where it is TECHNICALLY IMPOSSIBLE to add a log without
-violating the rules above (not merely difficult or inconvenient). The bar for
-declaring a gap is high: exhaust all nearby alternatives first.
 
 == SINGLE-PASS COMPILE VERIFICATION (exactly 1 compile, no retries) ==
 
@@ -409,30 +450,34 @@ Return ONLY this JSON (do not write any summary file):
   "files_touched": [{"path": "...", "reason": "<one line>", "log_count": <int>}],
   "files_read": <int: total source files read>,
   "total_logs_injected": <int>,
+  "self_check": "clean, or the list of what Check A/B found and you corrected",
   "slice_coverage": {
     "<change-id>": {
       "entry": "<file:function where the flow starts>",
       "boundary": "<file:function at the external boundary, or null>",
       "observable_result": "<file:function where the visible result is produced>",
       "hops_covered": <int>,
-      "gaps": ["<hop that COULD NOT be instrumented (technically impossible) and why>"]
+      "gaps": [{"hop": "<file:function>", "reason": "technically impossible | hop budget", "detail": "<why>"}]
     }
   },
-  "compile_errors": ["<file:line: message, only present if red after the one retry>"]
+  "compile_errors": ["<file:line: message, only present if red after the single pass>"]
 }
 ```
 
 Omit `compile_errors` entirely (not an empty array) when the pass came back green.
 
-### Step 4.5 - Detect forbidden refactors (mandatory, before compiling)
+### Step 4.5 - Integrity backstop before commit
 
-The agent sometimes violates DO NOT RULE #2: it converts expression functions to block
-functions, creates intermediate variables only to print their value, or adds empty
-`else {}` blocks. These structural changes do NOT contain `PROTOLOG - `, so they survive
-the `sed` cleanup and corrupt the code. This check catches them before compilation.
+The agent already ran Check A and Check B on itself (SELF-CHECK BEFORE RETURNING, in
+the Step 4 prompt) before it ever compiled. This step is the orchestrator's own,
+independent pass of the same two checks against the agent's committed diff, run
+exactly once, so the commit gate does not rely solely on the agent's self-report.
+It is a backstop, not a place to fix things: unlike the pre-7.6.0 version of this
+step, it does NOT edit files, does NOT loop, and does NOT run before the agent's
+compile (the agent already compiled inside Step 4; running this "before compiling"
+was never actually possible and is why this step is now titled a backstop instead).
 
-After the agent returns its JSON but BEFORE compiling, the orchestrator (NOT the agent)
-runs TWO checks for every file in `files_touched`:
+The orchestrator runs TWO checks for every file in `files_touched`:
 
 **Check A (non-PROTOLOG additions):**
 
@@ -440,43 +485,38 @@ runs TWO checks for every file in `files_touched`:
 git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep -v "PROTOLOG - "
 ```
 
-- **Empty output**: the file is clean, only `PROTOLOG - ` lines were added. Continue.
-- **Non-empty output**: the agent added non-PROTOLOG lines (forbidden refactors). Do NOT
-  compile. Narrate the offending lines. Revert them with the Edit tool (examples:
-  `else -> { Unit }` back to `else -> Unit`; expression functions restored to their
-  original form; intermediate variables eliminated). Re-run the check until it passes.
-  Only then compile.
+Non-empty output means non-PROTOLOG lines were added (a forbidden refactor: expression
+functions converted to block functions, an intermediate variable created only to print
+its value, an empty `else {}` added, etc).
 
-**Check B (PROTOLOG mixed with business logic on the same line, DO NOT RULE #5):**
+**Check B (PROTOLOG mixed with business logic on the same line, FORBIDDEN #5):**
 
 ```bash
 git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep "PROTOLOG - " \
   | grep -vE '^\+[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)'
 ```
 
-A line only survives this filter if it contains `PROTOLOG - ` but is NOT a bare
-`println(...)` / `print(...)` / etc. or a bare `.also { println(...) }` continuation
-line. Non-empty output means the injection put PROTOLOG on the same physical line as
-real code (e.g. `X -> Y.also { println("PROTOLOG - ...") }` inline, or `).also {
-println(...) }` glued to a closing paren). Do NOT compile. Move the `.also {}` (or the
-println) to its own line per VALID LINE SHAPES, re-run BOTH checks until they pass, only
-then compile. This is the exact failure mode that broke a `when` block and two
-constructor calls in a real incident; Check A alone missed it because the offending
-line does contain `PROTOLOG - `.
+Non-empty output means a PROTOLOG line got glued to real code (e.g. `X -> Y.also {
+println("PROTOLOG - ...") }` inline, or `).also { println(...) }` glued to a closing
+paren). This is the exact failure mode that broke a `when` block and two constructor
+calls in a real incident; Check A alone missed it because the offending line does
+contain `PROTOLOG - `.
 
 Skip both checks for any file present in `/tmp/protolog-workdir-<branch>.patch` (it had
 uncommitted changes before the injection, so the agent's additions cannot be cleanly
 distinguished from the pre-existing ones).
 
+**Either check non-empty, or the agent's JSON carries `compile_errors`:** STOP. Do NOT
+commit, do NOT fix, do NOT recompile. Narrate the offending lines (side by side with
+the agent's own `self_check` field: a `self_check: "clean"` alongside a backstop
+failure here is a broken contract worth calling out on its own, not just the failure
+itself). The dev decides: fix by hand with the Edit tool, ask for a new round, or
+restore from `/tmp/protolog-workdir-<branch>.patch` (Step 3).
+
 ### Step 4.6 - Commit this round as [TEMP]
 
-If the agent's JSON carries a `compile_errors` key, do NOT commit. Show the
-errors to the user and ask whether to retry the round or continue uncommitted
-so they can inspect/fix manually; committing a round known to be red defeats
-the purpose of the compile gate.
-
-Once both Step 4.5 checks pass and the touched modules compile clean (no
-`compile_errors` key), commit the round:
+Once both Step 4.5 checks pass and the agent's JSON has no `compile_errors` key,
+commit the round:
 
 ```bash
 git add -A && git commit --no-verify -m "[TEMP] PROTOLOG debug logs (round <N>). DO NOT MERGE"
@@ -502,8 +542,15 @@ After the agent returns:
   at: `<slice_coverage.entry>`."* A mismatch is not necessarily wrong (the
   agent may have found the exact function inside the file/class you named),
   but flag it if the two look unrelated.
-- If there are `gaps` in any coverage, show them FIRST:
-  *"Gaps (uninstrumented hops): [gap]. That part of the slice will be blind."*
+- If there are `gaps` in any coverage, split them by `reason` and show BOTH groups:
+  - `technically impossible`: *"Gaps (uninstrumented hops): [gap]. That part of the
+    slice will be blind."*
+  - `hop budget`: *"Cut by the hop budget: [hop] at [file:function]. Not blind by
+    necessity, just not covered by default."* For these, ask via `AskUserQuestion`:
+    *"I cut N hops here due to the hop budget. Want me to instrument any of them
+    too?"* If the dev picks one or more, invoke `wk:protologs` again (inject mode)
+    with those hops passed as the entry point, same as any `NEED_MORE_DATA` round:
+    it lands as `[TEMP]` commit round N+1 via Step 4.6, on top of the current round.
 - List `files_touched` with `reason` and `log_count` per file.
 - Show filter commands:
   ```
@@ -519,25 +566,6 @@ After the agent returns:
   (Fallback: Android Studio Logcat with filter `PROTOLOG - `)
 - Remind at the end:
   *"When you are done testing, run `/wk:protologs cleanup` to remove everything without a trace."*
-
-### Step 6 - Optional re-verification build
-
-The agent already compiled every touched module as part of the injection step and
-auto-fixed any PROTOLOG syntax errors before returning. This step is an optional
-extra pass you can offer to the user for peace of mind.
-
-Offer via `AskUserQuestion`: *"The agent already compiled and verified the injected
-logs. Do you want a second compile pass to double-check? (takes ~1-2 min)"*
-
-If they accept, detect the affected modules from `files_touched` and run:
-
-```bash
-# same per-project-type check as the injection step, e.g. for Gradle:
-./gradlew :<module>:compileDebugKotlin --stacktrace 2>&1 | tail -40
-```
-
-If it fails despite the agent's self-fix, narrate the error and offer the user to
-revert with the backup patch.
 
 ---
 

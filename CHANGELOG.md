@@ -2,6 +2,14 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.6.0
+
+### Changed
+
+- **`wk:protologs` inject no longer saturates the slice.** The logger-agent's prompt opened with "PHILOSOPHY: MORE IS BETTER" and mandated an 11-point checklist "for EVERY function in the slice (not just the changed ones)", with no cap on how many files it could read to trace the slice ("no file limit; completeness is the stopping criterion"). A single round on a diff spanning a few layers routinely took 30+ minutes and six figures of tokens, most of it reading source files that had nothing to do with the behavior being verified. Density is now flat for the whole slice (entry/exit/branch-taken/catch, mandatory; collections/nullables/suspend-points/emits/flow-values, only when the value sits on the data path being verified), and the upward trace is capped at 3 hops from the diff to the entry point (downward still stops at the first external boundary, unchanged). A user-specified entry point still overrides the hop cap, since it is authoritative. Hops cut by the budget are never silently dropped: they land in `slice_coverage.gaps` with `"reason": "hop budget"`, distinct from the pre-existing "technically impossible" gaps, and Step 5 offers the dev an extra round anchored at any of them (landing as `[TEMP]` round N+1, same mechanism as any other follow-up round).
+- **The inviolable line-shape and no-refactor rules now open the logger-agent's prompt instead of closing it.** They previously arrived after the exhaustive scope and density instructions (over 250 lines in), which is why `Step 4.5` existed as a post-hoc correction loop letting the orchestrator patch the agent's files. The agent now reads the rules first, and runs its own copy of Check A/B on every file it touches before it compiles or returns (`self_check` field in the JSON contract, `"clean"` or what it found and fixed). `Step 4.5` is retitled to what it actually is, an integrity backstop right before the `[TEMP]` commit, not a "before compiling" step (the agent already compiled inside Step 4, so that ordering was never actually possible): it runs the same two checks once, and on a hit it stops and reports rather than editing files or looping, matching the single-pass, no-auto-retry compile gate from `7.3.1`.
+- **`Step 6`'s optional second compile pass is removed.** It offered a re-verification build justified by "the agent already compiled and auto-fixed any PROTOLOG syntax errors before returning", an auto-fix behavior `7.3.1` removed months ago; the step had been stale ever since. The `compile_errors` JSON field's own doc comment had the same leftover wording ("after the one retry" with no retry in the flow) and is corrected to "after the single pass".
+
 ## 7.4.0
 
 ### Added

@@ -196,7 +196,7 @@ Mark stage 5 complete → Stage 6.
 
 ## Stage 6 - Verify on device & Deliver (`app_bug` only)
 
-1. Invoke `wk:protologs` (Skill tool, inject mode), passing `entry_points[]` from `bugfix.json` as the user-specified entry points (protologs' Step 2.5 will not re-ask). This instruments the entire flow from those entry points, upward if the flow starts earlier. If the logging scope is unclear, ask the user how far up/down to instrument first.
+1. Invoke `wk:protologs` (Skill tool, inject mode), passing `entry_points[]` from `bugfix.json` as the user-specified entry points (protologs' Step 2.5 will not re-ask). Since the entry points are user-specified, protologs starts there regardless of its own hop budget, and traces down through the diff to the boundary. If the logging scope is unclear, ask the user how far up/down to instrument first.
 2. The user runs the build on device; confirm the logs show the expected flow and the fix behaves.
 3. Invoke `wk:protologs cleanup`; verify no `PROTOLOG` trace remains.
 4. **Entry-points refinement (2c).** If `entry_points_topic` is set and `plan.root_cause` names a file not already in that topic's stored `paths`, ask once whether to add it (`entrypoints.sh save --topic <entry_points_topic> --paths <existing+new> --from <KEY>`). Skip silently when `entry_points_topic` is `null`, or the root-cause file is already covered.
