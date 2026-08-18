@@ -30,16 +30,21 @@ if [ -f "$TICKET_DIR/lock.json" ]; then
   LOCK_PID=$(jq -r '.pid // empty' "$TICKET_DIR/lock.json" 2>/dev/null)
   LOCK_HOST=$(jq -r '.host // empty' "$TICKET_DIR/lock.json" 2>/dev/null)
   AGE=$(( $(date +%s) - ${TOUCHED:-0} ))
-  ALIVE=1
-  if [ -n "$LOCK_PID" ] && [ "$LOCK_HOST" = "$(hostname)" ]; then
-    case "$(ps -o comm= -p "$LOCK_PID" 2>/dev/null)" in
-      *claude*) ;;   # recorded pid is alive and still a claude process
-      *) ALIVE=0 ;;  # gone, or recycled into an unrelated process
-    esac
-  fi
-  if [ "$ALIVE" -eq 1 ] && [ "$AGE" -lt 1800 ]; then
-    echo "LOCKED: another session touched <TICKET-ID> ${AGE}s ago and its process is still alive (or is on another host, where liveness can't be checked). Close it or wait for the lock to expire (30 min)."
-    exit 1
+  # Same-session resume (e.g. after a Stage 1 pause, lib/state.md): the lock
+  # is our own, from earlier in this same live process. Never block on it,
+  # just refresh below like a fresh acquire.
+  if [ "$LOCK_PID" != "$PPID" ] || [ "$LOCK_HOST" != "$(hostname)" ]; then
+    ALIVE=1
+    if [ -n "$LOCK_PID" ] && [ "$LOCK_HOST" = "$(hostname)" ]; then
+      case "$(ps -o comm= -p "$LOCK_PID" 2>/dev/null)" in
+        *claude*) ;;   # recorded pid is alive and still a claude process
+        *) ALIVE=0 ;;  # gone, or recycled into an unrelated process
+      esac
+    fi
+    if [ "$ALIVE" -eq 1 ] && [ "$AGE" -lt 1800 ]; then
+      echo "LOCKED: another session touched <TICKET-ID> ${AGE}s ago and its process is still alive (or is on another host, where liveness can't be checked). Close it or wait for the lock to expire (30 min)."
+      exit 1
+    fi
   fi
 fi
 mkdir -p "$TICKET_DIR"

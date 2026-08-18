@@ -42,6 +42,8 @@ doer/
 |- lessons/                            # global, cross-project
 |- tests/helpers.sh                    # smoke tests for the helper scripts
 |- tests/hooks.sh                      # smoke tests for the PreToolUse guards
+|- tests/skills.sh                     # meta-tests for tests/lib/skill-contract.sh (real repo passes, mutations fail)
+|- tests/lib/skill-contract.sh         # contract checker for skills/doer/stages/01-ac.md + lib/state.md
 |- docs/CHANGELOG-archive-6x.md        # archived 1.x-6.x history
 |- AGENTS.md, README.md, CHANGELOG.md, LICENSE
 ```

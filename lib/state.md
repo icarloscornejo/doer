@@ -94,7 +94,8 @@ This is a **different mechanism** from the cross-project lessons pool (`${CLAUDE
   "created_at": "<ISO8601>", "completed_at": null,
   "intake": {"description": "...", "raw_acs": "... | derive", "context": "...",
               "prior_work": {"exists": false}, "tracker": null},
-  "ac": {"in_scope": ["AC-1: ..."], "out_of_scope": [], "open_questions_resolved": [],
+  "ac": {"in_scope": ["AC-1: ..."], "candidates": [], "out_of_scope": [], "open_questions_resolved": [],
+          "merged": [], "source_map": [], "discarded_intake_items": [],
           "applicable_lessons": [], "self_review": {"ran": true, "rounds": 1, "findings": [],
           "dev_accepted": [], "dev_rejected": []}},
   "plan": {"files": [], "steps": [], "tests": [], "risks": [], "assumptions": []},
@@ -114,7 +115,7 @@ This is a **different mechanism** from the cross-project lessons pool (`${CLAUDE
 }
 ```
 
-Stage statuses: `pending | in_progress | complete | skipped | imported`. `ac`, `plan`, and later fields start absent and are written by their owning stage. `last_green_sha` is always the full 40-char `git rev-parse HEAD` output (string-equality comparisons break on abbreviation).
+Stage statuses: `pending | in_progress | complete | skipped | imported`. `ac`, `plan`, and later fields start absent and are written by their owning stage. `last_green_sha` is always the full 40-char `git rev-parse HEAD` output (string-equality comparisons break on abbreviation). Stage 1 can also persist `metadata.ac` in a deliberately INCOMPLETE state, with `stages.1.status = "in_progress"` and a `metadata.ac.pause_reason` set (`01-ac.md`, "Pausing Stage 1"): an obligation the dev's own edits left uncovered still needs a disposition, and only the dev can supply one. This is the same "leave the stage `in_progress` for a later resume" pattern `lib/loop.md` uses for the Stage 3 loop; `stages.1.status = "complete"` is reserved for a draft that passed the deterministic integrity pass in full.
 
 ## Writing metadata.json (and bugfix.json)
 

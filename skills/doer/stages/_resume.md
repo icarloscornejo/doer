@@ -16,7 +16,7 @@ Entered when `/doer <TICKET-ID>` finds an existing `./.doer/tickets/<TICKET-ID>/
 
 6. Route by `metadata.stages.<current_stage>.status`:
    - `pending` → start the stage normally.
-   - `in_progress` → resume mid-stage (for Stage 3, read `metadata.code_review` to recover the loop iteration).
+   - `in_progress` → resume mid-stage (for Stage 3, read `metadata.code_review` to recover the loop iteration; for Stage 1, read `metadata.ac.pause_reason` and re-enter directly at the integrity/completeness resolution in `01-ac.md`'s Step 5.5, never at intake or generation).
    - `complete | skipped | imported` → data drift; correct `current_stage` to the next non-complete stage with a single `metadata.sh write` and continue.
 
 7. Narrate *"Resuming <TICKET-ID> at Stage <N> (<name>)."* and proceed: read the current stage's file and ONLY that file. Resume is the implicit intent; do not ask for confirmation.

@@ -1,6 +1,6 @@
 # Doer Work Kit (`wk`)
 
-**Four skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.7.0.
+**Four skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.8.0.
 
 | Slash command | Purpose |
 |---|---|
