@@ -138,6 +138,39 @@ mut_reintroduce_numeric_range() {
     '**ACs** (3-7): one Given/When/Then per candidate'
 }
 
+mut_drop_bold_label_rule() {
+  replace_once "$1/$AC_REL" \
+    'the `AC-N` label is always bold, even on a trivial cosmetic bullet (`- **AC-1:** <plain cosmetic criterion>`).' \
+    'the `AC-N` label is plain text.'
+}
+
+mut_collapse_clauses_one_line() {
+  replace_once "$1/$AC_REL" \
+    'each clause sits on its own line, indented with exactly three U+00A0 (non-breaking space) characters,' \
+    'all clauses stay on one line, joined by commas,'
+}
+
+# Replaces the example's real three-U+00A0 indent with plain ASCII spaces,
+# the exact failure mode grep -F text-matching alone would miss (the rule
+# sentence stays intact; only the codepoints the reader would actually see
+# change). Uses python directly instead of replace_once because the old/new
+# strings need literal U+00A0 characters, awkward to pass through bash args.
+mut_replace_nbsp_with_ascii_space() {
+  python3 - "$1/$AC_REL" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+nbsp3 = " " * 3
+if text.count(nbsp3 + "GIVEN") != 1:
+    sys.stderr.write("mut_replace_nbsp_with_ascii_space: three-U+00A0 indent before GIVEN not found exactly once\n")
+    sys.exit(1)
+text = text.replace(nbsp3 + "GIVEN", "   GIVEN", 1)
+text = text.replace(nbsp3 + "WHEN", "   WHEN", 1)
+text = text.replace(nbsp3 + "THEN", "   THEN", 1)
+open(path, "w", encoding="utf-8").write(text)
+PY
+}
+
 # --- 1. Baseline: the real repo must pass the checker as-is. ---
 BASELINE_OUT="$(mktemp)"
 if bash "$CHECKER" "$REPO_ROOT" >"$BASELINE_OUT" 2>&1; then
@@ -161,6 +194,9 @@ mutate_and_expect_fail "mutation: survivor_text dropped from the finding schema"
 mutate_and_expect_fail "mutation: candidates catalog dropped from lib/state.md" mut_drop_candidates_from_state
 mutate_and_expect_fail "mutation: pause leaves the stage pending instead of in_progress" mut_pause_leaves_pending
 mutate_and_expect_fail "mutation: 3-7 numeric AC range reintroduced" mut_reintroduce_numeric_range
+mutate_and_expect_fail "mutation: bold AC label requirement dropped" mut_drop_bold_label_rule
+mutate_and_expect_fail "mutation: GIVEN/WHEN/THEN collapsed to one line" mut_collapse_clauses_one_line
+mutate_and_expect_fail "mutation: three-U+00A0 indent replaced with plain ASCII spaces" mut_replace_nbsp_with_ascii_space
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

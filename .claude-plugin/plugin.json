@@ -1,7 +1,7 @@
 {
   "name": "wk",
   "displayName": "Doer Work Kit",
-  "version": "7.8.0",
+  "version": "7.8.1",
   "description": "Four skills for daily dev work: /wk:doer executes a pre-defined ticket from acceptance criteria to implementation-ready code in 5 stages; /wk:bugfix triages a Jira bug to a fix or a mini-spike; /wk:replay forces a captured network response or an internal flag into the app's own source to reproduce a bug scenario on device; /wk:protologs injects and cleans temporary runtime debug logs. Plus three one-off config commands: /wk:setup (guided), /wk:locale, /wk:jira.",
   "author": {
     "name": "Carlos Cornejo"

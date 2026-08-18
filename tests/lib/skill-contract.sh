@@ -64,9 +64,48 @@ check_step5 "completeness rule (every obligation maps to exactly one disposition
 check_step5 "partition table present" \
   'Copy in ES / PT / EN'
 
+# --- Step 5: chat render contract for ACs (bold label, one clause per line,
+# three-U+00A0 indent, no blockquote/code-block, persisted form stays plain) ---
+check_step5 "chat render contract: bold label always, even on cosmetic bullets" \
+  'the `AC-N` label is always bold, even on a trivial cosmetic bullet'
+check_step5 "chat render contract: one clause per line" \
+  'each clause sits on its own line'
+check_step5 "chat render contract: plain ASCII spaces rejected (they collapse)" \
+  'never plain ASCII spaces (they collapse in chat rendering)'
+check_step5 "chat render contract: &nbsp; entity rejected (renders literally)" \
+  'never the `&nbsp;` entity (renders literally instead of as a space)'
+check_step5 "chat render contract: blockquote forbidden" \
+  'Never wrap an AC in a blockquote'
+check_step5 "chat render contract: fenced code block forbidden" \
+  'a fenced code block (kills the bold label)'
+check_step5 "chat render contract: persisted form stays plain, no bold/breaks/NBSP" \
+  'is always the flat, single-line form, no bold markers, no line breaks, no U+00A0'
+
+# The example block must embed the real three-U+00A0 indent, not a
+# stand-in; grep -P is unavailable on macOS's BSD grep, and a plain-space
+# or &nbsp; stand-in would satisfy a naive text match while failing the
+# actual contract, so this is checked with an explicit codepoint
+# assertion in Python instead.
+if python3 - "$AC_MD" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+indent = "\u00a0" * 3
+clauses = [indent + "GIVEN", indent + "WHEN", indent + "THEN"]
+missing = [c for c in clauses if c not in text]
+sys.exit(1 if missing else 0)
+PYEOF
+then
+  pass "chat render contract: three-U+00A0 indent found before GIVEN/WHEN/THEN"
+else
+  fail "chat render contract: three-U+00A0 indent found before GIVEN/WHEN/THEN"
+fi
+
 # --- Step 5.5: must bind to Step 5's rule, not define its own ---
 check_step55 "reviewer prompt reuses Step 5's rule identically (no drift)" \
   'the literal distinctness rule, partition table, and completeness rule from Step 5, identical wording'
+check_step55 "chat render binding covers every presentation/re-presentation path" \
+  'uses the Step 5 chat render contract'
 
 # --- The old numeric range must be fully gone from the file ---
 if grep -qF '(3-7)' "$AC_MD"; then

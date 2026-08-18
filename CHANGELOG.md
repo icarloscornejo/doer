@@ -2,6 +2,13 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.8.1
+
+### Changed
+
+- **`wk:doer` Stage 1 now renders each AC in chat with a fixed, legible layout instead of a run-on paragraph.** `01-ac.md` previously only said "one Given/When/Then per candidate" with no render contract, so the label, GIVEN, WHEN, and THEN routinely came out as a single wrapped block, separated by commas, exactly at the moment the dev has to read closely to approve or request edits. Step 5 now specifies a chat render contract: the `AC-N` label is always bold, even on the trivial-cosmetic escape hatch; each clause sits on its own line, indented with exactly three U+00A0 (non-breaking space) characters. Plain ASCII spaces were rejected (they collapse in chat rendering), as was the `&nbsp;` HTML entity (renders literally instead of producing a space), a blockquote (renders in italics in at least one chat client), and a fenced code block (kills the bold label), all confirmed against a real chat client through live trial and error before landing on the U+00A0 approach. This is a chat presentation contract only: the persisted `metadata.ac.in_scope` strings that downstream gates read (`02-plan.md`, `03-build.md`, `04-verify.md`, the `05-wrapup.md` PR-writer projection) stay the existing flat, single-line form, no bold markers, no line breaks, no U+00A0. Step 5.5 now states explicitly that every presentation and re-presentation path in that step (the normal post-self-review Present, the final presentation after the edit cap, the raw fallback on self-review failure, and a resumed Stage 1 re-entering via `_resume.md`) uses the same Step 5 renderer, so none of those paths can drift into its own layout.
+- `tests/lib/skill-contract.sh` and `tests/skills.sh` gain coverage for the new render contract, following the same "a contract nobody tests is a contract nobody notices going dead" lesson `7.7.0` applied to hooks. The three-U+00A0 indent is checked with a Python codepoint assertion, not `grep -P` (unavailable on macOS's BSD grep) and not a plain text match (which a plain-space or `&nbsp;` stand-in would pass while failing the actual contract). Three new mutation fixtures assert the checker rejects a dropped bold-label rule, clauses collapsed back onto one line, and the U+00A0 indent silently swapped for ASCII spaces.
+
 ## 7.8.0
 
 ### Changed
