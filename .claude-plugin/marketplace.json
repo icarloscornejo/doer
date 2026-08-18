@@ -7,7 +7,7 @@
     {
       "name": "wk",
       "source": "./",
-      "description": "Doer Work Kit: ticket execution (doer), bug triage (bugfix), runtime debug logs (protologs)."
+      "description": "Doer Work Kit: ticket execution (doer), bug triage (bugfix), bug-scenario replay (replay), runtime debug logs (protologs)."
     }
   ]
 }

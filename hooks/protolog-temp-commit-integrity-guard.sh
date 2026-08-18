@@ -17,6 +17,19 @@
 # Scoped to wk sessions only: inert unless a live session marker
 # (./.doer/wk-session-<pid>.json) exists for the current process, see
 # git-commit-no-verify-guard.sh for the full rationale.
+#
+# 7.7.0 fix: this guard was fail-open on its only real invocation shape,
+# `git add -A && git commit --no-verify -m "[TEMP] PROTOLOG ..."`
+# (skills/protologs/SKILL.md Step 4.6). As a PreToolUse hook it runs BEFORE
+# that command executes, so at hook time `git add -A` has not happened yet;
+# reading only `git diff --cached` therefore saw an empty (HEAD-equal) index
+# and iterated zero files every time, silently allowing anything through.
+# Verified empirically in a scratch repo: a deliberate Check A violation was
+# permitted under the real "git add -A && git commit" shape and only denied
+# when the file was staged by hand first, which is not how the skill invokes
+# it. Reading the union of the index, the working tree diff against HEAD,
+# and untracked files closes this regardless of whether the caller stages
+# before or as part of the same compound command.
 set -euo pipefail
 
 [ -f ".doer/wk-session-${PPID}.json" ] || exit 0
@@ -31,6 +44,8 @@ esac
 
 fail=""
 
+files="$( { git diff --cached --name-only 2>/dev/null; git diff HEAD --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u)"
+
 while IFS= read -r file; do
   [ -z "$file" ] && continue
   case "$file" in
@@ -39,9 +54,18 @@ while IFS= read -r file; do
   esac
   [ -f "$file" ] || continue
 
+  # Diff against HEAD (not --cached alone): correct whether the file is
+  # staged, unstaged, or a mix of both at hook time.
+  filediff="$(git diff HEAD -- "$file" 2>/dev/null || true)"
+  if [ -z "$filediff" ]; then
+    # New untracked file: there is no HEAD blob to diff against. Every line
+    # in it counts as an addition for Check A purposes.
+    filediff="$(awk '{print "+"$0}' "$file" 2>/dev/null || true)"
+  fi
+
   # Check A (non-PROTOLOG additions): any added line that is not a PROTOLOG
   # line means the logger-agent changed real code (forbidden refactor).
-  checkA="$(git diff --cached -- "$file" | grep '^+' | grep -v '^+++' | grep -v 'PROTOLOG - ' || true)"
+  checkA="$(printf '%s\n' "$filediff" | grep '^+' | grep -v '^+++' | grep -v 'PROTOLOG - ' || true)"
   if [ -n "$checkA" ]; then
     fail="${fail}
 [Check A] ${file}: non-PROTOLOG lines added (forbidden refactor):
@@ -52,14 +76,14 @@ ${checkA}"
   # PROTOLOG line that is not a bare println/print/etc call or a bare
   # ".also { println(...) }" continuation means the injection glued a log
   # onto real code; deleting it by text match would delete the logic too.
-  checkB="$(git diff --cached -- "$file" | grep '^+' | grep -v '^+++' | grep 'PROTOLOG - ' \
+  checkB="$(printf '%s\n' "$filediff" | grep '^+' | grep -v '^+++' | grep 'PROTOLOG - ' \
     | grep -vE '^\+[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)' || true)"
   if [ -n "$checkB" ]; then
     fail="${fail}
 [Check B] ${file}: PROTOLOG mixed with business logic on one line:
 ${checkB}"
   fi
-done <<< "$(git diff --cached --name-only)"
+done <<< "$files"
 
 if [ -n "$fail" ]; then
   reason="wk: protolog integrity check failed before [TEMP] commit (skills/protologs/SKILL.md Step 4.5).${fail}

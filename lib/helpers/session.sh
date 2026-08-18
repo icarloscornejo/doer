@@ -6,7 +6,8 @@
 # .git/info/exclude, never committed).
 #
 # Every PreToolUse guard shipped by this plugin (git-commit-no-verify-guard.sh,
-# protolog-temp-commit-integrity-guard.sh, protolog-revert-conflict-guard.sh)
+# protolog-temp-commit-integrity-guard.sh, protolog-revert-conflict-guard.sh,
+# replay-temp-commit-integrity-guard.sh, replay-revert-conflict-guard.sh)
 # checks for a live marker before doing anything else, so a normal Claude Code
 # session with the plugin installed but no wk skill running is never affected.
 # $PPID is the long-lived claude process for the session (same pid the hook

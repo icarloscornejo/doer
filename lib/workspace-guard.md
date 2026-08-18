@@ -2,7 +2,7 @@
 
 Idempotent check that prevents `.doer/` (including `.doer/config.json`, the per-project Jira config) from ever being committed in this clone, plus a lightweight lock against two sessions racing on the same ticket. A dead session's lock (recorded process gone, same host) is stolen immediately; a live one blocks for up to 30 minutes. MUST run inline (actual Bash execution, not a reference) at every ticket-scoped entry point: intake (after creating the branch), resume, `cleanup-history`. `/wk:setup` and `/wk:jira <url>` also run steps 1-3 (the exclude rule) before writing `config.json`; they skip step 4, the per-ticket lock, since they are not ticket-scoped.
 
-Step 4 also writes the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" start doer` or `start bugfix`, per the invoking skill). This plugin's PreToolUse guards (`git-commit-no-verify-guard.sh` and the protolog guards) are inert without a live marker, so a normal Claude Code session with the plugin installed but no wk skill active is never affected by them.
+Step 4 also writes the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" start doer` or `start bugfix`, per the invoking skill). This plugin's PreToolUse guards (`git-commit-no-verify-guard.sh`, the protolog guards, and the replay guards) are inert without a live marker, so a normal Claude Code session with the plugin installed but no wk skill active is never affected by them.
 
 ```bash
 TICKET_DIR=".doer/tickets/<TICKET-ID>"

@@ -6,7 +6,7 @@ Single source of truth for on-disk state. Control state is lean JSON; raw text a
 
 ```
 ${CLAUDE_PLUGIN_ROOT}/                 # plugin install (cross-project)
-├── skills/{doer,bugfix,protologs}/
+├── skills/{doer,bugfix,protologs,replay}/
 ├── lib/                               # protocols + helpers
 └── lessons/{slug}.md                  # GLOBAL lessons pool, cross-project
 

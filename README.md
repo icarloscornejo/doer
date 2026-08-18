@@ -1,14 +1,15 @@
 # Doer Work Kit (`wk`)
 
-**Three skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.6.0.
+**Four skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.7.0.
 
 | Slash command | Purpose |
 |---|---|
 | `/wk:doer <TICKET-ID>` | Execute a pre-defined ticket (feature, refactor, planned bug) from acceptance criteria to implementation-ready code on a feature branch. 5 stages, stops before PR and deploy. |
 | `/wk:bugfix <jira-key-or-url>` | Triage a bug from a Jira ticket: pull it, digest any attached evidence, investigate in plan mode, reach a verdict. Real app bug → fix + on-device verification. Not the app's fault → mini-spike ready for Jira. |
+| `/wk:replay` | Force a captured network response or an internal flag/kill switch into the app's own source, at the real seam, so a bug scenario reproduces on device in any environment; `/wk:replay cleanup` removes every trace. Standalone, also used by `/wk:bugfix` before `/wk:protologs`. |
 | `/wk:protologs` | Inject temporary `PROTOLOG` debug logs into the vertical slice of the current diff to observe runtime behavior on device; `/wk:protologs cleanup` removes every trace. Standalone, also used by the other two. |
 
-Rule of thumb: planned work goes to `doer`, reported bugs go to `bugfix`, and `protologs` is the shared verification muscle. `setup` / `locale` / `jira` (below) are one-off configuration, not daily-work skills.
+Rule of thumb: planned work goes to `doer`, reported bugs go to `bugfix`, `replay` reproduces a scenario the dev's own environment can't produce on its own, and `protologs` is the shared verification muscle. `setup` / `locale` / `jira` (below) are one-off configuration, not daily-work skills.
 
 ## Install
 
@@ -74,6 +75,10 @@ Designed to run in **opusplan**: the mechanical stages run cheap, the investigat
 
 Control state lives in `./.doer/tickets/<KEY>/` (never reaches git); heavy artifacts (network captures, screenshots, the spike) in `~/Downloads/<KEY>/` for easy manual inspection.
 
+## `/wk:replay`
+
+Emulates a bug scenario at full fidelity directly in the app's own source, so it reproduces on a device regardless of the actual backend content, feature flags, or A/B bucket. Not a proxy, not an interceptor, not a mock server: the forced data flows through the app's own parser and mappers, so the injection point is the deserialization seam (the app's own call site plus its own configured Gson/Moshi/kotlinx instance), never the transport layer. Two techniques, combinable: a captured Charles/HAR response forced at that seam, or an internal flag/kill switch forced at its read site. Runs only after the real fix is already committed, so its `[TEMP] REPLAY` commit's diff contains only the forced scaffolding. Exactly two log lines per forced site (`PROTOLOG_RESPONSE - `, entry and applied), never protologs' full density. `/wk:bugfix` Stage 6 offers it before `/wk:protologs`, but it works standalone in any repo with no dependency on `bugfix.json`. `cleanup` reverts its own commits (never protologs'), verified by a restore-equality check so a text-based fallback can catch the deletions the injection makes, not just additions.
+
 ## `/wk:protologs`
 
 Instruments a targeted diagnostic slice of your current diff (entry point → boundary → observable result, capped at 3 hops upward, cut at the first external boundary downward), with a flat density (function entry/exit, branches taken, catches, plus collections/nullables/suspend points/emits only when the value sits on the verified data path), using only the language's basic stdout with the tag `PROTOLOG - `. Hops cut by the hop budget are reported, not silently dropped, and you can ask for an extra round on any of them. Backs up the pre-inject state to /tmp, compiles what it touched, and prints the filter command (`adb logcat | grep "PROTOLOG - "`). `cleanup` deletes every tagged line, restores files it touched outside your diff, and verifies zero trace remains. Never commits or pushes.
@@ -82,7 +87,7 @@ Instruments a targeted diagnostic slice of your current diff (entry point → bo
 
 ```
 ${CLAUDE_PLUGIN_ROOT}/               # plugin install
-├── skills/{doer,bugfix,protologs}/  # work skills
+├── skills/{doer,bugfix,replay,protologs}/  # work skills
 ├── skills/{setup,locale,jira}/      # config skills
 ├── lib/                             # shared protocols + helpers (see AGENTS.md)
 └── lessons/{slug}.md                # GLOBAL lessons pool, cross-project
@@ -104,7 +109,7 @@ Full schemas live in [`lib/state.md`](./lib/state.md).
 - **One branch, one ticket.** All commits use `--no-verify`; you run the real checks before the PR. The kit never pushes.
 - **Orchestrator is the sole voice.** Sub-agents write artifacts and return JSON; only the orchestrator talks to you.
 - **No hidden state.** Everything lives on disk; closing the session is pausing.
-- **No internal vocabulary in team artifacts.** `AC-N` labels, `PROTOLOG`/`DOER` tags, and stage names never reach committed code, commit messages, or PR text; every generated artifact is grep-validated before it is shown.
+- **No internal vocabulary in team artifacts.** `AC-N` labels, `PROTOLOG`/`PROTOLOG_RESPONSE`/`REPLAY`/`DOER` tags, and stage names never reach committed code, commit messages, or PR text; every generated artifact is grep-validated before it is shown.
 - **Lessons are global.** Each wrapup can save a lesson; every future ticket in any repo reads the applicable ones before planning.
 
 ### Upgrading from 6.x

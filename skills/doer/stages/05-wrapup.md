@@ -51,7 +51,7 @@ three before presenting (Core Principle 10):
 
 ```bash
 printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" \
-  | grep -nE '\bAC-[0-9]+\b|\bPROTOLOG\b|\bDOER\b|\bdoer\('
+  | grep -nE '\bAC-[0-9]+\b|PROTOLOG|\bREPLAY\b|\bDOER\b|\bdoer\('
 ```
 
 A match means an internal label leaked; rewrite that candidate and re-validate, never
@@ -63,13 +63,17 @@ edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally val
 the grep on any edited text before accepting it. Persist ONLY the chosen message to
 `metadata.commit_message` via a single `metadata.sh write`.
 
-**Offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). On yes: skip if only 1 commit; otherwise back up (`git update-ref refs/doer-backup/<TICKET-ID>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
+**Squash gate, then offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). If this ticket ever ran `/wk:replay` or `/wk:protologs` standalone against this branch, gate on content before offering, since a legitimate `[TEMP]`/revert pair can remain in history even after a clean cleanup, so grepping commit subjects proves nothing:
+```bash
+git diff <base>..HEAD | grep -nE 'REPLAY START|REPLAY END|REPLAY-ORIG:|PROTOLOG_RESPONSE - |PROTOLOG - '
+```
+Any match: STOP, do not offer the squash, tell the dev cleanup did not fully net out and point at the offending file. Only on a clean gate (or when neither skill ever ran on this branch), proceed: on yes, skip if only 1 commit; otherwise back up (`git update-ref refs/doer-backup/<TICKET-ID>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
 
 ## 6. PR description
 
 Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`.
 
-Dispatch a PR-description writer Agent (read budget 0; inline `metadata.ac`, `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N`, no `PROTOLOG`/`DOER`, no stage names, no literal `doer`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it (e.g. a "How to test" snippet), renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `metadata.pr_description` before the dev's reply is prohibited. On requested changes, rewrite, re-validate with the same grep, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks persisting: on ok, `metadata.sh write` the approved text to `metadata.pr_description`; on `skip`, persist the literal `"skipped"` the same way.
+Dispatch a PR-description writer Agent (read budget 0; inline `metadata.ac`, `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N`, no `PROTOLOG`/`REPLAY`/`DOER`, no stage names, no literal `doer`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it (e.g. a "How to test" snippet), renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `metadata.pr_description` before the dev's reply is prohibited. On requested changes, rewrite, re-validate with the same grep, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks persisting: on ok, `metadata.sh write` the approved text to `metadata.pr_description`; on `skip`, persist the literal `"skipped"` the same way.
 
 ## 7. History cleanup
 
