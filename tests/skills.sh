@@ -138,6 +138,36 @@ mut_reintroduce_numeric_range() {
     '**ACs** (3-7): one Given/When/Then per candidate'
 }
 
+mut_table_shown_unconditionally() {
+  replace_once "$1/$AC_REL" \
+    'only when `intake.raw_acs != "derive"` (the ticket brought its own ACs), shown right after Self-review notes' \
+    'always, shown right after Self-review notes'
+}
+
+mut_drop_fidelity_from_source_map() {
+  replace_once "$1/$AC_REL" \
+    '"fidelity": {"verdict": "match | partial | diverges", "note": "<=1 sentence"} | null}`' \
+    '}`'
+}
+
+mut_drop_fidelity_reset_on_merge() {
+  replace_once "$1/$AC_REL" \
+    "resets that row's \`fidelity\` to \`{\"verdict\": \"unreviewed\", \"note\": \"<what changed>\"}\`; renumbering \`AC-N\` alone (with no text change) does not reset it." \
+    "leaves that row's \`fidelity\` untouched."
+}
+
+mut_attention_rows_no_question() {
+  replace_once "$1/$AC_REL" \
+    "When any row needs attention (and only then, and only under the \`raw_acs != \"derive\"\` gate above), follow the table with \`AskUserQuestion\`: \`Re-run self-review on the current draft (Recommended)\` / \`I'll edit by hand\` / \`Approve as is\`." \
+    "Attention rows are narrated only; the dev proceeds with the normal approval options below."
+}
+
+mut_edit_cap_auto_advances() {
+  replace_once "$1/$AC_REL" \
+    'Stage 1 never auto-advances past the cap while a row needs attention.' \
+    'Stage 1 proceeds regardless.'
+}
+
 mut_drop_bold_label_rule() {
   replace_once "$1/$AC_REL" \
     'the `AC-N` label is always bold, even on a trivial cosmetic bullet (`- **AC-1:** <plain cosmetic criterion>`).' \
@@ -146,27 +176,25 @@ mut_drop_bold_label_rule() {
 
 mut_collapse_clauses_one_line() {
   replace_once "$1/$AC_REL" \
-    'each clause sits on its own line, indented with exactly three U+00A0 (non-breaking space) characters,' \
+    'each clause is its own markdown sub-bullet (plain ASCII hyphen-space) under the label,' \
     'all clauses stay on one line, joined by commas,'
 }
 
-# Replaces the example's real three-U+00A0 indent with plain ASCII spaces,
-# the exact failure mode grep -F text-matching alone would miss (the rule
-# sentence stays intact; only the codepoints the reader would actually see
-# change). Uses python directly instead of replace_once because the old/new
-# strings need literal U+00A0 characters, awkward to pass through bash args.
+# Reintroduces a U+00A0 indent into the example block, the exact regression
+# 7.8.2 fixed (the model kept emitting a literal &nbsp; entity instead of the
+# raw byte, so 7.8.2 replaced the invisible-character indent with plain
+# ASCII sub-bullets). Uses python directly instead of replace_once because
+# the replacement needs a literal U+00A0 character, awkward to pass through
+# bash args.
 mut_replace_nbsp_with_ascii_space() {
   python3 - "$1/$AC_REL" <<'PY'
 import sys
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
-nbsp3 = " " * 3
-if text.count(nbsp3 + "GIVEN") != 1:
-    sys.stderr.write("mut_replace_nbsp_with_ascii_space: three-U+00A0 indent before GIVEN not found exactly once\n")
+if text.count("- GIVEN") != 1:
+    sys.stderr.write("mut_replace_nbsp_with_ascii_space: '- GIVEN' not found exactly once\n")
     sys.exit(1)
-text = text.replace(nbsp3 + "GIVEN", "   GIVEN", 1)
-text = text.replace(nbsp3 + "WHEN", "   WHEN", 1)
-text = text.replace(nbsp3 + "THEN", "   THEN", 1)
+text = text.replace("- GIVEN", " - GIVEN", 1)
 open(path, "w", encoding="utf-8").write(text)
 PY
 }
@@ -197,6 +225,11 @@ mutate_and_expect_fail "mutation: 3-7 numeric AC range reintroduced" mut_reintro
 mutate_and_expect_fail "mutation: bold AC label requirement dropped" mut_drop_bold_label_rule
 mutate_and_expect_fail "mutation: GIVEN/WHEN/THEN collapsed to one line" mut_collapse_clauses_one_line
 mutate_and_expect_fail "mutation: three-U+00A0 indent replaced with plain ASCII spaces" mut_replace_nbsp_with_ascii_space
+mutate_and_expect_fail "mutation: correspondence table shown unconditionally (raw_acs gate dropped)" mut_table_shown_unconditionally
+mutate_and_expect_fail "mutation: fidelity dropped from source_map row schema" mut_drop_fidelity_from_source_map
+mutate_and_expect_fail "mutation: fidelity no longer resets on a later text change" mut_drop_fidelity_reset_on_merge
+mutate_and_expect_fail "mutation: attention rows no longer trigger the how-to-proceed question" mut_attention_rows_no_question
+mutate_and_expect_fail "mutation: edit cap auto-advances with attention pending" mut_edit_cap_auto_advances
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

@@ -2,6 +2,24 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.9.0
+
+### Added
+
+- **`wk:doer` Stage 1 now shows a ticket AC correspondence table whenever the ticket brought its own ACs.** The dev previously had to ask by hand which generated `AC-N` matched which original ticket AC. `01-ac.md` Step 5 now records `origins` (the exact ticket bullet and section it came from) on every parsed obligation, and Step 5.5's reviewer returns a per-obligation `fidelity` verdict (`match | partial | diverges`) measuring how faithfully the landed AC restates it, grouping per the distinctness rule never counted against fidelity. Every Present in Step 5.5 (normal, post-edit-cap, self-review-failure fallback, and a resumed Stage 1) renders a `Ticket AC correspondence` table when `intake.raw_acs != "derive"`, one row per original bullet, showing where it landed (`AC-N`/`OOS-N`/`Q-N`) and its fidelity. Any row needing attention (`partial`, `diverges`, `unreviewed`, or a ticket AC that landed outside `in_scope`) triggers a dev-facing choice: re-run self-review on the current draft, edit by hand, or approve as is, instead of silently letting a mismatch through.
+- A `fidelity` verdict is tied to the exact AC text the reviewer saw: any later merge, split, structural fix, or dev edit resets it to `unreviewed` rather than carrying a stale verdict forward. A `source_map` row can also gain a new `O-N` after Step 5 (an obligation the self-review or a dev edit surfaces from Scope/Description), tracked via `added_by` so the table never misattributes a dev's own addition as a ticket quote.
+- `tests/lib/skill-contract.sh` and `tests/skills.sh` gain coverage for `origins`, `fidelity`, the correspondence table's `raw_acs != "derive"` gate, and the edit-cap interaction (never auto-advances with attention pending).
+
+### Fixed
+
+- **`tests/lib/skill-contract.sh` had gone stale against 7.8.2's own render contract change.** 7.8.2 replaced the U+00A0-indent chat render contract with ASCII markdown sub-bullets, but the checker (and two `tests/skills.sh` mutators) still asserted the old U+00A0 wording, five checks failing outright. Both are now rewritten against the current contract text.
+
+## 7.8.2
+
+### Changed
+
+- **`wk:doer` Stage 1's AC chat render switched from a U+00A0 (non-breaking space) indent to plain ASCII markdown sub-bullets.** The U+00A0 approach from 7.8.1 was unreliable in practice: the model would emit the literal `&nbsp;` entity instead of the raw byte, since both collapse to the same visual concept during generation, silently breaking the render contract. Each GIVEN/WHEN/THEN clause is now its own markdown sub-bullet (plain ASCII hyphen-space), which needs no invisible character and avoids the ASCII-space collapse chat clients apply to a plain-space indent.
+
 ## 7.8.1
 
 ### Changed

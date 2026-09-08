@@ -64,41 +64,41 @@ check_step5 "completeness rule (every obligation maps to exactly one disposition
 check_step5 "partition table present" \
   'Copy in ES / PT / EN'
 
-# --- Step 5: chat render contract for ACs (bold label, one clause per line,
-# three-U+00A0 indent, no blockquote/code-block, persisted form stays plain) ---
+# --- Step 5: chat render contract for ACs (bold label, one clause per
+# markdown sub-bullet, no whitespace-character indent, no blockquote/code
+# block, persisted form stays plain) ---
 check_step5 "chat render contract: bold label always, even on cosmetic bullets" \
   'the `AC-N` label is always bold, even on a trivial cosmetic bullet'
-check_step5 "chat render contract: one clause per line" \
-  'each clause sits on its own line'
-check_step5 "chat render contract: plain ASCII spaces rejected (they collapse)" \
-  'never plain ASCII spaces (they collapse in chat rendering)'
-check_step5 "chat render contract: &nbsp; entity rejected (renders literally)" \
-  'never the `&nbsp;` entity (renders literally instead of as a space)'
+check_step5 "chat render contract: one clause per markdown sub-bullet" \
+  'each clause is its own markdown sub-bullet'
+check_step5 "chat render contract: no whitespace-character indent (U+00A0 or otherwise)" \
+  'never an indent built from a whitespace character (U+00A0 or otherwise)'
 check_step5 "chat render contract: blockquote forbidden" \
   'Never wrap an AC in a blockquote'
 check_step5 "chat render contract: fenced code block forbidden" \
   'a fenced code block (kills the bold label)'
-check_step5 "chat render contract: persisted form stays plain, no bold/breaks/NBSP" \
-  'is always the flat, single-line form, no bold markers, no line breaks, no U+00A0'
+check_step5 "chat render contract: persisted form stays plain, no bold/breaks/sub-bullets" \
+  'is always the flat, single-line form, no bold markers, no line breaks, no sub-bullets'
 
-# The example block must embed the real three-U+00A0 indent, not a
-# stand-in; grep -P is unavailable on macOS's BSD grep, and a plain-space
-# or &nbsp; stand-in would satisfy a naive text match while failing the
-# actual contract, so this is checked with an explicit codepoint
-# assertion in Python instead.
+# The example block must show real ASCII "- GIVEN/WHEN/THEN" sub-bullets,
+# and the file must contain zero U+00A0 anywhere (7.8.2 replaced the
+# invisible-character indent with plain ASCII sub-bullets specifically
+# because the model kept emitting a literal &nbsp; entity instead of the
+# raw byte). grep -P is unavailable on macOS's BSD grep, so this is
+# checked with an explicit codepoint assertion in Python instead.
 if python3 - "$AC_MD" <<'PYEOF'
 import sys
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
-indent = "\u00a0" * 3
-clauses = [indent + "GIVEN", indent + "WHEN", indent + "THEN"]
+clauses = ["- GIVEN", "- WHEN", "- THEN"]
 missing = [c for c in clauses if c not in text]
-sys.exit(1 if missing else 0)
+has_nbsp = "\u00a0" in text
+sys.exit(1 if (missing or has_nbsp) else 0)
 PYEOF
 then
-  pass "chat render contract: three-U+00A0 indent found before GIVEN/WHEN/THEN"
+  pass "chat render contract: ASCII '- GIVEN/WHEN/THEN' sub-bullets found, zero U+00A0 in file"
 else
-  fail "chat render contract: three-U+00A0 indent found before GIVEN/WHEN/THEN"
+  fail "chat render contract: ASCII '- GIVEN/WHEN/THEN' sub-bullets found, zero U+00A0 in file"
 fi
 
 # --- Step 5.5: must bind to Step 5's rule, not define its own ---
@@ -106,6 +106,28 @@ check_step55 "reviewer prompt reuses Step 5's rule identically (no drift)" \
   'the literal distinctness rule, partition table, and completeness rule from Step 5, identical wording'
 check_step55 "chat render binding covers every presentation/re-presentation path" \
   'uses the Step 5 chat render contract'
+
+# --- Step 5: origins recorded on every O-N (7.9.0 ticket AC correspondence) ---
+check_step5 "origins recorded per O-N, one entry per original bullet" \
+  'Every `O-N` also records `origins`: one entry per original bullet that fed it'
+
+# --- Step 5.5: ticket AC correspondence table (7.9.0) ---
+check_step55 "correspondence table gated on raw_acs != derive" \
+  'only when `intake.raw_acs != "derive"`'
+check_step55 "everything in the correspondence block is gated on the same condition" \
+  'Everything in this "Ticket AC correspondence table" block above is gated on'
+check_step55 "legacy rows without origins still render" \
+  'persisted text, not a ticket quote'
+check_step55 "fidelity verdict domain (match | partial | diverges)" \
+  '"verdict": "match | partial | diverges"'
+check_step55 "fidelity currency: text changes reset the verdict to unreviewed" \
+  "resets that row's \`fidelity\` to"
+check_step55 "grouping per the distinctness rule never lowers fidelity" \
+  'grouping per the distinctness rule above never lowers fidelity'
+check_step55 "attention rows trigger the how-to-proceed question" \
+  'Re-run self-review on the current draft'
+check_step55 "edit cap never auto-advances with attention pending" \
+  'Stage 1 never auto-advances past the cap while a row needs attention'
 
 # --- The old numeric range must be fully gone from the file ---
 if grep -qF '(3-7)' "$AC_MD"; then
@@ -148,6 +170,20 @@ for field in in_scope candidates out_of_scope open_questions_resolved merged sou
     fail "lib/state.md ac schema has '$field'"
   fi
 done
+
+# source_map row fields added in 7.9.0
+for field in origins added_by fidelity; do
+  if printf '%s\n' "$AC_BLOCK" | grep -qF "\"$field\""; then
+    pass "01-ac.md source_map row has '$field'"
+  else
+    fail "01-ac.md source_map row has '$field'"
+  fi
+done
+if printf '%s\n' "$AC_BLOCK" | grep -qF '"source": "description | raw_acs"'; then
+  fail "old source_map 'source' field is gone (superseded by origins[].section)"
+else
+  pass "old source_map 'source' field is gone (superseded by origins[].section)"
+fi
 
 # merge_into_candidate_id must live in the C- domain, never the AC- domain.
 if printf '%s\n' "$AC_BLOCK" | grep -qF '"merge_into_candidate_id": "C-1"'; then
