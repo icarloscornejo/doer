@@ -4,7 +4,11 @@ Auxiliary commands beyond `/doer <TICKET-ID>`. `status` and `list` are read-only
 
 ## `/doer status <TICKET-ID>`
 
-Render from `metadata.json` (works for doer tickets and `bugfix.json` bug tickets alike):
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" status <TICKET-ID>
+```
+
+Renders from `metadata.json` or `bugfix.json`, whichever exists for this ticket (auto-detected):
 
 ```
 Ticket: <TICKET-ID>, <title>
@@ -14,7 +18,7 @@ Current Stage: <N> (<name>)
 Progress:
   [x] 1 ac
   [x] 2 plan
-  [~] 3 build      (iteration 2/3, 1 BLOCKER open)
+  [~] 3 build
   [ ] 4 verify
   [ ] 5 wrapup
 
@@ -22,6 +26,10 @@ Blockers: <open BLOCKERs from the last code_review entry, or "none">
 ```
 
 ## `/doer list`
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" list
+```
 
 One line per directory under `./.doer/tickets/`, covering both ticket kinds (`metadata.json` → doer, `bugfix.json` → bugfix):
 
@@ -38,6 +46,6 @@ Locale and Jira config are no longer doer subcommands: use `/wk:locale <code>`, 
 Standalone version of the wrapup's history cleanup (step 7 in `05-wrapup.md`). Use it when the cleanup was declined at wrapup, or to scrub `.doer/` from imported pre-existing commits mid-flight.
 
 1. Read `metadata.json`; resolve branch and base. Verify the branch is checked out (ask before switching).
-2. Run the Workspace Guard inline (`lib/workspace-guard.md`).
-3. Run the same detection + backup-ref + `git filter-branch` sequence as wrapup step 7, with explicit dev confirmation before rewriting.
+2. Run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<TICKET-ID>" doer` (contract: `lib/workspace-guard.md`).
+3. Run the same detection + rewrite as wrapup step 7 (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" doer-history <base>`, then `git-ops.sh scrub-history <base> <TICKET-ID> doer` on confirmation), with explicit dev confirmation before rewriting.
 4. Safety: always narrate the backup ref (`git reset --hard <ref>` rolls back). If the branch has an upstream with commits others may have based work on (`git rev-list --count @{u}..HEAD` / `HEAD..@{u}`), warn before rewriting.

@@ -12,7 +12,7 @@ description: >-
   is committed, and before /wk:protologs when both are used together (e.g.
   /wk:bugfix Stage 6, which invokes this skill first). Standalone in any repo, no
   dependency on bugfix.json.
-version: 7.7.0
+version: 7.10.0
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -146,82 +146,67 @@ ticket. Otherwise ask (plain chat, open-ended) for the `.har`, or a `.chls` to
 convert:
 
 ```bash
-command -v makehar >/dev/null && makehar "<in.chls>" \
-  || [ -x "/Applications/Charles.app/Contents/MacOS/Charles" ] \
-     && /Applications/Charles.app/Contents/MacOS/Charles convert "<in.chls>" "<out.har>"
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/har.py" convert "<in.chls>" "<out.har>"
 ```
 
 ### Step 3 - Pick the endpoints
 
-Parse the HAR with `python3`, listing method/status/size/url per entry. **Never
-read a whole HAR into context**; HAR files are huge and most of it is irrelevant.
-
-```python
-import json, sys
-har = json.load(open(sys.argv[1]))
-for i, e in enumerate(har["log"]["entries"]):
-    req, res = e["request"], e["response"]
-    size = res["content"].get("size", -1)
-    print(f"{i}: {req['method']} {res['status']} {size}B {req['url']}")
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/har.py" list "<har>"
 ```
 
-Present the numbered list in chat (plain chat: the candidate count is unbounded,
-so it does not fit `AskUserQuestion`'s 4-option cap) and ask which entries drive
-the scenario. For the chosen ones, print only a short head of the body plus its
-key fields, never the full body at this stage; the full body is handled by script
-in Step 4, never retyped through the model.
+Lists method/status/size/url per entry. **Never read a whole HAR into context**;
+HAR files are huge and most of it is irrelevant. Present the numbered list in chat
+(plain chat: the candidate count is unbounded, so it does not fit
+`AskUserQuestion`'s 4-option cap) and ask which entries drive the scenario.
 
-Validate each chosen body actually parses as JSON before continuing. HAR bodies
-are often base64-encoded (`content.encoding == "base64"`) and Charles can truncate
-large ones (`content.size != len(body)`); a truncated body throws at the seam and
+For the chosen ones:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/har.py" head "<har>" "<idx>"
+```
+
+Prints only a short head of the body plus its key fields, never the full body at
+this stage; the full body is handled by script in Step 4, never retyped through
+the model. Exit 1 means the body does not parse as JSON, or the HAR's own
+reported `content.size` disagrees with the decoded body length (Charles can
+truncate large captures); either way, a truncated body throws at the seam and
 looks exactly like an app bug, so catching it here saves a confusing round trip
 later.
 
-### Step 4 - Splice the payload by script, not by the model
+### Step 4 - Scan for secrets, by script, before anything else
 
-A `python3` step, run directly (never through the sub-agent, so the payload never
-enters model context at all):
+A captured HAR body routinely carries session cookies, bearer tokens,
+`Authorization` headers, emails, addresses, or payment fragments. This code is
+about to be written into a source file and committed; even though the commit is
+`[TEMP]` and never merged, it lands in local git history, and a careless `git
+push` publishes it.
 
-1. Extract the exact body bytes for the chosen HAR entry (decoding base64 if
-   needed).
-2. **Scan for secrets and PII before anything else.** A captured HAR body
-   routinely carries session cookies, bearer tokens, `Authorization` headers,
-   emails, addresses, or payment fragments. This code is about to be written into
-   a source file and committed; even though the commit is `[TEMP]` and never
-   merged, it lands in local git history, and a careless `git push` publishes it.
-   Flag candidates (header names `Authorization`/`Set-Cookie`/`Cookie`, JSON keys
-   containing `token`/`session`/`password`/`secret`, email-shaped strings, long
-   high-entropy tokens) and **stop for explicit dev approval** on what to redact
-   before writing anything to disk. If a flagged value is one the scenario
-   actually depends on, say so rather than silently redacting it into a repro
-   that no longer reproduces.
-3. Measure the byte size (`len(body.encode('utf-8'))`; treat this as a
-   conservative estimate, not exact, since the JVM's real limit is 65535 bytes of
-   *modified* UTF-8 where non-BMP characters cost more, hence the 30 KB threshold
-   below rather than chasing exactness).
-4. Substitute every `$` with `${'$'}` (Kotlin target only; irrelevant for other
-   languages).
-5. Emit the literal: under 30 KB, an inline `"""..."""` raw string; 30 KB or over,
-   a chunked `listOf("...", "...").joinToString("")` (never `"a" + "b"`, the
-   Kotlin IR backend constant-folds concatenated literals back into a single
-   oversized constant; never `const val` either, since it is the literal itself,
-   not the `const` modifier, that becomes the oversized constant-pool entry).
-6. Write the emitted literal into the target source file at the location Step 5's
-   agent identifies, as the value of `REPLAY_RAW` inside the block.
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/har.py" scan "<har>" "<idx>"
+```
 
-The model only ever sees: endpoint, size, a content hash, and which seam it lands
-in. This is a token guardrail (retyping 30 KB of JSON is wasteful), a fidelity
-guarantee (a model retyping it can silently corrupt a character and the repro
-fails in a way that looks like a real bug), and a safety guardrail (redaction
-happens before anything touches disk, not after).
+Prints a JSON array of candidates (`{"where": "header|body", "path": "...",
+"kind": "token|cookie|email|secret-key|high-entropy"}`), never a value, only
+where one might be. **Stop for explicit dev approval** on which `path`s to
+redact before anything touches disk. If a flagged value is one the scenario
+actually depends on, say so rather than silently redacting it into a repro that
+no longer reproduces. Hold the approved list of paths (comma-joined) for the
+splice call after Step 5.
+
+The model only ever sees: endpoint, a byte count, a content hash, and which seam
+it lands in, never the body itself. This is a token guardrail (retyping 30 KB of
+JSON is wasteful), a fidelity guarantee (a model retyping it can silently corrupt
+a character and the repro fails in a way that looks like a real bug), and a
+safety guardrail (redaction happens before anything touches disk, not after).
 
 ### Step 5 - Delegate the seam search and injection (Agent tool, general-purpose)
 
 The orchestrator does not search for the seam or write the block inline. Dispatch
 an agent with the prompt below, filling in the `<...>` markers. The agent locates
-the seam, decides the injection point, and returns a plan; Step 4's script (not
-the agent) performs the actual payload splice once the agent has identified where
-`REPLAY_RAW` goes and what surrounds it.
+the seam, decides the injection point, and returns a plan; `har.py splice` (not
+the agent) performs the actual payload splice, right after this step, once the
+agent has identified where `REPLAY_RAW` goes and what surrounds it.
 
 ```
 You are the replay-agent. Your job is to find the exact seam to force a value
@@ -274,7 +259,7 @@ Repeat until every touched file passes, before you compile or return.
 Technique: <network response | flags/kill switches | both, from Step 0>
 Ticket / tag: <KEY or "standalone">
 <For network technique: endpoint(s) chosen in Step 3, method, url, and the exact
-byte size Step 4 computed for each (not the body itself).>
+byte size `har.py head` reported for each (not the body itself).>
 <For flag technique: the flag name(s)/key(s) the dev named, and the branch they
 need to force.>
 
@@ -389,6 +374,32 @@ pin the content side, derive the p13n side from it.
 }
 ```
 
+### Step 5b - Splice the payload by script, not by the model
+
+For network technique only (flag technique has nothing to splice). For each
+entry in `splice_points`:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/har.py" splice "<har>" "<idx>" \
+  --target "<path>" --marker "<marker>" --lang <kotlin|swift|typescript|python|go> \
+  --redact "<comma-joined approved paths from Step 4, or omit>"
+```
+
+`--lang` matches the stack the seam is written in (Kotlin for the default A/A2/B
+seams; see "Non-Kotlin stacks" below for TS/Python/Swift/Go). Replaces the
+marker with a string literal whose parsed value is byte-identical to the
+(redacted) HAR body: an inline literal under 30 KB, or a chunked
+join-expression at or over it (never string concatenation: for Kotlin
+specifically, the IR backend constant-folds concatenated literals back into a
+single oversized constant, and `const val` fares no better, since it is the
+literal itself, not the `const` modifier, that becomes the oversized
+constant-pool entry). Prints `<url>, <bytes> bytes, sha256:<digest>,
+chunks:<N>` on success; the model still never sees the body itself, only this
+summary. Refuses (exit 1, target file untouched) if the marker is not found
+exactly once, if the body is not valid UTF-8, or if a Kotlin body under 30 KB
+contains a literal `"""` (redact the offending value, or force chunking with a
+lower `--max-bytes`).
+
 ### Step 6 - Integrity backstop
 
 The orchestrator independently re-runs the same check, once, no edits, no loop:
@@ -418,8 +429,9 @@ git add -A && git commit --no-verify -m "[TEMP] REPLAY <TAG>: <what is forced> (
 `<TAG>` is the ticket KEY when known, `standalone` otherwise; keep the grep
 anchors (`REPLAY START`, `[TEMP] REPLAY`) KEY-independent so cleanup works either
 way. `<N>` starts at 1 and increments each time inject runs again on this branch
-without an intervening cleanup (same round semantics as `/wk:protologs`; `git log
---oneline --grep '\[TEMP\] REPLAY'` tells you the current count). Never push.
+without an intervening cleanup (same round semantics as `/wk:protologs`;
+`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" temp-rounds REPLAY` tells you
+the current count). Never push.
 
 ### Step 9 - Hand off
 
@@ -455,33 +467,32 @@ Required even on a fresh session, since `$PPID` changes between sessions and
 every guard is gated on a live marker; skipping this leaves the revert-conflict
 guard inert precisely when it matters.
 
-### Step 2 - Enumerate [TEMP] REPLAY commits
+### Step 2+3 - Enumerate and revert [TEMP] REPLAY commits
 
 ```bash
-git log --format='%H %s' HEAD | grep '\[TEMP\] REPLAY'
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" revert-temp REPLAY
 ```
 
-Found: go to Step 3 (revert path). None found: narrate *"No [TEMP] REPLAY commits
-found; falling back to text-match cleanup."* and go to Step 3-fallback.
+Enumerates every `[TEMP] REPLAY` commit and reverts each one, most recent first, through
+an auto-abort wrapper. Output, one line per commit:
 
-### Step 3 - Revert path
+- `NONE`: narrate *"No [TEMP] REPLAY commits found; falling back to text-match cleanup."*
+  and go to Step 3-fallback.
+- `REVERTED <sha>`: nothing further to do for it.
+- `CONFLICT <sha> <files...>`: run Step 3-fallback for exactly those files.
 
-Revert each `[TEMP] REPLAY` commit, most recent first, with the auto-abort
-wrapper:
-
-```bash
-git revert --no-edit <sha> || { git revert --abort 2>/dev/null; echo "CONFLICT: <sha>"; }
-```
+Exit 0: skip to Step 4. Exit 1: handle each `CONFLICT` via Step 3-fallback, then continue
+to Step 4. Exit 2 (`REVERT_HEAD` still set after the script's own abort, should not
+happen): STOP immediately, narrate the exact error.
 
 **ON CONFLICT (mandatory, no exceptions), identical rule to `/wk:protologs`:**
 FORBIDDEN to resolve by hand, run `git revert --continue`/`--quit`, or `git
-commit` while a revert is in progress. The wrapper above has already run `git
-revert --abort`; the only permitted path is confirming the abort took
-(`git rev-parse -q --verify REVERT_HEAD` prints nothing), continuing with the
-remaining reverts, then running Step 3-fallback for that commit's files only. A
-`PreToolUse` hook (`hooks/replay-revert-conflict-guard.sh`) denies
-`--continue`/`--quit`/`git commit` while `REVERT_HEAD` points at a `[TEMP] REPLAY`
-commit, as a backstop.
+commit` while a revert is in progress. `git-ops.sh revert-temp` already confirmed the
+abort took (`git rev-parse -q --verify REVERT_HEAD` printed nothing) and already kept
+reverting the remaining commits; the only manual step left is Step 3-fallback, for the
+files named on the `CONFLICT` line. A `PreToolUse` hook
+(`hooks/replay-revert-conflict-guard.sh`) denies `--continue`/`--quit`/`git commit` while
+`REVERT_HEAD` points at a `[TEMP] REPLAY` commit, as a backstop.
 
 ### Step 3-fallback - restore() (only when no [TEMP] REPLAY commit applies)
 
@@ -518,19 +529,18 @@ Narrate the processed files.
 ### Step 4 - Verify complete cleanup
 
 ```bash
-git rev-parse -q --verify REVERT_HEAD && echo "REVERT IN PROGRESS" || true
-git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' || true
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" revert-in-progress
 ```
 
-Either printing anything: STOP, do not verify, do not report success; narrate the
-in-flight revert, abort it, return to Step 3's ON CONFLICT block.
+Exit 1 (prints something): STOP, do not verify, do not report success; narrate the
+in-flight revert, abort it, return to Step 2+3's ON CONFLICT block.
 
 ```bash
-git grep -n "REPLAY START\|REPLAY END\|REPLAY-ORIG:\|PROTOLOG_RESPONSE - " 2>/dev/null || true
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace REPLAY
 ```
 
-Empty: narrate *"No trace of REPLAY blocks or `PROTOLOG_RESPONSE - ` remains."*
-Non-empty: show which, do not delete automatically, ask the dev to review by hand.
+Exit 0 (empty): narrate *"No trace of REPLAY blocks or `PROTOLOG_RESPONSE - ` remains."*
+Exit 1 (lines printed): show which, do not delete automatically, ask the dev to review by hand.
 
 ### Step 5 - Mandatory compile verification
 
@@ -559,5 +569,5 @@ close.
 - This skill's only commits are its own `[TEMP] REPLAY` commits (inject) and
   their reverts (cleanup). It never commits or pushes business logic, and never
   pushes to a remote.
-- Payload bodies never pass through model context (Step 4); only endpoint
-  metadata, sizes, and hashes do.
+- Payload bodies never pass through model context (Steps 4 and 5b, both
+  `har.py`); only endpoint metadata, sizes, and hashes do.

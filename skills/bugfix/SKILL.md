@@ -11,7 +11,7 @@ description: >-
   a forced response or flag to reproduce) and /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.7.0
+version: 7.10.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -80,34 +80,32 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
 
 1. Parse the ticket **KEY** from the argument (full URL or bare key; regex `[A-Z]+-\d+`).
 2. If `./.doer/tickets/<KEY>/bugfix.json` exists → **resume**: read it, announce `current_stage`, jump to the next incomplete stage. Never redo work flagged `done`.
-3. Otherwise run the **Workspace Guard + lock** inline (`lib/workspace-guard.md`), then create the folders and the initial `bugfix.json` (`status=in_progress`, `current_stage=0`, all stages pending, `artifacts_dir` set):
+3. Otherwise run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<KEY>" bugfix` (contract: `lib/workspace-guard.md`), then create the folders and the initial `bugfix.json` (`status=in_progress`, `current_stage=0`, all stages pending, `artifacts_dir` set):
    ```bash
    mkdir -p "$HOME/Downloads/<KEY>/charles" "$HOME/Downloads/<KEY>/screenshots" ".doer/tickets/<KEY>"
    echo '<full JSON document>' | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" init "<KEY>" --file bugfix.json
    ```
-4. Verify Jira access: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" config`. On missing `base_url` or absent token, run the auto-detect pass (env var NAME candidates only, via `env | grep -iE 'JIRA.*(PAT|TOKEN)'` and project memory, never values); if nothing resolves, stop and point the user at `/wk:setup`.
+4. Verify Jira access: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" config`. On missing `base_url` or absent token, run the auto-detect pass (`jira.sh detect-token-env` for candidate env var NAMEs, plus project memory, never values); if nothing resolves, stop and point the user at `/wk:setup`.
 
 ## Stage 1 - Ingest Jira (informational, no pause)
 
 1. Fetch: `jira.sh fetch <KEY>` → lean JSON (title, status, description, comments, attachments, source_url).
 2. Write **`ticket.md`** in `.doer/tickets/<KEY>/`: summary, type/status/priority, description verbatim, every comment (author · date · body). The ONLY place raw text lives.
-3. Distill into `signals{}`: `repro` (numbered steps), `expected`, `actual`, `env`, `related_tickets` (`[A-Z]+-\d+` mentions), `technical` (endpoint ids, context ids, flag/function names).
-4. Build `attachments[]`: every fetched attachment (kind = `charles` for `.chls`, `screenshot` for images, else `other`) plus every `.chls` filename mentioned in text (`[^name.chls]`) cross-referenced to its attachment URL (`source: "mentioned"`).
+3. Distill into `signals{}`: `repro` (numbered steps), `expected`, `actual`, `env`, `technical` (endpoint ids, context ids, flag/function names) stay judgment calls; `related_tickets` is mechanical, `jira.sh extract-keys ticket.md --exclude <KEY>` (unique `[A-Z]+-[0-9]+` mentions, excluding the ticket's own key).
+4. Build `attachments[]`: `jira.sh attachments <fetch.json> ticket.md` returns the array ready to persist (kind by extension, every `.chls` mentioned in text cross-referenced against the fetched attachments, ASCII-safe deduped `path`, original `filename` preserved), no further transformation needed.
 5. Recap one line (title, attachment count, Charles sessions detected) and continue. Mark stage 1 complete.
 
 ## Stage 2 - Download & Convert
 
 Skip with a note if `attachments[]` has no `.chls` and no screenshots (`stages.2 = "complete"`, note `"no attachments"`).
 
-1. Download every `.chls` and image via `jira.sh download <url> <local-path>` into `~/Downloads/<KEY>/charles/` and `screenshots/` (dedupe by filename; ASCII-safe local names, original name kept in the JSON). A `.chls` mentioned in text with no matching attachment cannot be downloaded; log it in `notes` and continue.
+1. Download every attachment with a non-null `jira_url` via `jira.sh download <jira_url> "<artifacts_dir>/<path>"` (`path` is already ASCII-safe and deduped, computed by `attachments[]` in Stage 1 Step 4; `filename` stays the original, unsanitized name for display). A `.chls` mentioned in text with no matching attachment (`jira_url: null`) cannot be downloaded; log it in `notes` and continue.
 2. Convert each `.chls` → `.har`, auto-detecting the converter:
    ```bash
-   command -v makehar >/dev/null && makehar "<in.chls>" \
-     || [ -x "/Applications/Charles.app/Contents/MacOS/Charles" ] \
-        && /Applications/Charles.app/Contents/MacOS/Charles convert "<in.chls>" "<out.har>"
+   "${CLAUDE_PLUGIN_ROOT}/lib/helpers/har.py" convert "<in.chls>" "<out.har>"
    ```
-   Neither available → note it, keep the `.chls` for manual conversion, continue (the investigation can still work from ticket text + screenshots).
-3. Set `done` / `converted` per attachment. Mark stage 2 complete.
+   `NO_CONVERTER` on stderr (neither `makehar` nor Charles.app found) → note it, keep the `.chls` for manual conversion, continue (the investigation can still work from ticket text + screenshots).
+3. Set `done` / `converted` per attachment, and `har` to the converted file's `path` (extension swapped to `.har`) whenever conversion succeeded; a failed or skipped conversion leaves `har: null` and `converted: false`. Mark stage 2 complete.
 
 ## Stage 3 - Evidence Digest & Entry Points
 
@@ -116,15 +114,7 @@ Runs entirely outside plan mode, since it is the stage that does the actual `Bas
 1. **HAR evidence digest** (skip with a note if `attachments[]` has no converted `.har` and no screenshots; `evidence` stays `[]`). For each converted `.har`, extract ONLY the requests that matter, filter by `signals.technical` (endpoint ids, BO/context ids, flag names). Never read a whole HAR into context; they are huge.
 
    ```bash
-   python3 - "<charles/name.har>" "<term1>" "<term2>" <<'PY'
-   import json,sys
-   har=json.load(open(sys.argv[1])); terms=[t.lower() for t in sys.argv[2:]]
-   for e in har["log"]["entries"]:
-       req=e["request"]; url=req["url"]
-       blob=(url+" "+(e.get("response",{}).get("content",{}).get("text","") or "")).lower()
-       if any(t in blob for t in terms):
-           print(req["method"], e["response"]["status"], url[:160])
-   PY
+   "${CLAUDE_PLUGIN_ROOT}/lib/helpers/har.py" digest "<charles/name.har>" "<term1>" "<term2>"
    ```
 
    Refine iteratively: grep response bodies for the specific identifiers (e.g. a context id present in one session and absent in another; a flag value; a status code). Distill each finding into a **one-line** entry in `evidence[]`:
@@ -194,8 +184,7 @@ Mark stage 5 complete → Stage 6.
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" comment <KEY> "$HOME/Downloads/<KEY>/spike.md"
    ```
-   Mark `status=complete`, release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the
-   session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`). **A spike does not
+   Mark `status=complete`, release the lock and session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<KEY>"`. **A spike does not
    go to device; stop here.**
 
 ## Stage 6 - Verify on device & Deliver (`app_bug` only)
@@ -203,22 +192,29 @@ Mark stage 5 complete → Stage 6.
 1. **Ask whether reproducing this on device needs anything forced.** Plain-chat question: *"Does verifying this fix on your device need anything forced (a captured network response, an internal flag or kill switch), or can you reproduce the scenario as-is?"* On yes, invoke `wk:replay` (Skill tool, inject mode), passing `entry_points[]` as context. On completion, hold a short summary (`{"technique": ..., "summary": ...}`) for step 10's write into `replay`. On no, `replay` stays `null`.
 2. Invoke `wk:protologs` (Skill tool, inject mode), passing `entry_points[]` from `bugfix.json` as the user-specified entry points (protologs' Step 2.5 will not re-ask). Since the entry points are user-specified, protologs starts there regardless of its own hop budget, and traces down through the diff to the boundary. If the logging scope is unclear, ask the user how far up/down to instrument first. **If step 1 ran replay, tell protologs' agent to skip any hunk between `// REPLAY START` and `// REPLAY END`**: that code is forced scaffolding for reproduction, not the fix, and protologs' own slice now includes the `[TEMP] REPLAY` commit's diff (`skills/protologs/SKILL.md` computes it from `git diff <BASE>...HEAD --name-only`), so without this exclusion it instruments code that is about to be reverted and creates overlapping edits between the two skills' eventual reverts.
 3. The user runs the build on device; confirm the logs show the expected flow and the fix behaves.
-4. Invoke `wk:protologs cleanup`; verify no `PROTOLOG - ` trace remains (not a bare `PROTOLOG` grep: with replay active, `PROTOLOG_RESPONSE - ` lines are still live at this point and a bare grep would false-positive on them).
+4. Invoke `wk:protologs cleanup`; verify no trace remains: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace PROTOLOG` (its `PROTOLOG - ` pattern, with no trailing boundary, does not false-positive on the still-live `PROTOLOG_RESPONSE - ` lines replay leaves behind at this point).
 5. **If step 1 ran replay, invoke `wk:replay cleanup` now, after protologs cleanup**: replay's commit sits underneath protologs' in the stack, so reverting protologs first avoids the two skills' reverts touching overlapping lines. Verify no `REPLAY START`/`REPLAY END`/`PROTOLOG_RESPONSE - ` trace remains.
 6. **Entry-points refinement (2c).** If `entry_points_topic` is set and `plan.root_cause` names a file not already in that topic's stored `paths`, ask once whether to add it (`entrypoints.sh save --topic <entry_points_topic> --paths <existing+new> --from <KEY>`). Skip silently when `entry_points_topic` is `null`, or the root-cause file is already covered.
 7. **Recommended commit message.** Draft THREE candidates, each `<KEY>: <Subject ≤72 chars>` with the subject starting uppercase, specific to the actual change, in plain business language. Each candidate takes a genuinely different angle (the user-visible symptom fixed, the component changed, the root cause addressed), not rewordings of the same sentence. Validate all three before presenting (Core Principle 10):
    ```bash
-   printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" \
-     | grep -nE '\bAC-[0-9]+\b|PROTOLOG|\bREPLAY\b|\bDOER\b|\bdoer\('
+   printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/vocab-guard.sh"
    ```
-   A match means an internal label leaked; rewrite that candidate and re-validate, never present a matching draft. Present the three candidates in the chat as plain text, numbered 1-3, each in its own fenced code block. Drafts NEVER go inside `AskUserQuestion`, only the selection does. Ask via `AskUserQuestion` with short labels (`Option 1` / `Option 2` / `Option 3`), marking the strongest `(Recommended)`; the tool's auto-appended "Other" is the edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally valid. Re-run the grep on any edited text before accepting it. Hold the chosen message for step 10's single write.
+   A match means an internal label leaked; rewrite that candidate and re-validate, never present a matching draft. Present the three candidates in the chat as plain text, numbered 1-3, each in its own fenced code block. Drafts NEVER go inside `AskUserQuestion`, only the selection does. Ask via `AskUserQuestion` with short labels (`Option 1` / `Option 2` / `Option 3`), marking the strongest `(Recommended)`; the tool's auto-appended "Other" is the edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally valid. Re-run `vocab-guard.sh` on any edited text before accepting it. Hold the chosen message for step 10's single write.
 8. **Squash gate, then offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). With replay in play there can be TWO `[TEMP]`/revert pairs on top of the Stage 5 fix commit (replay's and protolog's), not one; both cleanups (steps 4-5) must have actually run and left no trace before squashing collapses their subjects away forever. Gate on content, not on commit subjects (a legitimate `[TEMP]`/revert pair can remain in history even after a clean cleanup, so subject-grepping proves nothing):
    ```bash
-   git diff <base>..HEAD | grep -nE 'REPLAY START|REPLAY END|REPLAY-ORIG:|PROTOLOG_RESPONSE - |PROTOLOG - '
+   "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" squash-gate <base>
    ```
-   Any match: STOP, do not offer the squash, tell the dev cleanup did not fully net out and point at the offending file. Only on a clean gate, proceed to the squash offer. On yes: skip if only 1 commit since `<base>` (same base branch confirmed in protologs inject Step 1); otherwise back up (`git update-ref refs/bugfix-backup/<KEY>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
-9. **PR description.** Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 3). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no `REPLAY`, no stage names, no verdict jargon like `app_bug`). Validate with the same grep as step 7 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `pr_description` or running step 10 before the dev's reply is prohibited. On requested changes, rewrite, re-validate with the same grep, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks step 10; on `skip`, hold the literal `"skipped"` for step 10's write.
-10. **Close.** Precondition: step 9 has the dev's explicit approval (or `"skipped"`); if not, this step does not run. ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 7's choice), `pr_description` (step 9's approved result, or `"skipped"`), `replay` (step 1's summary, or `null`), and `stages.6="complete"`. Release the lock (`rm -f .doer/tickets/<KEY>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`).
+   Any match (exit 1): STOP, do not offer the squash, tell the dev cleanup did not fully net out and point at the offending file. Only on a clean gate (exit 0), proceed to the squash offer. On yes:
+   ```bash
+   printf '%s' "<chosen message>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> <KEY> bugfix
+   ```
+   prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`).
+9. **PR description.** Auto-detect a template:
+   ```bash
+   "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" pr-templates
+   ```
+   One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 3). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no `REPLAY`, no stage names, no verdict jargon like `app_bug`). Validate with `vocab-guard.sh` (same as step 7) before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `pr_description` or running step 10 before the dev's reply is prohibited. On requested changes, rewrite, re-validate with `vocab-guard.sh`, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks step 10; on `skip`, hold the literal `"skipped"` for step 10's write.
+10. **Close.** Precondition: step 9 has the dev's explicit approval (or `"skipped"`); if not, this step does not run. ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 7's choice), `pr_description` (step 9's approved result, or `"skipped"`), `replay` (step 1's summary, or `null`), and `stages.6="complete"`. Release the lock and session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<KEY>"`.
 
 ## Notes
 

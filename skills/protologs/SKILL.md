@@ -11,7 +11,7 @@ description: >-
     only a fallback), leaving the code identical to its original state, and
     verifies no trace remains. Also invoked by /wk:doer Stage 4 and
     /wk:bugfix Stage 6 for on-device runtime verification.
-version: 7.6.0
+version: 7.10.0
 user-invocable: true
 allowed-tools: [Read, Edit, Grep, Glob, Bash, AskUserQuestion, Agent]
 ---
@@ -48,41 +48,25 @@ Before Step 1, run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" start protolo
 
 ### Step 1 - Confirm base branch
 
-Run the following commands (none fails fatally if the ref does not exist):
-
 ```bash
-# candidate 1: upstream tracking of current branch
-git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | sed 's|origin/||'
-
-# candidate 2: if develop exists
-git show-ref --quiet refs/heads/develop 2>/dev/null && echo "develop"
-
-# candidate 3: if main exists
-git show-ref --quiet refs/heads/main 2>/dev/null && echo "main"
-
-# candidate 4: if master exists
-git show-ref --quiet refs/heads/master 2>/dev/null && echo "master"
-
-# current branch (to show the user)
-git rev-parse --abbrev-ref HEAD
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" base-candidates
 ```
 
-Deduplicate candidates, removing the current branch (it cannot be its own base).
-Show the found candidates via `AskUserQuestion` with available options plus
-"Other branch / type it yourself". If they choose "Other", ask a second free-text
-`AskUserQuestion`. The chosen branch is used as `<BASE>` for the rest of the flow.
+Prints `{"current": "<branch>", "candidates": [...]}` (upstream tracking branch, then
+develop/main/master, only the ones that actually exist locally, current branch and
+duplicates excluded). Show the found candidates via `AskUserQuestion` with available
+options plus "Other branch / type it yourself". If they choose "Other", ask a second
+free-text `AskUserQuestion`. The chosen branch is used as `<BASE>` for the rest of the flow.
 
 ### Step 2 - Compute the diff
 
 ```bash
-# changed files (staged + unstaged + diff vs base)
-git diff <BASE>...HEAD --name-only
-git diff --name-only          # unstaged
-git diff --cached --name-only # staged but not yet committed
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" diff-files <BASE>
 ```
 
-Combine and deduplicate the three lists into `<DIFF_FILES>`. Do not stop yet
-if this is empty; Step 2.5 decides whether an empty diff is fatal.
+Union of changed files (staged + unstaged + diff vs base), deduplicated, one per line,
+into `<DIFF_FILES>`. Do not stop yet if this is empty; Step 2.5 decides whether an empty
+diff is fatal.
 
 ### Step 2.5 - Confirm entry point (root point)
 
@@ -231,32 +215,24 @@ report each under its own `reason` in `slice_coverage.gaps`.
 
 == SELF-CHECK BEFORE RETURNING (mandatory, before compiling) ==
 
-Before you compile and before you return the JSON, run these two checks
-yourself against every file you touched, and fix anything they catch. A
-structural violation can compile clean and only break later at cleanup time,
-so catching it here (not after the orchestrator's own backstop) is what keeps
-a round mergeable.
+Before you compile and before you return the JSON, run this against every
+file you touched, and fix anything it catches. A structural violation can
+compile clean and only break later at cleanup time, so catching it here (not
+after the orchestrator's own backstop) is what keeps a round mergeable.
 
-Check A (non-PROTOLOG additions):
 ```bash
-git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep -v "PROTOLOG - "
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/protolog-restore.py" check "<file>" <(git show "HEAD:<file>" 2>/dev/null || true)
 ```
-Empty output means the file is clean. Non-empty means you added a non-PROTOLOG
-line (a forbidden refactor, FORBIDDEN #2): revert it with the Edit tool and
-re-run the check.
 
-Check B (PROTOLOG mixed with business logic on the same line, FORBIDDEN #5):
-```bash
-git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep "PROTOLOG - " \
-  | grep -vE '^\+[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)'
-```
-Empty output means every PROTOLOG line is a bare standalone call or a bare
-`.also {}` continuation. Non-empty means a line got glued to real code: move
-it to its own line per VALID LINE SHAPES and re-run both checks.
+Exit 0: the file is clean, move on. Exit 1 (Check A: a non-PROTOLOG line was
+added or removed compared to HEAD, a forbidden refactor, FORBIDDEN #2):
+revert it with the Edit tool and re-run. Exit 2 (Check B: a PROTOLOG line is
+glued to real code or otherwise malformed, FORBIDDEN #5): move it to its own
+line per VALID LINE SHAPES and re-run.
 
-Repeat both checks until they pass, on every touched file, before moving on
-to compilation. Report the outcome in the JSON's `self_check` field: `"clean"`
-if both passed with nothing to fix, or the list of what you found and
+Repeat until it passes, on every touched file, before moving on to
+compilation. Report the outcome in the JSON's `self_check` field: `"clean"`
+if it passed with nothing to fix, or the list of what you found and
 corrected.
 
 == Full diff ==
@@ -477,41 +453,31 @@ step, it does NOT edit files, does NOT loop, and does NOT run before the agent's
 compile (the agent already compiled inside Step 4; running this "before compiling"
 was never actually possible and is why this step is now titled a backstop instead).
 
-The orchestrator runs TWO checks for every file in `files_touched`:
-
-**Check A (non-PROTOLOG additions):**
-
-```bash
-git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep -v "PROTOLOG - "
-```
-
-Non-empty output means non-PROTOLOG lines were added (a forbidden refactor: expression
-functions converted to block functions, an intermediate variable created only to print
-its value, an empty `else {}` added, etc).
-
-**Check B (PROTOLOG mixed with business logic on the same line, FORBIDDEN #5):**
+The orchestrator runs, for every file in `files_touched` (skip any file present in
+`/tmp/protolog-workdir-<branch>.patch`: it had uncommitted changes before the
+injection, so the agent's additions cannot be cleanly distinguished from the
+pre-existing ones):
 
 ```bash
-git diff -- "<file>" | grep "^+" | grep -v "^+++" | grep "PROTOLOG - " \
-  | grep -vE '^\+[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)'
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/protolog-restore.py" check "<file>" <(git show "HEAD:<file>" 2>/dev/null || true)
 ```
 
-Non-empty output means a PROTOLOG line got glued to real code (e.g. `X -> Y.also {
-println("PROTOLOG - ...") }` inline, or `).also { println(...) }` glued to a closing
-paren). This is the exact failure mode that broke a `when` block and two constructor
-calls in a real incident; Check A alone missed it because the offending line does
-contain `PROTOLOG - `.
+Exit 1 (Check A) means non-PROTOLOG lines were added or removed compared to HEAD (a
+forbidden refactor: expression functions converted to block functions, an
+intermediate variable created only to print its value, an empty `else {}` added,
+etc). Exit 2 (Check B) means a PROTOLOG line got glued to real code (e.g. `X ->
+Y.also { println("PROTOLOG - ...") }` inline, or `).also { println(...) }` glued
+to a closing paren, or anything else that is not exactly a standalone call). This
+is the exact failure mode that broke a `when` block and two constructor calls in a
+real incident; a naive line-added grep alone missed it because the offending line
+does contain `PROTOLOG - `.
 
-Skip both checks for any file present in `/tmp/protolog-workdir-<branch>.patch` (it had
-uncommitted changes before the injection, so the agent's additions cannot be cleanly
-distinguished from the pre-existing ones).
-
-**Either check non-empty, or the agent's JSON carries `compile_errors`:** STOP. Do NOT
-commit, do NOT fix, do NOT recompile. Narrate the offending lines (side by side with
-the agent's own `self_check` field: a `self_check: "clean"` alongside a backstop
-failure here is a broken contract worth calling out on its own, not just the failure
-itself). The dev decides: fix by hand with the Edit tool, ask for a new round, or
-restore from `/tmp/protolog-workdir-<branch>.patch` (Step 3).
+**Any file exits non-zero, or the agent's JSON carries `compile_errors`:** STOP. Do
+NOT commit, do NOT fix, do NOT recompile. Narrate the offending lines (side by side
+with the agent's own `self_check` field: a `self_check: "clean"` alongside a
+backstop failure here is a broken contract worth calling out on its own, not just
+the failure itself). The dev decides: fix by hand with the Edit tool, ask for a new
+round, or restore from `/tmp/protolog-workdir-<branch>.patch` (Step 3).
 
 ### Step 4.6 - Commit this round as [TEMP]
 
@@ -524,8 +490,8 @@ git add -A && git commit --no-verify -m "[TEMP] PROTOLOG debug logs (round <N>).
 
 `<N>` starts at 1 and increments each time inject mode runs again on the same branch
 without an intervening cleanup (the dev asking for more logs after reviewing the first
-batch is the common case: `git log --oneline --grep '\[TEMP\] PROTOLOG'` tells you the
-current count). This is what makes cleanup a plain revert instead of a text-matching
+batch is the common case: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" temp-rounds PROTOLOG`
+tells you the current count). This is what makes cleanup a plain revert instead of a text-matching
 sed pass, and what keeps a fix the dev asks for mid-verification cleanly separated from
 the logs: a `[TEMP]` commit contains ONLY PROTOLOG lines, never a fix. If the dev asks
 for a fix while logs are live, that fix is committed separately (its own message,
@@ -581,45 +547,42 @@ it removes exactly those lines and nothing else, regardless of how many rounds o
 or interleaved fixes happened in between. The `sed` text-match pass is only a fallback
 for sessions where no `[TEMP]` commit exists (interrupted inject, pre-7.1.0 session).
 
-### Step 1 - Enumerate [TEMP] commits
+### Step 1+2 - Enumerate and revert [TEMP] commits
 
 ```bash
-git log --format='%H %s' HEAD | grep '\[TEMP\] PROTOLOG'
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" revert-temp PROTOLOG
 ```
 
-If one or more are found, go to Step 2 (revert path). If none are found, narrate
-*"No [TEMP] PROTOLOG commits found; falling back to text-match cleanup."* and go to
-Step 2-fallback.
+Enumerates every `[TEMP] PROTOLOG` commit and reverts each one, most recent first, always
+through an auto-abort wrapper so a conflict never leaves the repo sitting in a
+half-resolved revert. Fixes the dev requested mid-verification live in separate,
+non-`[TEMP]` commits and are untouched by these reverts. Output, one line per commit:
 
-### Step 2 - Revert path
+- `NONE` (nothing found): narrate *"No [TEMP] PROTOLOG commits found; falling back to
+  text-match cleanup."* and go to Step 2-fallback.
+- `REVERTED <sha>`: that commit's logs are gone, nothing further to do for it.
+- `CONFLICT <sha> <files...>`: that commit's revert conflicted (rare: a fix touched the
+  same lines as a log) and was auto-aborted; run Step 2-fallback for exactly those files.
+  Step 3b is mandatory for them, exactly as for any other fallback-cleaned file.
 
-Revert each `[TEMP]` commit found in Step 1, most recent first. Always use the auto-abort
-wrapper below so a conflict never leaves the repo sitting in a half-resolved revert:
-
-```bash
-git revert --no-edit <sha> || { git revert --abort 2>/dev/null; echo "CONFLICT: <sha>"; }
-```
-
-Fixes the dev requested mid-verification live in separate, non-`[TEMP]` commits and are
-untouched by these reverts.
+Exit 0: every commit reverted cleanly, skip to Step 3. Exit 1: at least one `CONFLICT`
+line, handle each via Step 2-fallback below, then continue to Step 3. Exit 2 (should not
+happen: `REVERT_HEAD` still set after the script's own abort): STOP immediately, narrate
+the exact error, do not proceed.
 
 **ON CONFLICT (mandatory, no exceptions):**
-
-If a revert conflicts (rare: a fix touched the same lines as a log), the wrapper above has
-already run `git revert --abort`. From that point on:
 
 FORBIDDEN:
 1. Resolving the conflict by hand (editing the conflicted file, `git add` on it).
 2. Running `git revert --continue` or `git revert --quit`.
 3. Running `git commit` while a revert is still in progress.
    BAD:  fix the conflict markers with the Edit tool, `git add`, `git revert --continue`
-   GOOD: confirm the abort took, then run Step 2-fallback for that commit's files only
+   GOOD: take the `CONFLICT` line's file list, run Step 2-fallback for those files only
 
-The ONLY permitted path: confirm the abort took (`git rev-parse -q --verify REVERT_HEAD`
-prints nothing), keep reverting the remaining `[TEMP]` commits with the same wrapper, then
-run Step 2-fallback for the files touched by the conflicted commit only
-(`git show --name-only --format= <sha>`). Step 3b is mandatory for those files, exactly as
-for any other fallback-cleaned file.
+`git-ops.sh revert-temp` already confirmed the abort took (`git rev-parse -q --verify
+REVERT_HEAD` printed nothing) before reporting `CONFLICT`, and already kept reverting the
+remaining `[TEMP]` commits. The only manual step left is Step 2-fallback, for the files
+named on the `CONFLICT` line.
 
 Why this is absolute even when the conflict looks trivial to resolve: cleanup's guarantee
 rests on exactly two verified mechanisms, a revert is exact by construction (a `[TEMP]`
@@ -640,43 +603,43 @@ history.
 ### Step 2-fallback - Text-match removal (only when no [TEMP] commit applies)
 
 ```bash
-# tracked files
-git grep -l "PROTOLOG - " 2>/dev/null
-
-# untracked or new files (just in case)
-grep -rl "PROTOLOG - " . --include="*.kt" --include="*.java" \
-  --include="*.swift" --include="*.ts" --include="*.tsx" \
-  --include="*.js" --include="*.py" --include="*.go" \
-  --include="*.rs" --include="*.rb" 2>/dev/null
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace PROTOLOG | cut -d: -f1 | sort -u
 ```
 
-Deduplicate. If no file has the tag, narrate:
+Tracked and untracked files alike. If no file has the tag, narrate:
 *"No lines with `PROTOLOG - ` found in the repo. The code is already clean."*
 and stop.
 
-For each found file, first check for embedded (non-standalone) PROTOLOG lines, since a
-blind `sed` delete on those corrupts the file (the exact incident this rule prevents):
+For each found file:
 
 ```bash
-grep -n "PROTOLOG - " "<file>" \
-  | grep -vE '^[0-9]+:[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)'
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/protolog-restore.py" strip "<file>" > "<file>.protolog-restored" \
+  && mv "<file>.protolog-restored" "<file>"
 ```
 
-- No matches: every PROTOLOG line is standalone. Remove with:
-  ```bash
-  sed -i '' '/PROTOLOG - /d' "<file>"   # macOS / BSD
-  sed -i '/PROTOLOG - /d' "<file>"      # Linux, if the above fails
-  ```
-- Matches found: these are `.also { println("PROTOLOG - ...") }` lines glued to real
-  code (should not happen under the 7.1.0 inject rules, but a manual edit or an older
-  session can still produce one). Strip only the PROTOLOG suffix, keep the line:
-  ```bash
-  sed -i '' -E 's/\.also \{ println\("PROTOLOG - [^"]*"\) \}//g' "<file>"   # macOS / BSD
-  sed -i -E 's/\.also \{ println\("PROTOLOG - [^"]*"\) \}//g' "<file>"      # Linux
-  ```
-  Then re-run the grep above on that file to confirm no PROTOLOG trace and no broken
-  syntax (e.g. a dangling `.also {` fragment); if the pattern does not match cleanly,
-  stop and fix that file with the Edit tool by hand instead of guessing with sed.
+This is the SAME transformation the integrity guard checks before a `[TEMP]` commit
+lands (see "SELF-CHECK BEFORE RETURNING" and Step 4.5), so it is exact by
+construction, and strict by default: a nonzero exit (2, an embedded or malformed
+line, e.g. `.also { println("PROTOLOG - ...") }` glued to real code, or business
+logic after the call's own close) means STOP and fix that file with the Edit tool
+by hand rather than force a partial strip; do not guess with `sed`.
+
+Only when the strict pass refuses AND the offending line is confirmed to be exactly
+the documented embedded shape (`.also { println("PROTOLOG - ...") }` glued onto
+real code; should not happen under the inject rules, but a manual edit or an older
+session can still produce one) does the lenient fallback apply:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/protolog-restore.py" strip "<file>" --lenient > "<file>.protolog-restored" \
+  && mv "<file>.protolog-restored" "<file>"
+```
+
+which strips just the `.also { println(...) }` suffix, keeping the rest of the
+line, and reports which line numbers it touched to stderr. Re-run the strict
+`strip` (no `--lenient`) on that file afterward to confirm no PROTOLOG trace and no
+broken syntax remains (exit 0, no output changes); if it still does not match
+cleanly, stop and fix that file with the Edit tool by hand instead of guessing
+further with the lenient pass.
 
 Narrate the processed files.
 
@@ -687,33 +650,28 @@ that was skipped in the real incident: cleanup was reported as done without conf
 the result actually compiles.
 
 Before anything else, confirm no revert is still in progress. A live revert here means
-Step 2's ON CONFLICT rule was not followed:
+Step 1+2's ON CONFLICT rule was not followed:
 
 ```bash
-git rev-parse -q --verify REVERT_HEAD && echo "REVERT IN PROGRESS" || true
-git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' || true
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" revert-in-progress
 ```
 
-If either prints anything, STOP: do not verify, do not report cleanup as done. Narrate
-that a revert is in flight, run `git revert --abort`, and return to Step 2's ON CONFLICT
-block.
+If it exits 1 (prints something), STOP: do not verify, do not report cleanup as done.
+Narrate that a revert is in flight, run `git revert --abort`, and return to Step 1+2's
+ON CONFLICT block.
 
 ```bash
-git grep -n "PROTOLOG - " 2>/dev/null || true
-grep -rn "PROTOLOG - " . --include="*.kt" --include="*.java" \
-  --include="*.swift" --include="*.ts" --include="*.tsx" \
-  --include="*.js" --include="*.py" --include="*.go" \
-  --include="*.rs" --include="*.rb" 2>/dev/null || true
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace PROTOLOG
 ```
 
-- If empty -> narrate: *"No trace of `PROTOLOG - ` remains. Proceeding to restore phantom files."*
-- If lines still exist -> narrate which ones, do NOT delete them automatically;
+- Exit 0 (empty) -> narrate: *"No trace of `PROTOLOG - ` remains. Proceeding to restore phantom files."*
+- Exit 1 (lines printed) -> narrate which ones, do NOT delete them automatically;
   ask the user to review them manually before continuing.
 
 ### Step 3b - Restore files outside the original diff
 
 **This step is mandatory when the fallback (Step 2-fallback) ran.** When the revert
-path (Step 2) ran, the reverted `[TEMP]` commit already restored exactly the files it
+path (Step 1+2) ran, the reverted `[TEMP]` commit already restored exactly the files it
 touched, so there is nothing left to reconcile; skip straight to Step 4. Only the sed
 fallback needs this reconciliation, because the logger-agent intentionally instruments
 files outside the branch diff (callers, use cases, repositories) and `sed` has no
@@ -721,42 +679,27 @@ concept of "this file's changes came from one commit".
 
 **Determine `<BASE>`**: run the same auto-detection as inject Step 1 (upstream
 tracking -> develop -> main -> master). If multiple candidates are found, show them
-to the user via `AskUserQuestion` and let them pick one. The chosen branch is
-`<BASE>` for the rest of this step.
+to the user via `AskUserQuestion` and let them pick one (same helper as inject Step 1:
+`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" base-candidates`). The chosen branch
+is `<BASE>` for the rest of this step.
+
+Cross-reference which dirty files are outside the branch's intended changes (**phantoms**
+-- clean before the logger agent touched them), and restore the ones that are ALSO
+byte-clean now that `sed` (Step 2) already removed their PROTOLOG lines. Restore is
+**conditional**: the logs go, but any correction the user made to a phantom during
+testing must be kept.
 
 ```bash
-# 1. Files currently dirty in the working tree
-git diff --name-only
-git diff --cached --name-only
-
-# 2. Files that are part of the branch's intended changes
-git diff <BASE>...HEAD --name-only
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" restore-phantoms <BASE>
 ```
 
-Cross-reference: any file that appears in (1) but NOT in (2) is a **phantom** -- it
-was clean before the logger agent touched it. Restore is **conditional**: the logs go,
-but any correction the user made to a phantom during testing must be kept.
-
-For each phantom, after `sed` (Step 2) already removed its PROTOLOG lines, check whether
-anything besides PROTOLOG changed:
-
-```bash
-git diff --quiet -- "<phantom>"
-```
-
-- **Exit 0** (no diff vs HEAD): the file is clean, the agent only added PROTOLOG lines and
-  they are now gone. Run `git restore <phantom>` (a no-op that also clears the working
-  tree of any residue).
-- **Exit 1** (diff exists): the file has non-PROTOLOG changes. These may be corrections the
-  user made or refactors from the agent that survived. Do NOT restore automatically. Show
-  `git diff -- <phantom>` and ask the user: *"This file has changes after cleanup. Keep or
-  discard?"* Only run `git restore <phantom>` if they choose to discard.
-
-After processing every phantom, re-run:
-
-```bash
-git diff --name-only
-```
+For each phantom, this runs `git diff --quiet -- "<phantom>"` and either restores it
+silently (exit 0, no diff vs HEAD: the agent only added PROTOLOG lines and they are now
+gone, `git restore` clears any residue) or prints its path without touching it (diff
+exists: non-PROTOLOG changes, may be corrections the user made or a surviving refactor).
+For each printed path, show `git diff -- <path>` and ask the user: *"This file has
+changes after cleanup. Keep or discard?"* Only run `git restore <path>` if they choose to
+discard.
 
 Narrate each file restored and each file kept per the user's choice. Never force-restore a
 phantom with non-PROTOLOG changes without the user's explicit confirmation.

@@ -4,12 +4,16 @@
 
 ## Always ask (never auto-skip)
 
-Classify the diff first (UX only, not a skip decision): paths like `*.md`, `docs/`, CI config, version-only dependency edits are non-runtime; everything else is runtime. Then ALWAYS ask via `AskUserQuestion`:
+Classify the diff first (UX only, not a skip decision):
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" classify-diff <base>
+```
+prints `runtime` or `non-runtime` (paths like `*.md`, `docs/`, CI config, version-only dependency edits are non-runtime; everything else is runtime). Then ALWAYS ask via `AskUserQuestion`:
 
 - **All non-runtime:** *"The diff is docs/config only; likely nothing to exercise on device."* Options: `Skip Stage 4 (Recommended)` / `Run it anyway`.
 - **Any runtime path:** *"Exercise the ACs on a device/simulator now?"* Options: `Run Stage 4 (Recommended)` / `Skip (you own runtime correctness)`.
 
-On skip: one `metadata.sh write` sets `stages.4.status = "skipped"`, `skipped_reason`, `skipped_acknowledged_by = "dev"`; narrate and proceed to Stage 5. Silent auto-skip is forbidden: the heuristic can misjudge a file, and this is the only on-device check in the pipeline.
+On skip: one `metadata.sh write "<TICKET-ID>" '<filter>' --require 4:skipped` sets `stages.4.status = "skipped"`, `skipped_reason`, `skipped_acknowledged_by = "dev"` (`--require` refuses the write if any of those three is missing); narrate and proceed to Stage 5. Silent auto-skip is forbidden: the heuristic can misjudge a file, and this is the only on-device check in the pipeline.
 
 ## On run
 
@@ -31,4 +35,4 @@ On skip: one `metadata.sh write` sets `stages.4.status = "skipped"`, `skipped_re
 
 ## Finalize
 
-Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `stages.4.status = "complete"`, `stages.4.completed_at`, `stages.4.ac_verdicts`, and `stages.4.recommendation`; call `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<TICKET-ID>" '<filter>'` exactly once (never `Write`/`Edit` `metadata.json` directly — see `lib/state.md`, "Writing metadata.json", for why: this is the exact transition that triggered a corporate EDR file lock when done as two separate edits). Narrate *"Stage 4 complete: <verdict summary>. Continuing to Stage 5..."* and auto-proceed: read `05-wrapup.md` and ONLY that file.
+Build ONE jq filter that in a single pass sets `stages.4.status = "complete"`, `stages.4.completed_at`, `stages.4.ac_verdicts`, and `stages.4.recommendation`; call `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<TICKET-ID>" '<filter>' --require 4:complete` exactly once (never `Write`/`Edit` `metadata.json` directly, see `lib/state.md`, "Writing metadata.json", for why: this is the exact transition that triggered a corporate EDR file lock when done as two separate edits). `--require` validates the required fields per `lib/state.md` against the transformed document before swapping; on failure, back-fill and write again as a NEW transition. Narrate *"Stage 4 complete: <verdict summary>. Continuing to Stage 5..."* and auto-proceed: read `05-wrapup.md` and ONLY that file.

@@ -29,6 +29,7 @@ PROTOLOG_REVERT="${REPO_ROOT}/hooks/protolog-revert-conflict-guard.sh"
 REPLAY_INTEGRITY="${REPO_ROOT}/hooks/replay-temp-commit-integrity-guard.sh"
 REPLAY_REVERT="${REPO_ROOT}/hooks/replay-revert-conflict-guard.sh"
 REPLAY_RESTORE="${REPO_ROOT}/hooks/replay-restore.py"
+PROTOLOG_RESTORE="${REPO_ROOT}/hooks/protolog-restore.py"
 GIT_COMMIT_GUARD="${REPO_ROOT}/hooks/git-commit-no-verify-guard.sh"
 
 PASS=0
@@ -78,6 +79,8 @@ bash -n "$REPLAY_REVERT" && pass "replay-revert-conflict-guard.sh parses" || fai
 bash -n "$GIT_COMMIT_GUARD" && pass "git-commit-no-verify-guard.sh parses" || fail "git-commit-no-verify-guard.sh parses"
 python3 -c "import ast; ast.parse(open('${REPLAY_RESTORE}').read())" \
   && pass "replay-restore.py parses" || fail "replay-restore.py parses"
+python3 -c "import ast; ast.parse(open('${PROTOLOG_RESTORE}').read())" \
+  && pass "protolog-restore.py parses" || fail "protolog-restore.py parses"
 jq . "${REPO_ROOT}/hooks/hooks.json" > /dev/null && pass "hooks.json is valid JSON" || fail "hooks.json is valid JSON"
 
 # =====================================================================
@@ -115,6 +118,130 @@ run_guard "$PROTOLOG_INTEGRITY" \
   "$DIR/out3.txt"
 SZ=$(guard_out_size "$DIR/out3.txt")
 assert_eq "protolog integrity guard is inert on a non-[TEMP]-PROTOLOG commit" "0" "$SZ"
+
+cd "$REPO_ROOT" || exit 1
+
+# =====================================================================
+# protolog-temp-commit-integrity-guard.sh: round 2+ and the embedded-line
+# scanner, now that both checks are one call to protolog-restore.py check
+# =====================================================================
+DIR="$TMPDIR_TEST/protolog-round2"
+new_scratch_repo "$DIR"
+cd "$DIR" || exit 1
+printf 'fun a() {\n    val x = 1\n}\n' > Foo.kt
+git add -A && git commit -q --no-verify -m base
+write_marker "$DIR" protologs
+
+printf 'fun a() {\n    val x = 1\n    println("PROTOLOG - r1")\n}\n' > Foo.kt
+git add -A && git commit -q --no-verify -m "[TEMP] PROTOLOG round 1. DO NOT MERGE"
+
+printf 'fun a() {\n    val x = 1\n    println("PROTOLOG - r1")\n    println("PROTOLOG - r2")\n}\n' > Foo.kt
+run_guard "$PROTOLOG_INTEGRITY" \
+  'git add -A && git commit --no-verify -m \"[TEMP] PROTOLOG round 2. DO NOT MERGE\"' \
+  "$DIR/out_round2.txt"
+SZ=$(guard_out_size "$DIR/out_round2.txt")
+assert_eq "protolog integrity guard allows round 2 (parent already carries round 1's lines)" "0" "$SZ"
+
+git checkout -q -- Foo.kt
+printf 'fun a() {\n    println("PROTOLOG - r1")\n}\n' > Foo.kt
+run_guard "$PROTOLOG_INTEGRITY" \
+  'git add -A && git commit --no-verify -m \"[TEMP] PROTOLOG round 3. DO NOT MERGE\"' \
+  "$DIR/out_round3.txt"
+SZ=$(guard_out_size "$DIR/out_round3.txt")
+[ "$SZ" -gt 0 ] && pass "protolog integrity guard denies a real line deleted between rounds (val x = 1 is gone)" \
+  || fail "protolog integrity guard denies a real line deleted between rounds"
+git checkout -q -- Foo.kt
+
+cd "$REPO_ROOT" || exit 1
+
+# =====================================================================
+# protolog-restore.py: byte-exact restore-equality invariant, and the
+# balanced-paren scanner that replaces a prefix-only regex
+# =====================================================================
+DIR="$TMPDIR_TEST/protolog-restore"
+mkdir -p "$DIR"
+cd "$DIR" || exit 1
+
+printf 'fun a() {\n    val x = 1\n}\n' > parent.kt
+printf 'fun a() {\n    val x = 1\n    println("PROTOLOG - hola")\n}\n' > post_ok.kt
+python3 "$PROTOLOG_RESTORE" check post_ok.kt parent.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a clean standalone addition matches the parent" "0" "$?"
+
+printf 'fun a() {\n    val leaked = true\n    println("PROTOLOG - hola")\n}\n' > post_added.kt
+python3 "$PROTOLOG_RESTORE" check post_added.kt parent.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a non-PROTOLOG line ADDED is denied (exit 1)" "1" "$?"
+
+printf 'fun a() {\n    println("PROTOLOG - hola")\n}\n' > post_deleted.kt
+python3 "$PROTOLOG_RESTORE" check post_deleted.kt parent.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a non-PROTOLOG line DELETED is denied too (the old line-added-only diff missed this)" "1" "$?"
+
+# The exact case a prefix-only regex misses: business logic glued on after
+# the call's own real closing paren.
+printf 'fun a() {\n    println("PROTOLOG - x"); updateBusinessState()\n}\n' > post_trap1.kt
+python3 "$PROTOLOG_RESTORE" check post_trap1.kt parent.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: business logic glued after the call is Check B (exit 2), not silently accepted" "2" "$?"
+
+printf 'fun a() {\n    .also { println("PROTOLOG - x"); updateBusinessState() }\n}\n' > post_trap2.kt
+python3 "$PROTOLOG_RESTORE" check post_trap2.kt parent.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: business logic inside .also{} after the call is also Check B" "2" "$?"
+
+# A statement-terminator semicolon is NOT glued business logic (Java/Rust
+# require one for this exact call); must NOT be flagged.
+printf '    System.out.println("PROTOLOG - x");\n' > post_semi.java
+printf '' > parent_empty.java
+python3 "$PROTOLOG_RESTORE" check post_semi.java parent_empty.java > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a trailing statement semicolon is standalone, not Check B" "0" "$?"
+
+printf '    println("PROTOLOG - x"); updateBusinessState();\n' > post_semi_trap.kt
+python3 "$PROTOLOG_RESTORE" check post_semi_trap.kt parent_empty.java > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a second statement after the semicolon is still Check B" "2" "$?"
+
+# Parens and an escaped quote inside the message itself: still standalone.
+printf 'fun a() {\n    val x = 1\n    println("PROTOLOG - result=(${x.y()})")\n}\n' > post_parens.kt
+python3 "$PROTOLOG_RESTORE" check post_parens.kt parent.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: parens inside the message do not confuse the scanner" "0" "$?"
+
+printf 'fun a() {\n    val x = 1\n    println("PROTOLOG - msg with \\"quoted\\" word")\n}\n' > post_escq.kt
+python3 "$PROTOLOG_RESTORE" check post_escq.kt parent.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: an escaped quote inside the message does not confuse the scanner" "0" "$?"
+
+printf 'fun a(): Int {\n    return foo()\n}\n' > parent_also.kt
+printf 'fun a(): Int {\n    return foo()\n        .also { println("PROTOLOG - result=$it") }\n}\n' > post_also.kt
+python3 "$PROTOLOG_RESTORE" check post_also.kt parent_also.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a standalone .also{} continuation matches the parent" "0" "$?"
+
+printf 'println("PROTOLOG - x")\n' > post_new.kt
+printf '' > parent_new.kt
+python3 "$PROTOLOG_RESTORE" check post_new.kt parent_new.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a new file that is only PROTOLOG lines matches an empty parent" "0" "$?"
+
+printf 'fun helper() {}\nprintln("PROTOLOG - x")\n' > post_new_bad.kt
+python3 "$PROTOLOG_RESTORE" check post_new_bad.kt parent_new.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: a new file with real code too is denied" "1" "$?"
+
+printf 'fun a() {\r\n    val x = 1\r\n}\r\n' > parent_crlf.kt
+printf 'fun a() {\r\n    val x = 1\r\n    println("PROTOLOG - hola")\r\n}\r\n' > post_crlf.kt
+python3 "$PROTOLOG_RESTORE" check post_crlf.kt parent_crlf.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: CRLF line endings preserved through the round trip" "0" "$?"
+
+printf 'fun a() {\n    val x = 1\n}' > parent_nonl.kt
+printf 'fun a() {\n    val x = 1\n    println("PROTOLOG - hola")\n}' > post_nonl.kt
+python3 "$PROTOLOG_RESTORE" check post_nonl.kt parent_nonl.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py check: missing final newline preserved through the round trip" "0" "$?"
+
+STRIP_OUT="$(python3 "$PROTOLOG_RESTORE" strip post_ok.kt)"
+EXPECTED="$(cat parent.kt)"
+assert_eq "protolog-restore.py strip: reconstructs the exact original file" "$EXPECTED" "$STRIP_OUT"
+
+python3 "$PROTOLOG_RESTORE" strip post_trap1.kt > /dev/null 2>&1
+assert_eq "protolog-restore.py strip: strict mode refuses the embedded trap too (exit 2), never a silent partial strip" "2" "$?"
+
+printf 'fun a() {\n    val x = 1.also { println("PROTOLOG - x") }; extra()\n}\n' > post_lenient.kt
+LENIENT_OUT="$(python3 "$PROTOLOG_RESTORE" strip post_lenient.kt --lenient 2>/dev/null)"
+assert_eq "protolog-restore.py strip --lenient: strips only the documented embedded shape, keeps the rest of the line" \
+  'fun a() {
+    val x = 1; extra()
+}' "$LENIENT_OUT"
 
 cd "$REPO_ROOT" || exit 1
 

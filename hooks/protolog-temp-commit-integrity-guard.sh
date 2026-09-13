@@ -2,7 +2,11 @@
 # PreToolUse guard for Bash: before any "[TEMP] PROTOLOG" commit, re-run
 # skills/protologs/SKILL.md Step 4.5 Check A/B against every staged source
 # file, deterministically, instead of trusting the orchestrator to have
-# actually run them.
+# actually run them. Both checks are now one call to
+# hooks/protolog-restore.py check <post> <parent>: exit 1 is Check A (some
+# non-PROTOLOG content differs from the parent, catching both additions AND
+# deletions, unlike the old line-added-only diff grep), exit 2 is Check B
+# (a PROTOLOG line is embedded with business logic or otherwise malformed).
 #
 # Real incident: the logger-agent violated the "no refactor" rules in 5
 # files (expression->block conversions, an empty init {}, a println split
@@ -44,6 +48,11 @@ esac
 
 fail=""
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RESTORE="$HERE/protolog-restore.py"
+tmp_parent="$(mktemp)"
+trap 'rm -f "$tmp_parent"' EXIT
+
 files="$( { git diff --cached --name-only 2>/dev/null; git diff HEAD --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u)"
 
 while IFS= read -r file; do
@@ -54,35 +63,38 @@ while IFS= read -r file; do
   esac
   [ -f "$file" ] || continue
 
-  # Diff against HEAD (not --cached alone): correct whether the file is
-  # staged, unstaged, or a mix of both at hook time.
-  filediff="$(git diff HEAD -- "$file" 2>/dev/null || true)"
-  if [ -z "$filediff" ]; then
-    # New untracked file: there is no HEAD blob to diff against. Every line
-    # in it counts as an addition for Check A purposes.
-    filediff="$(awk '{print "+"$0}' "$file" 2>/dev/null || true)"
+  # Parent image at HEAD; empty for a new untracked file (there is no HEAD
+  # blob), which is what makes "check" require the whole new file to be
+  # nothing but PROTOLOG lines.
+  git show "HEAD:${file}" > "$tmp_parent" 2>/dev/null || : > "$tmp_parent"
+
+  # `if` here, not a bare `check_err=$(...)`: under set -e a failing command
+  # substitution used as a plain statement aborts the script immediately,
+  # before the exit code could ever be read back out of it.
+  if check_err="$(python3 "$RESTORE" check "$file" "$tmp_parent" 2>&1)"; then
+    check_exit=0
+  else
+    check_exit=$?
   fi
 
-  # Check A (non-PROTOLOG additions): any added line that is not a PROTOLOG
-  # line means the logger-agent changed real code (forbidden refactor).
-  checkA="$(printf '%s\n' "$filediff" | grep '^+' | grep -v '^+++' | grep -v 'PROTOLOG - ' || true)"
-  if [ -n "$checkA" ]; then
-    fail="${fail}
-[Check A] ${file}: non-PROTOLOG lines added (forbidden refactor):
-${checkA}"
-  fi
-
-  # Check B (PROTOLOG mixed with business logic on one physical line): a
-  # PROTOLOG line that is not a bare println/print/etc call or a bare
-  # ".also { println(...) }" continuation means the injection glued a log
-  # onto real code; deleting it by text match would delete the logic too.
-  checkB="$(printf '%s\n' "$filediff" | grep '^+' | grep -v '^+++' | grep 'PROTOLOG - ' \
-    | grep -vE '^\+[[:space:]]*(\.also \{ )?(println|print|console\.log|System\.out\.println|fmt\.Println|puts|println!)' || true)"
-  if [ -n "$checkB" ]; then
-    fail="${fail}
-[Check B] ${file}: PROTOLOG mixed with business logic on one line:
-${checkB}"
-  fi
+  case "$check_exit" in
+    0) ;;
+    1)
+      fail="${fail}
+[Check A] ${file}: non-PROTOLOG change (restore-equality mismatch):
+${check_err}"
+      ;;
+    2)
+      fail="${fail}
+[Check B] ${file}: PROTOLOG line embedded with business logic or malformed:
+${check_err}"
+      ;;
+    *)
+      fail="${fail}
+[protolog-restore.py] ${file}: unexpected error (exit ${check_exit}):
+${check_err}"
+      ;;
+  esac
 done <<< "$files"
 
 if [ -n "$fail" ]; then

@@ -50,8 +50,7 @@ component changed, the problem solved), not rewordings of the same sentence. Val
 three before presenting (Core Principle 10):
 
 ```bash
-printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" \
-  | grep -nE '\bAC-[0-9]+\b|\bO-[0-9]+\b|\bC-[0-9]+\b|\bOOS-[0-9]+\b|\bQ-[0-9]+\b|\bR[0-9]+-F[0-9]+\b|PROTOLOG|\bREPLAY\b|\bDOER\b|\bdoer\('
+printf '%s\n' "<candidate-1>" "<candidate-2>" "<candidate-3>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/vocab-guard.sh"
 ```
 
 A match means an internal label leaked; rewrite that candidate and re-validate, never
@@ -60,39 +59,45 @@ present a matching draft. Present the three candidates in the chat as plain text
 selection does. Ask via `AskUserQuestion` with short labels (`Option 1` / `Option 2` /
 `Option 3`), marking the strongest `(Recommended)`; the tool's auto-appended "Other" is the
 edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally valid. Re-run
-the grep on any edited text before accepting it. Persist ONLY the chosen message to
+`vocab-guard.sh` on any edited text before accepting it. Persist ONLY the chosen message to
 `metadata.commit_message` via a single `metadata.sh write`.
 
 **Squash gate, then offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). If this ticket ever ran `/wk:replay` or `/wk:protologs` standalone against this branch, gate on content before offering, since a legitimate `[TEMP]`/revert pair can remain in history even after a clean cleanup, so grepping commit subjects proves nothing:
 ```bash
-git diff <base>..HEAD | grep -nE 'REPLAY START|REPLAY END|REPLAY-ORIG:|PROTOLOG_RESPONSE - |PROTOLOG - '
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" squash-gate <base>
 ```
-Any match: STOP, do not offer the squash, tell the dev cleanup did not fully net out and point at the offending file. Only on a clean gate (or when neither skill ever ran on this branch), proceed: on yes, skip if only 1 commit; otherwise back up (`git update-ref refs/doer-backup/<TICKET-ID>-pre-squash-$(date +%s) HEAD`), then `git reset --soft <base> && git commit --no-verify -m "<chosen message>"`, verify exactly 1 commit remains, narrate the backup ref (rollback: `git reset --hard <ref>`).
+Any match (exit 1): STOP, do not offer the squash, tell the dev cleanup did not fully net out and point at the offending file. Only on a clean gate (exit 0, or when neither skill ever ran on this branch), proceed: on yes,
+```bash
+printf '%s' "<chosen message>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> <TICKET-ID> doer
+```
+prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`).
 
 ## 6. PR description
 
-Auto-detect a template (`.github/PULL_REQUEST_TEMPLATE*`, `.gitlab/merge_request_templates/`, repo root). One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`.
+Auto-detect a template:
+```bash
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" pr-templates
+```
+One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`.
 
-Dispatch a PR-description writer Agent (read budget 0; inline a user-facing AC projection, `{"in_scope": metadata.ac.in_scope, "out_of_scope": metadata.ac.out_of_scope.map(text)}`, never the full `metadata.ac` object, plus `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). The projection deliberately excludes `candidates`, `merged`, `source_map`, `discarded_intake_items`, and `self_review`: none of Stage 1's internal provenance belongs in a PR description, and every one of those fields can carry an `O-`/`C-`/`OOS-`/`Q-`/`R<n>-F<m>` identifier. Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N` or any of Stage 1's other internal ID families `O-`/`C-`/`OOS-`/`Q-`/`R<n>-F<m>`, no `PROTOLOG`/`REPLAY`/`DOER`, no stage names, no literal `doer`). Validate with the same grep as step 5 before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it (e.g. a "How to test" snippet), renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `metadata.pr_description` before the dev's reply is prohibited. On requested changes, rewrite, re-validate with the same grep, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks persisting: on ok, `metadata.sh write` the approved text to `metadata.pr_description`; on `skip`, persist the literal `"skipped"` the same way.
+Dispatch a PR-description writer Agent (read budget 0; inline a user-facing AC projection, `{"in_scope": metadata.ac.in_scope, "out_of_scope": metadata.ac.out_of_scope.map(text)}`, never the full `metadata.ac` object, plus `metadata.changelog`, `metadata.summary`, and a verification summary where every AC verdict is already translated into the behavior it describes). The projection deliberately excludes `candidates`, `merged`, `source_map`, `discarded_intake_items`, and `self_review`: none of Stage 1's internal provenance belongs in a PR description, and every one of those fields can carry an `O-`/`C-`/`OOS-`/`Q-`/`R<n>-F<m>` identifier. Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `AC-N` or any of Stage 1's other internal ID families `O-`/`C-`/`OOS-`/`Q-`/`R<n>-F<m>`, no `PROTOLOG`/`REPLAY`/`DOER`, no stage names, no literal `doer`). Validate with `vocab-guard.sh` (same as step 5) before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it (e.g. a "How to test" snippet), renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `metadata.pr_description` before the dev's reply is prohibited. On requested changes, rewrite, re-validate with `vocab-guard.sh`, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks persisting: on ok, `metadata.sh write` the approved text to `metadata.pr_description`; on `skip`, persist the literal `"skipped"` the same way.
 
 ## 7. History cleanup
 
 ```bash
-git log --format=%H --diff-filter=ACMR -- '.doer/*' "<base>..HEAD"
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" doer-history <base>
 ```
 
 Empty (the normal case with the Workspace Guard active from intake) → skip. Otherwise confirm with the dev (destructive, rewrites SHAs), then:
 
 ```bash
-git update-ref "refs/doer-backup/<TICKET-ID>-pre-cleanup-$(date +%s)" HEAD
-git filter-branch -f --index-filter 'git rm -r --cached --ignore-unmatch .doer/' --prune-empty "<base>..HEAD"
-git update-ref -d "refs/original/refs/heads/<branch>" 2>/dev/null || true
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" scrub-history <base> <TICKET-ID> doer
 ```
 
-Verify the log is now empty; narrate the backup ref. Files on disk are never touched, only history.
+Prints `BACKUP <ref>` before rewriting anything, then backs up, runs `filter-branch` scoped to `<base>..HEAD` only, drops `refs/original/refs/heads/<branch>`, and verifies the log is now empty (exit 1 if `.doer/` somehow survives). Narrate the backup ref. Files on disk are never touched, only history.
 
 ## 8. Close
 
-Precondition: step 6 has the dev's explicit approval of the PR description (or `"skipped"`); if not, this step does not run. Release the lock (`rm -f ./.doer/tickets/<TICKET-ID>/lock.json`) and the session marker (`"${CLAUDE_PLUGIN_ROOT}/lib/helpers/session.sh" stop`). Self-check: `metadata.commit_message` and `metadata.pr_description` are non-null (or `"skipped"`); if either is missing, jump back to that step now, before any closing narration. Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `metadata.summary`, `metadata.status = "complete"`, `metadata.completed_at` (all held from step 4), and `stages.5` complete (`completed_at`); call `metadata.sh write` exactly once.
+Precondition: step 6 has the dev's explicit approval of the PR description (or `"skipped"`); if not, this step does not run. Release the lock and the session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<TICKET-ID>"`. Self-check: `metadata.commit_message` and `metadata.pr_description` are non-null (or `"skipped"`); if either is missing, jump back to that step now, before any closing narration. Build ONE jq filter that in a single pass sets `metadata.summary`, `metadata.status = "complete"`, `metadata.completed_at` (all held from step 4), and `stages.5` complete (`completed_at`); call `metadata.sh write "<TICKET-ID>" '<filter>' --require 5:complete` exactly once. `--require` validates the required fields per `lib/state.md` against the transformed document before swapping; on failure, back-fill and write again as a NEW transition.
 
 Closing narration (in the operating locale): render `metadata.summary`, then: *"Ticket <TICKET-ID> complete. <N> commit(s) on `<branch>`. Run your pre-commit checks, use the commit message and PR description above, then push and open the PR manually (or keep everything as is)."*

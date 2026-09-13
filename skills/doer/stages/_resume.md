@@ -6,17 +6,17 @@ Entered when `/doer <TICKET-ID>` finds an existing `./.doer/tickets/<TICKET-ID>/
 
 1. Read `metadata.json` (e.g. `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" read "<TICKET-ID>"`, or the `Read` tool — reads carry no lock risk, only writes do; see `lib/state.md`, "Writing metadata.json").
 
-2. **Version stamp check.** Compare the MAJOR of `metadata.skill_version` against the MAJOR of the SKILL frontmatter version. If they differ, STOP and narrate: *"This ticket was created with skill v<old> and its schema is incompatible with v<current>. Finish it by hand or recreate it with /doer."* Do not attempt to auto-migrate.
+2. **Version stamp check.** `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" version-check "<TICKET-ID>" "<SKILL frontmatter version>"` compares the MAJOR of `metadata.skill_version` against the MAJOR of the SKILL frontmatter version. On `incompatible <old> vs <current>` (exit 1), STOP and narrate: *"This ticket was created with skill v<old> and its schema is incompatible with v<current>. Finish it by hand or recreate it with /doer."* Do not attempt to auto-migrate.
 
 3. If `metadata.status == "complete"`, narrate the ticket summary and stop (nothing to resume; the dev can read `metadata.json` directly or run `/doer cleanup-history`).
 
 4. Check out `metadata.branch` if not already on it.
 
-5. Run the **Workspace Guard + lock** inline per `lib/workspace-guard.md`. This is a precondition, not a suggestion; on failure, stop and surface it.
+5. Run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<TICKET-ID>" doer` (contract: `lib/workspace-guard.md`). This is a precondition, not a suggestion; on failure (`LOCKED`), stop and surface it.
 
 6. Route by `metadata.stages.<current_stage>.status`:
    - `pending` → start the stage normally.
-   - `in_progress` → resume mid-stage (for Stage 3, read `metadata.code_review` to recover the loop iteration; for Stage 1, read `metadata.ac.pause_reason` and re-enter directly at the integrity/completeness resolution in `01-ac.md`'s Step 5.5, never at intake or generation).
+   - `in_progress` → resume mid-stage (for Stage 3, read `metadata.code_review` to recover the loop iteration; for Stage 1, read `.doer/tickets/<TICKET-ID>/ac-draft.json`'s `pause_reason` and re-enter directly at the integrity/completeness resolution in `01-ac.md`'s Step 5.5, never at intake or generation; if `ac-draft.json` is missing but `metadata.ac` is populated, `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" read "<TICKET-ID>" | jq .ac > ac-draft.json` regenerates it, otherwise this is unrecoverable, narrate it and ask the dev how to proceed).
    - `complete | skipped | imported` → data drift; correct `current_stage` to the next non-complete stage with a single `metadata.sh write` and continue.
 
 7. Narrate *"Resuming <TICKET-ID> at Stage <N> (<name>)."* and proceed: read the current stage's file and ONLY that file. Resume is the implicit intent; do not ask for confirmation.

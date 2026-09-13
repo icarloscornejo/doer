@@ -2,6 +2,23 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.10.0
+
+### Changed
+
+- **Every deterministic step that used to live as bash or python prose inside a `SKILL.md` or stage file now lives as a versioned, tested helper under `lib/helpers/`.** The model was re-deriving and retyping the same mechanical transformations on every run (forbidden-vocabulary greps duplicated across three files, the Workspace Guard's setup block copied into every entry point, the AC graph's integrity pass simulated by eye, Stage 3's pre-review checks marked "no LLM" but run by hand, HAR heredocs retyped from scratch), which cost tokens and drifted. `vocab-guard.sh` is now the single implementation of Core Principle 10's forbidden-label regex. `git-checks.sh` covers all read-only git queries used by `wk:doer`, `wk:bugfix`, `wk:protologs`, and `wk:replay` (base-branch candidates, diff files, secret/AC-leak scanning, squash-gate, tag tracing, phantom files, diff classification, temp-commit counts, PR templates). `git-ops.sh` covers the history-rewriting operations (squash, scrub-history, revert-temp with auto-abort on conflict, phantom restore), always writing a `refs/<kind>-backup/...` ref before touching anything. `metadata.sh` gained `write --require <stage>:<status>` (validates the transformed document before the atomic swap, so a stage never closes with missing required fields), `check-required`, `version-check`, `status`, and `list`. `jira.sh` gained `detect-token-env`, `extract-keys`, and `attachments` (builds `bugfix.json`'s `attachments[]` array with the exact persisted shape). `lessons.sh prune` drops stale-MAJOR lesson files from the global pool. `workspace-guard.sh` replaces the inline Workspace Guard bash block copied into every entry point (`acquire`/`acquire --no-lock`/`release`), ending in an `exec` handoff to `session.sh` so `$PPID` identity is preserved. `stage-checks.sh` covers Stage 2's plan validation and Stage 3's pre-review gate. `har.py` owns Charles-to-HAR conversion, HAR entry listing/head/digest/secret-scan, and byte-exact per-language literal splicing (Kotlin/Swift/TypeScript/Python/Go) for `wk:replay`'s network-response technique. `ac-graph.py` runs Stage 1's integrity pass, merge/split/renumber, and the ticket AC correspondence table render, operating on a new `ac-draft.json` scratch file so Stage 1 no longer holds the whole candidate/obligation graph in the model's own working state between Step 5 and the single `metadata.json` write at Step 6.
+- **The `.md` files keep every ounce of judgment prose** (what to ask, how to narrate, what the dev decides) and only delegate the mechanical part to these helpers; none of the doer/bugfix/replay/protologs skill contracts changed in substance.
+
+### Changed (behavior)
+
+- **The `wk:protologs` commit guard now also denies deleted lines, symmetric with `wk:replay`'s guard.** The previous regex-based check only anchored the start of a line, so `println("PROTOLOG - x"); updateBusinessState()` (real logic glued after the log call on the same physical line) passed the guard despite being explicitly forbidden by the skill; it also never caught a real code line silently deleted alongside a PROTOLOG line. The new `hooks/protolog-restore.py` (mirroring `hooks/replay-restore.py`) uses a balanced-paren, string-state scanner to find the log call's real closing paren before deciding whether anything non-whitespace follows it, and compares stripped-post against stripped-parent byte for byte, so both the glued-logic case and a deleted business line are now caught (`[Check B]` and `[Check A]` respectively) instead of silently passing or being silently cleaned up.
+
+### Added
+
+- `tests/helpers.sh` grew from 4 to 232 assertions, covering every new and extended helper (`vocab-guard.sh`, `git-checks.sh`, `git-ops.sh`, `metadata.sh`, `jira.sh`, `lessons.sh`, `workspace-guard.sh`, `stage-checks.sh`, `har.py`, `ac-graph.py`).
+- `tests/hooks.sh` grew to 50 assertions, adding full `protolog-restore.py` coverage (all call-prefix shapes, `.also{}` variants, the trailing-semicolon allowance, the glued-logic rejection, round-2 semantics across successive PROTOLOG rounds, CRLF and missing-trailing-newline handling).
+- `tests/lib/helper-contract.sh` (new, wired into `tests/skills.sh`): verifies every helper subcommand is actually invoked from either `skills/`/`lib/` prose or composed internally by another helper, and that no raw pre-refactor mechanical pattern (`git filter-branch -f --index-filter`, `git reset --soft`, a bare `makehar` invocation, etc.) is still sitting in `skills/*.md` prose.
+
 ## 7.9.0
 
 ### Added

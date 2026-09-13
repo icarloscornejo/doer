@@ -10,7 +10,7 @@ description: >-
   natural language ("continue", "pause", "keep going with ABC-123"). Stops
   before PR and deploy. For bug triage from a Jira ticket use /wk:bugfix instead.
   For locale or Jira config use /wk:setup, /wk:locale, or /wk:jira instead.
-version: 7.9.0
+version: 7.10.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent, Skill, EnterPlanMode, ExitPlanMode]
 ---
@@ -28,7 +28,7 @@ Executes a single ticket end-to-end on a feature branch: 5 sequential stages, a 
 | Core principles | `${CLAUDE_PLUGIN_ROOT}/lib/principles.md` |
 | Transition Sync (unconditional re-hydration per stage transition / resume) | `${CLAUDE_PLUGIN_ROOT}/lib/sync.md` |
 | Narration, turn boundaries, AskUserQuestion vs chat, locale | `${CLAUDE_PLUGIN_ROOT}/lib/narration.md` |
-| Workspace Guard + per-ticket lock (bash runs inline at every entry) | `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md` |
+| Workspace Guard + per-ticket lock (`lib/helpers/workspace-guard.sh`, run at every entry) | `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md` |
 | Doer/Reviewer loop (severity buckets, iteration shapes, read budgets) | `${CLAUDE_PLUGIN_ROOT}/lib/loop.md` |
 | `metadata.json` / `bugfix.json` schemas, `.doer/` layout, required fields, write discipline | `${CLAUDE_PLUGIN_ROOT}/lib/state.md` |
 | Root-cause discipline for any fix | `${CLAUDE_PLUGIN_ROOT}/lib/debugging.md` |
@@ -57,9 +57,9 @@ Every `/doer ...` invocation, in order:
    - `/doer <ID>` → check `./.doer/tickets/<ID>/metadata.json`:
      - Exists → read `_resume.md` and ONLY that file. Do NOT re-ask intake questions.
      - Missing → read `01-ac.md` and ONLY that file (intake lives there).
-3. **Workspace Guard + lock** (ticket-scoped commands only, not `list`/`status`): run the inline bash in `lib/workspace-guard.md` before touching metadata.
+3. **Workspace Guard + lock** (ticket-scoped commands only, not `list`/`status`): run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<TICKET-ID>" doer` (contract: `lib/workspace-guard.md`) before touching metadata.
 
-**Version stamp.** New tickets record `skill_version` from this frontmatter. On resume, if the ticket's MAJOR differs from the current MAJOR, stop and narrate: the ticket was created with an incompatible schema; finish it by hand or recreate it. No auto-migration machinery exists; if a future 7.x change ever needs one, it will be written then.
+**Version stamp.** New tickets record `skill_version` from this frontmatter. On resume, `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" version-check "<TICKET-ID>" "<this frontmatter's version>"` compares the ticket's MAJOR against the current MAJOR; on `incompatible <old> vs <current>` (exit 1), stop and narrate: the ticket was created with an incompatible schema; finish it by hand or recreate it. No auto-migration machinery exists; if a future 7.x change ever needs one, it will be written then.
 
 **Implicit activation:** natural language ("keep going", "pause here") with an active ticket (`status == "in_progress"` under `./.doer/tickets/*/metadata.json`) is a directive to the orchestrator, not a new query. There is no `pause` command: state persists after every Agent return; `stop` / `wait` / `hold on` halts, anything else resumes.
 

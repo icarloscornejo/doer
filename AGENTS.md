@@ -29,21 +29,26 @@ doer/
 |- lib/                                # shared protocols
 |  |- principles.md                    # core principles (10)
 |  |- narration.md                     # turn boundaries + locale + em-dash rule
-|  |- workspace-guard.md               # .doer/ exclusion + per-ticket lock (inline bash)
+|  |- workspace-guard.md               # .doer/ exclusion + per-ticket lock (contract; implemented by helpers/workspace-guard.sh)
 |  |- state.md                         # schemas: metadata.json, bugfix.json, layout, required fields
 |  |- loop.md                          # doer/reviewer convergence pattern (Stage 3)
 |  |- debugging.md                     # no fix without root cause
-|  |- helpers/{preferences.sh, jira.sh, metadata.sh, entrypoints.sh}
+|  |- helpers/                         # deterministic scripts every skill above calls into, never reimplements
+|     |- preferences.sh, jira.sh, metadata.sh, entrypoints.sh, session.sh
+|     |- vocab-guard.sh, git-checks.sh, git-ops.sh, workspace-guard.sh, stage-checks.sh, lessons.sh
+|     |- har.py, ac-graph.py            # HAR/Charles helpers; Stage 1 AC-graph (validate/merge/split/render-table)
 |- hooks/                              # PreToolUse guards (see hooks/hooks.json)
 |  |- git-commit-no-verify-guard.sh
 |  |- protolog-temp-commit-integrity-guard.sh, protolog-revert-conflict-guard.sh
 |  |- replay-temp-commit-integrity-guard.sh, replay-revert-conflict-guard.sh
 |  |- replay-restore.py                # canonical REPLAY block stripper, shared by the guard and cleanup's fallback
+|  |- protolog-restore.py              # canonical PROTOLOG line stripper, same role for the protolog pair
 |- lessons/                            # global, cross-project
-|- tests/helpers.sh                    # smoke tests for the helper scripts
-|- tests/hooks.sh                      # smoke tests for the PreToolUse guards
-|- tests/skills.sh                     # meta-tests for tests/lib/skill-contract.sh (real repo passes, mutations fail)
+|- tests/helpers.sh                    # smoke tests for lib/helpers/*
+|- tests/hooks.sh                      # smoke tests for the PreToolUse guards + hooks/*-restore.py
+|- tests/skills.sh                     # meta-tests for tests/lib/{skill,helper}-contract.sh (real repo passes, mutations fail)
 |- tests/lib/skill-contract.sh         # contract checker for skills/doer/stages/01-ac.md + lib/state.md
+|- tests/lib/helper-contract.sh        # contract checker: every helper subcommand is called from somewhere, no leftover raw pattern remains
 |- docs/CHANGELOG-archive-6x.md        # archived 1.x-6.x history
 |- AGENTS.md, README.md, CHANGELOG.md, LICENSE
 ```

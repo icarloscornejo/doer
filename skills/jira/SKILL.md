@@ -5,14 +5,14 @@ description: >-
   (e.g. /wk:jira https://jira.example.com). Per-project, not global: different
   repos can point at different Jira instances. Does not touch the token; use
   "/wk:setup" for the full guided flow including the token env var name.
-version: 7.1.0
+version: 7.10.0
 user-invocable: true
 allowed-tools: [Read, Bash]
 ---
 
 # /wk:jira - set this project's Jira base URL
 
-Per-project, git-excluded. Run the Workspace Guard's exclude-rule steps first (steps 1-3 of `${CLAUDE_PLUGIN_ROOT}/lib/workspace-guard.md`, not the per-ticket lock — this command is not ticket-scoped) so `.doer/` is excluded before writing `config.json`.
+Per-project, git-excluded. Run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire --no-lock` first (steps 1-3 of `lib/workspace-guard.md`, not the per-ticket lock: this command is not ticket-scoped) so `.doer/` is excluded before writing `config.json`.
 
 1. Run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" set-url "<url>"` from the repo root. Persists to this project's `./.doer/config.json`.
 2. Confirm the saved URL.

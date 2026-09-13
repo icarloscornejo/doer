@@ -21,6 +21,7 @@ ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/wk/
     ├── metadata.json                  # doer tickets (schema below)
     ├── bugfix.json                    # bugfix tickets (schema in skills/bugfix/SKILL.md)
     ├── ticket.md                      # bugfix only: raw Jira description + comments
+    ├── ac-draft.json                  # Stage 1 scratch (skills/doer/stages/01-ac.md), deleted at Step 6
     └── lock.json                      # per-ticket lock (workspace-guard.md)
 
 ~/Downloads/{TICKET-ID}/               # bugfix only: heavy artifacts
@@ -133,7 +134,7 @@ If `metadata.sh` reports a `write` failure (exit 2, mv failed):
 
 ## Required fields before marking a stage `complete`
 
-Deterministic presence check (no LLM). If a field is missing, back-fill it from the best available source (git log timestamp, current time) and narrate; only then write the status.
+Deterministic presence check (no LLM), implemented by `metadata.sh write --require <stage>:<complete|skipped>` (validates the transformed document before swapping) and standalone by `metadata.sh check-required <stage> <complete|skipped> [<file>|-]`. If a field is missing, back-fill it from the best available source (git log timestamp, current time) and write again as a NEW transition, narrating the correction; only then does the status land.
 
 | Stage | Required when `complete` | Required when `skipped` |
 |---|---|---|

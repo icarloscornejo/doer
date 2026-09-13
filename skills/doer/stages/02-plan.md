@@ -30,12 +30,12 @@ After approval, translate the approved plan into the `metadata.plan` shape (held
 
 ## Step 3. Deterministic checks
 
-Run these mechanically before advancing; fix trivial mismatches in place, and re-open plan mode only if a failure invalidates the approach:
+```bash
+printf '%s' '<plan-object-from-Step-2>' | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/stage-checks.sh" plan "<TICKET-ID>"
+```
 
-- **Files:** every `change: "edit" | "delete"` path exists; every `change: "new"` path does not.
-- **Coverage:** every `AC-N` in `metadata.ac.in_scope` appears in at least one `tests[].covers`.
-- **Assumptions:** run every non-null `check` from the repo root (one batched script, 10s timeout each); record `pass | fail | skipped` per assumption. A `fail` on a high-risk assumption goes back to the dev before proceeding; low/medium failures are narrated and recorded.
+Files (every `change: "edit" | "delete"` path exists, every `change: "new"` path does not), coverage (every `AC-N` in `metadata.ac.in_scope` appears in at least one `tests[].covers`), and assumptions (every non-null `check` run from the repo root, 10s timeout each, recorded `pass | fail | skipped`) all in one call, against the plan object exactly as it will be persisted in Step 4. Exit 0: advance. Exit 1: fix trivial file/coverage mismatches in place and re-run; a `fail` on a high-risk assumption goes back to the dev before proceeding, re-open plan mode only if it invalidates the approach; low/medium failures are narrated and recorded as-is.
 
 ## Step 4. Finalize
 
-Validate required fields per `lib/state.md`. Build ONE jq filter that in a single pass sets `metadata.plan` (Step 2) and `stages.2` complete (with `completed_at`); call `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<TICKET-ID>" '<filter>'` exactly once (never `Write`/`Edit` `metadata.json` directly). Narrate *"Stage 2 complete: N files, M tests planned. Continuing to Stage 3..."* and auto-proceed: read `03-build.md` and ONLY that file.
+Build ONE jq filter that in a single pass sets `metadata.plan` (Step 2) and `stages.2` complete (with `completed_at`); call `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write "<TICKET-ID>" '<filter>' --require 2:complete` exactly once (never `Write`/`Edit` `metadata.json` directly). `--require` validates the required fields per `lib/state.md` against the transformed document before swapping; on failure, back-fill and write again as a NEW transition. Narrate *"Stage 2 complete: N files, M tests planned. Continuing to Stage 3..."* and auto-proceed: read `03-build.md` and ONLY that file.

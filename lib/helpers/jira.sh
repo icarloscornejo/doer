@@ -44,6 +44,15 @@ Commands:
   set-auth-email <EMAIL>            Switch to HTTP Basic auth (email:token) instead of Bearer.
                                     Required for Atlassian Cloud (*.atlassian.net); the token
                                     becomes an API token from id.atlassian.com/manage-profile.
+  detect-token-env                  Candidate env var NAMEs that look like a Jira token
+                                    (never values), one per line.
+  extract-keys <file> [--exclude KEY]
+                                    Print every "[A-Z]+-[0-9]+" match in <file> as a
+                                    JSON array of unique keys, optionally excluding one.
+  attachments <fetch.json> <ticket.md>
+                                    Build bugfix.json's attachments[] array: every
+                                    attachment in <fetch.json>, plus every ".chls"
+                                    mentioned in <ticket.md> with no matching attachment.
 
 Configure once per project (run from the repo root):
   # Jira Server / Data Center:
@@ -192,6 +201,113 @@ case "$CMD" in
       --data "$BODY" "$BASE_URL/rest/api/2/issue/$KEY/comment" > /dev/null \
       || fail "Posting comment to $KEY failed."
     jq -n --arg k "$KEY" '{commented: $k}'
+    ;;
+
+  detect-token-env)
+    # Candidate env var NAMEs only, never values.
+    env | grep -iE 'JIRA.*(PAT|TOKEN)|TOKEN.*JIRA' 2>/dev/null | cut -d= -f1 | sort -u || true
+    ;;
+
+  extract-keys)
+    [ $# -ge 1 ] || { echo '{"error": "extract-keys requires <file>"}'; exit 2; }
+    FILE="$1"; shift
+    EXCLUDE=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --exclude) [ $# -ge 2 ] || { echo '{"error": "--exclude requires a value"}'; exit 2; }; EXCLUDE="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -f "$FILE" ] || fail "extract-keys: file not found: $FILE"
+    KEYS="$(grep -oE '[A-Z]+-[0-9]+' "$FILE" 2>/dev/null | sort -u || true)"
+    if [ -n "$EXCLUDE" ]; then
+      KEYS="$(printf '%s\n' "$KEYS" | grep -vFx "$EXCLUDE" || true)"
+    fi
+    printf '%s' "$KEYS" | jq -R -s 'split("\n") | map(select(. != ""))'
+    ;;
+
+  attachments)
+    [ $# -ge 2 ] || { echo '{"error": "attachments requires <fetch.json> <ticket.md>"}'; exit 2; }
+    FETCH_FILE="$1"
+    TICKET_MD="$2"
+    [ -f "$FETCH_FILE" ] || fail "attachments: file not found: $FETCH_FILE"
+    [ -f "$TICKET_MD" ] || fail "attachments: file not found: $TICKET_MD"
+
+    # ASCII-safe local basename, extension preserved. Original name is kept
+    # verbatim in the "filename" field; this is only the download path.
+    ascii_safe() {
+      local name="$1" base ext
+      case "$name" in
+        *.*) ext="${name##*.}"; base="${name%.*}" ;;
+        *) ext=""; base="$name" ;;
+      esac
+      base="$(printf '%s' "$base" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"
+      if [ -n "$ext" ]; then printf '%s.%s' "$base" "$ext"; else printf '%s' "$base"; fi
+    }
+    kind_of() {
+      case "$1" in
+        *.chls|*.CHLS) echo charles ;;
+        *.png|*.jpg|*.jpeg|*.gif|*.webp|*.heic) echo screenshot ;;
+        *) echo other ;;
+      esac
+    }
+    subdir_of() {
+      case "$1" in
+        charles) echo "charles/" ;;
+        screenshot) echo "screenshots/" ;;
+        *) echo "" ;;
+      esac
+    }
+    # Sets global UNIQUE_PATH rather than printing through a $(...) subshell:
+    # a subshell's SEEN_PATHS mutations never reach the caller, which would
+    # silently defeat the whole point of tracking what has been seen.
+    SEEN_PATHS=()
+    unique_path() { # unique_path <subdir> <safe-basename> -> dedup with -2/-3 suffix
+      local subdir="$1" base="$2" stem ext n=2
+      case "$base" in
+        *.*) ext=".${base##*.}"; stem="${base%.*}" ;;
+        *) ext=""; stem="$base" ;;
+      esac
+      UNIQUE_PATH="${subdir}${base}"
+      while printf '%s\n' "${SEEN_PATHS[@]+"${SEEN_PATHS[@]}"}" | grep -qFx "$UNIQUE_PATH"; do
+        UNIQUE_PATH="${subdir}${stem}-${n}${ext}"
+        n=$((n + 1))
+      done
+      SEEN_PATHS+=("$UNIQUE_PATH")
+    }
+
+    ENTRIES=()
+    while IFS=$'\t' read -r NAME URL; do
+      [ -n "$NAME" ] || continue
+      KIND="$(kind_of "$NAME")"
+      SAFE="$(ascii_safe "$NAME")"
+      unique_path "$(subdir_of "$KIND")" "$SAFE"
+      PATH_OUT="$UNIQUE_PATH"
+      ENTRIES+=("$(jq -n --arg filename "$NAME" --arg kind "$KIND" --arg jira_url "$URL" --arg path "$PATH_OUT" \
+        '{filename: $filename, kind: $kind, source: "attachment", jira_url: $jira_url,
+          path: $path, har: null, done: false, converted: false}')")
+    done < <(jq -r '(.attachments // [])[] | [.filename, .url] | @tsv' "$FETCH_FILE")
+
+    FETCHED_NAMES="$(jq -r '(.attachments // [])[].filename' "$FETCH_FILE")"
+    MENTIONED="$(grep -oE '\[\^[^]]+\.chls\]' "$TICKET_MD" 2>/dev/null | sed -E 's/^\[\^//; s/\]$//' | sort -u || true)"
+    if [ -n "$MENTIONED" ]; then
+      while IFS= read -r NAME; do
+        [ -n "$NAME" ] || continue
+        printf '%s\n' "$FETCHED_NAMES" | grep -qFx "$NAME" && continue
+        SAFE="$(ascii_safe "$NAME")"
+        unique_path "$(subdir_of charles)" "$SAFE"
+        PATH_OUT="$UNIQUE_PATH"
+        ENTRIES+=("$(jq -n --arg filename "$NAME" --arg path "$PATH_OUT" \
+          '{filename: $filename, kind: "charles", source: "mentioned", jira_url: null,
+            path: $path, har: null, done: false, converted: false}')")
+      done <<< "$MENTIONED"
+    fi
+
+    if [ ${#ENTRIES[@]} -eq 0 ]; then
+      echo '[]'
+    else
+      printf '%s\n' "${ENTRIES[@]}" | jq -s '.'
+    fi
     ;;
 
   *)

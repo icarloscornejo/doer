@@ -21,6 +21,7 @@ set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECKER="${REPO_ROOT}/tests/lib/skill-contract.sh"
+HELPER_CHECKER="${REPO_ROOT}/tests/lib/helper-contract.sh"
 AC_REL="skills/doer/stages/01-ac.md"
 STATE_REL="lib/state.md"
 
@@ -210,6 +211,24 @@ else
   echo "----------------------"
 fi
 rm -f "$BASELINE_OUT"
+
+# --- 1b. tests/lib/helper-contract.sh: no dead helper subcommand, no
+# leftover raw mechanical pattern anywhere in the real repo. Run directly
+# against the real tree (not a copied fixture): unlike skill-contract.sh,
+# it reads the whole skills/+lib/+hooks/ tree, not two named files, so a
+# two-file fixture_dir() copy would not exercise it meaningfully; its own
+# logic (a fixed table of known subcommands, fixed leftover-pattern
+# strings) is simple enough not to need mutation coverage of its own.
+HELPER_OUT="$(mktemp)"
+if bash "$HELPER_CHECKER" "$REPO_ROOT" >"$HELPER_OUT" 2>&1; then
+  pass "helper-contract.sh passes against the real repo"
+else
+  fail "helper-contract.sh passes against the real repo"
+  echo "--- checker output ---"
+  cat "$HELPER_OUT"
+  echo "----------------------"
+fi
+rm -f "$HELPER_OUT"
 
 # --- 2. Mutation fixtures, one per finding from the crosscheck rounds. ---
 mutate_and_expect_fail "mutation: distinctness rule removed from Step 5" mut_drop_distinctness_rule
