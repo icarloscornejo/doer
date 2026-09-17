@@ -70,7 +70,7 @@ Any match (exit 1): STOP, do not offer the squash, tell the dev cleanup did not 
 ```bash
 printf '%s' "<chosen message>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> <TICKET-ID> doer
 ```
-prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`).
+prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`). Never append a `Co-Authored-By` trailer to any candidate; `git-ops.sh squash` strips one and prints `STRIPPED Co-Authored-By trailer`, and exits 1 if a repo-side git hook re-injects it.
 
 ## 6. PR description
 

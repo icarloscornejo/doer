@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.10.1
+
+### Fixed
+
+- **`git-ops.sh squash` now strips any `Co-Authored-By` trailer from the commit message and verifies none survives, instead of committing whatever the model drafted verbatim.** The platform's own attribution guidance nudges the model to append `Co-Authored-By: Claude ...` to every commit, and on a machine where the dev's local rule against that wasn't in effect, a `wk:doer` squash landed a commit carrying it. Both `wk:doer` (`skills/doer/stages/05-wrapup.md`) and `wk:bugfix` (`skills/bugfix/SKILL.md`) route every final squash through this one script, so the fix lives there instead of depending on per-machine config. `squash` now strips a trailer (matching whitespace before the colon too, since git's own trailer parser accepts that) from the drafted message before committing, re-validates the message is non-empty after stripping (before creating the backup ref or resetting, so a message that was only a trailer never leaves the working tree mid-operation), amends a single pre-existing commit that already carries the trailer (announcing a backup ref first, same as a real squash), and re-reads the final commit's message after committing to catch a repo-side `prepare-commit-msg` hook re-injecting the trailer (`--no-verify` does not skip that hook), failing loudly instead of silently letting it through. A base commit with zero commits ahead of it (`COUNT == 0`) is left untouched either way, since it belongs to the base branch, not the ticket.
+
 ## 7.10.0
 
 ### Changed

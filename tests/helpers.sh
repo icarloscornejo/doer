@@ -471,6 +471,99 @@ printf 'msg' | "$GIT_OPS_SH" squash main SQ-3 doer > /dev/null 2>&1
 assert_eq "git-ops squash: refuses a dirty working tree" "1" "$?"
 git checkout -q -- f.txt
 
+# --- git-ops.sh squash: Co-Authored-By stripping + post-commit verification ---
+# The platform's attribution guidance nudges the model to append this trailer;
+# the dev's golden rule is that it must never survive a squash, in any shape.
+
+git checkout -q -b feature/squash-trailer main
+printf 'e\n' >> f.txt && git add -A && git commit -q --no-verify -m stepA
+printf 'f\n' >> f.txt && git add -A && git commit -q --no-verify -m stepB
+SQUASH_TRAILER_OUT="$TMPDIR_TEST/squash_trailer_out.txt"
+printf 'feat: with trailer\n\nCo-Authored-By: Claude X <noreply@anthropic.com>' \
+  | "$GIT_OPS_SH" squash main SQ-5 doer > "$SQUASH_TRAILER_OUT"
+assert_eq "git-ops squash: still collapses to exactly 1 commit with a trailer in the draft" \
+  "1" "$(git rev-list --count main..HEAD)"
+git log -1 --format=%B | grep -qi '^co-authored-by' \
+  && fail "git-ops squash: trailer stripped from the final message" \
+  || pass "git-ops squash: trailer stripped from the final message"
+grep -q '^STRIPPED Co-Authored-By trailer$' "$SQUASH_TRAILER_OUT" \
+  && pass "git-ops squash: prints STRIPPED when the draft carried a trailer" \
+  || fail "git-ops squash: prints STRIPPED when the draft carried a trailer"
+
+git checkout -q -b feature/squash-trailer-ws main
+printf 'e\n' >> f.txt && git add -A && git commit -q --no-verify -m stepA
+printf 'f\n' >> f.txt && git add -A && git commit -q --no-verify -m stepB
+printf 'feat: whitespace before colon\n\nCo-Authored-By : Claude X <noreply@anthropic.com>' \
+  | "$GIT_OPS_SH" squash main SQ-6 doer > /dev/null
+git log -1 --format=%B | grep -qiE '^co-authored-by[[:space:]]*:' \
+  && fail "git-ops squash: strips a trailer with whitespace before the colon" \
+  || pass "git-ops squash: strips a trailer with whitespace before the colon"
+
+git checkout -q -b feature/squash-one-trailer main
+printf 'one\n' > one.txt && git add -A && git commit -q --no-verify -m "one: subject
+
+Co-Authored-By: Claude X <noreply@anthropic.com>"
+ONE_BEFORE_HEAD="$(git rev-parse HEAD)"
+SQUASH_ONE_OUT="$TMPDIR_TEST/squash_one_out.txt"
+printf 'msg' | "$GIT_OPS_SH" squash main SQ-3 doer > "$SQUASH_ONE_OUT"
+assert_eq "git-ops squash: a single commit with a trailer stays a no-op (SKIP)" \
+  "SKIP: 1 commit" "$(tail -n1 "$SQUASH_ONE_OUT")"
+git log -1 --format=%B | grep -qi '^co-authored-by' \
+  && fail "git-ops squash: amends the trailer out of a single pre-existing commit" \
+  || pass "git-ops squash: amends the trailer out of a single pre-existing commit"
+assert_eq "git-ops squash: backs up before amending a single trailer-carrying commit" "$ONE_BEFORE_HEAD" \
+  "$(git for-each-ref --format='%(objectname)' 'refs/doer-backup/SQ-3-pre-squash-*' | head -1)"
+grep -q '^STRIPPED Co-Authored-By trailer$' "$SQUASH_ONE_OUT" \
+  && pass "git-ops squash: prints STRIPPED for the amended single commit" \
+  || fail "git-ops squash: prints STRIPPED for the amended single commit"
+
+git checkout -q -b feature/squash-zero main
+printf 'zero\n' > zero.txt && git add -A && git commit -q --no-verify -m "zero: subject
+
+Co-Authored-By: Claude X <noreply@anthropic.com>"
+ZERO_HEAD="$(git rev-parse HEAD)"
+SQUASH_ZERO_OUT="$(printf 'msg' | "$GIT_OPS_SH" squash feature/squash-zero SQ-4 doer)"
+assert_eq "git-ops squash: base == HEAD is a no-op, never touches the base commit" \
+  "SKIP: 1 commit" "$SQUASH_ZERO_OUT"
+assert_eq "git-ops squash: base == HEAD leaves the commit SHA untouched" "$ZERO_HEAD" "$(git rev-parse HEAD)"
+assert_eq "git-ops squash: base == HEAD creates no backup ref" "" \
+  "$(git for-each-ref --format='%(refname)' 'refs/doer-backup/SQ-4-pre-squash-*')"
+
+git checkout -q -b feature/squash-empty main
+printf 'e\n' >> f.txt && git add -A && git commit -q --no-verify -m stepA
+printf 'f\n' >> f.txt && git add -A && git commit -q --no-verify -m stepB
+EMPTY_BEFORE_HEAD="$(git rev-parse HEAD)"
+printf '   \n\t\nCo-Authored-By: Claude X <noreply@anthropic.com>\n' \
+  | "$GIT_OPS_SH" squash main SQ-7 doer > /dev/null 2>&1
+assert_eq "git-ops squash: a message that is only the trailer is refused" "1" "$?"
+assert_eq "git-ops squash: refusing an empty-after-strip message leaves HEAD untouched" \
+  "$EMPTY_BEFORE_HEAD" "$(git rev-parse HEAD)"
+assert_eq "git-ops squash: refusing an empty-after-strip message creates no backup ref" "" \
+  "$(git for-each-ref --format='%(refname)' 'refs/doer-backup/SQ-7-pre-squash-*')"
+assert_eq "git-ops squash: refusing an empty-after-strip message leaves the tree clean" "" \
+  "$(git status --porcelain)"
+
+git checkout -q -b feature/squash-hook main
+printf 'e\n' >> f.txt && git add -A && git commit -q --no-verify -m stepA
+printf 'f\n' >> f.txt && git add -A && git commit -q --no-verify -m stepB
+printf 'g\n' >> f.txt && git add -A && git commit -q --no-verify -m stepC
+mkdir -p .git/hooks
+cat > .git/hooks/prepare-commit-msg <<'HOOK'
+#!/bin/sh
+echo "Co-Authored-By: Claude X <noreply@anthropic.com>" >> "$1"
+HOOK
+chmod +x .git/hooks/prepare-commit-msg
+SQUASH_HOOK_OUT="$TMPDIR_TEST/squash_hook_out.txt"
+printf 'feat: hook re-injects the trailer' | "$GIT_OPS_SH" squash main SQ-8 doer > "$SQUASH_HOOK_OUT" 2>&1
+assert_eq "git-ops squash: exits 1 when a repo hook re-injects the trailer after commit" "1" "$?"
+grep -q 'survived the commit' "$SQUASH_HOOK_OUT" \
+  && pass "git-ops squash: names the survived-the-commit failure" \
+  || fail "git-ops squash: names the survived-the-commit failure"
+grep -q '^BACKUP refs/doer-backup/SQ-8-pre-squash-' "$SQUASH_HOOK_OUT" \
+  && pass "git-ops squash: still announces the backup ref before the hook re-injection is caught" \
+  || fail "git-ops squash: still announces the backup ref before the hook re-injection is caught"
+rm -f .git/hooks/prepare-commit-msg
+
 # --- git-ops.sh revert-temp ---
 git checkout -q -b feature/revert main
 printf 'fun a() {\n    val x = 1\n}\n' > Foo.kt

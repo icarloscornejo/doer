@@ -32,6 +32,13 @@ EOF
 [ $# -ge 1 ] || usage
 CMD="$1"; shift
 
+# The platform's own attribution guidance nudges the model to append a
+# Co-Authored-By trailer to every commit; the dev never wants that on a
+# squash. git accepts whitespace before the trailer's colon, so match that
+# too, not just the exact "key:" form.
+strip_coauthor() { grep -viE '^co-authored-by[[:space:]]*:' || true; }
+has_coauthor()   { grep -qiE '^co-authored-by[[:space:]]*:'; }
+
 case "$CMD" in
   squash)
     [ $# -ge 3 ] || usage
@@ -40,17 +47,38 @@ case "$CMD" in
       || { echo "git-ops.sh squash: working tree is dirty, refusing" >&2; exit 1; }
     git merge-base --is-ancestor "$BASE" HEAD \
       || { echo "git-ops.sh squash: <base> is not an ancestor of HEAD, refusing" >&2; exit 1; }
+    MSG="$(cat)"
+    HAD_TRAILER=0
+    printf '%s\n' "$MSG" | has_coauthor && HAD_TRAILER=1
+    CLEAN_MSG="$(printf '%s\n' "$MSG" | strip_coauthor | git stripspace)"
+    [ -n "$CLEAN_MSG" ] \
+      || { echo "git-ops.sh squash: empty commit message after stripping" >&2; exit 1; }
+    [ "$HAD_TRAILER" -eq 0 ] || echo "STRIPPED Co-Authored-By trailer"
     COUNT="$(git rev-list --count "$BASE"..HEAD)"
-    if [ "$COUNT" -le 1 ]; then
+    if [ "$COUNT" -eq 0 ]; then
       echo "SKIP: 1 commit"
       exit 0
     fi
-    MSG="$(cat)"
+    if [ "$COUNT" -eq 1 ]; then
+      if git log -1 --format=%B | has_coauthor; then
+        REF="refs/${KIND}-backup/${TICKET}-pre-squash-$(date +%s)"
+        git update-ref "$REF" HEAD
+        echo "BACKUP $REF"
+        git log -1 --format=%B | strip_coauthor | git stripspace | git commit --amend --no-verify -F -
+        echo "STRIPPED Co-Authored-By trailer"
+        git log -1 --format=%B | has_coauthor \
+          && { echo "git-ops.sh squash: Co-Authored-By trailer survived the commit" >&2; exit 1; }
+      fi
+      echo "SKIP: 1 commit"
+      exit 0
+    fi
     REF="refs/${KIND}-backup/${TICKET}-pre-squash-$(date +%s)"
     git update-ref "$REF" HEAD
     echo "BACKUP $REF"
     git reset --soft "$BASE"
-    printf '%s' "$MSG" | git commit --no-verify -F -
+    printf '%s' "$CLEAN_MSG" | git commit --no-verify -F -
+    git log -1 --format=%B | has_coauthor \
+      && { echo "git-ops.sh squash: Co-Authored-By trailer survived the commit" >&2; exit 1; }
     FINAL_COUNT="$(git rev-list --count "$BASE"..HEAD)"
     [ "$FINAL_COUNT" -eq 1 ] \
       || { echo "git-ops.sh squash: expected 1 commit after squash, got $FINAL_COUNT" >&2; exit 1; }

@@ -11,7 +11,7 @@ description: >-
   a forced response or flag to reproduce) and /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.10.0
+version: 7.10.1
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -208,7 +208,7 @@ Mark stage 5 complete → Stage 6.
    ```bash
    printf '%s' "<chosen message>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> <KEY> bugfix
    ```
-   prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`).
+   prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`). Never append a `Co-Authored-By` trailer to any candidate; `git-ops.sh squash` strips one and prints `STRIPPED Co-Authored-By trailer`, and exits 1 if a repo-side git hook re-injects it.
 9. **PR description.** Auto-detect a template:
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" pr-templates
