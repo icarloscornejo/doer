@@ -23,8 +23,11 @@ Usage: metadata.sh <command> [args...]
 Commands (take <TICKET-ID> first):
   path <TICKET-ID> [--file <name>]         Print the resolved file path.
   read <TICKET-ID> [--file <name>]         Print the file's current content.
-  init <TICKET-ID> [--file <name>]         Create the file from JSON on stdin.
+  init <TICKET-ID> [--file <name>] [--track-cost]
+                                            Create the file from JSON on stdin.
                                             Refuses if the file already exists.
+                                            --track-cost registers the current session
+                                            in cost_sessions (see cost.sh).
   write <TICKET-ID> <jq-filter> [jq-args...] [--require <stage>:<complete|skipped>] [--file <name>]
                                             Apply ONE jq transform, swap atomically.
                                             With --require, validate the TRANSFORMED
@@ -137,7 +140,10 @@ missing_fields() {
           and (($doc | getpath(["stages","4","skipped_acknowledged_by"])) != "dev")
        then ["stages.4.skipped_acknowledged_by must equal \"dev\""] else [] end) as $missing_value
     | (if $stage == "4" and $status == "complete" then ($doc | stage4_problems) else [] end) as $missing_stage4
-    | {missing: ($missing_presence + $missing_value + $missing_stage4)}
+    | (if $stage == "5" and $status == "complete"
+          and ((($doc.cost | type) != "object") or ($doc.cost.status == null))
+       then ["cost"] else [] end) as $missing_cost
+    | {missing: ($missing_presence + $missing_value + $missing_stage4 + $missing_cost)}
     # jq-compat:end
   ' "$file")" || { echo '{"missing":["<internal: jq failed>"]}' ; return 1; }
   printf '%s\n' "$json"
@@ -145,10 +151,66 @@ missing_fields() {
   [ "$n" -eq 0 ]
 }
 
+# Cost tracking: the merge of one session sample into cost_sessions lives here
+# once; cost.sh record reuses it through the cost-merge-def command. The merge
+# is total, so a malformed document or sample leaves the caller's result as is.
+# jq-compat:begin write
+COST_MERGE_DEF='def cost_merge($sample):
+  . as $doc
+  | try (
+      if ($sample | type) == "object" and ($sample.id | type) == "string" and ($sample.id | length) > 0
+         and ($doc.cost_sessions | type) == "array"
+         and all($doc.cost_sessions[]; type == "object" and (.id | type) == "string" and (.usd == null or (.usd | type) == "number"))
+      then
+        (any($doc.cost_sessions[]; .id == $sample.id)) as $known
+        | if ($known | not)
+          then $doc | .cost_sessions += [{id: $sample.id, ts: ($sample.ts // ""), usd: $sample.usd}]
+          else $doc | .cost_sessions |= map(
+            if .id != $sample.id or $sample.usd == null then .
+            elif .usd == null or $sample.usd >= .usd then .usd = $sample.usd
+            else .reset = true end)
+          end
+      else $doc end
+    ) catch $doc;
+'
+COST_SAMPLE_OK='type == "object" and (.id | type) == "string" and (.id | length) > 0 and (.ts | type) == "string" and (.usd == null or (.usd | type) == "number")'
+# jq-compat:end
+
+# jq-compat:begin cost_line
+COST_LINE_DEF='def usd_text:
+  (. * 100 | round) as $cents
+  | ($cents % 100 | tostring) as $rest
+  | "$\($cents / 100 | floor).\(if ($rest | length) == 1 then "0" + $rest else $rest end)";
+def cost_line:
+  .cost as $c
+  | if ($c | type) != "object" then ""
+    elif $c.status == "known" and ($c.total_usd | type) == "number" then
+      ($c.sessions | if type == "array" then length else 0 end) as $n
+      | "Cost: \($c.total_usd | usd_text) across \($n) session\(if $n == 1 then "" else "s" end) (whole sessions)"
+    else
+      "Cost: unknown (\($c.reason | if type == "string" and length > 0 then split("; ")[0] else "no reason recorded" end))"
+    end;
+'
+# jq-compat:end
+
+# current_cost_sample: the validated sample of the sibling cost.sh, or nothing.
+# Any missing, failing or garbage helper just means no sample, never a failed write.
+current_cost_sample() {
+  local helper
+  helper="$(dirname "$0")/cost.sh"
+  [ -x "$helper" ] || return 0
+  "$helper" sample 2>/dev/null | jq -ce "select($COST_SAMPLE_OK)" 2>/dev/null || true
+}
+
 CMD="$1"; shift
 
 # --- Commands that do NOT take <TICKET-ID> first ---
 case "$CMD" in
+  cost-merge-def)
+    printf '%s' "$COST_MERGE_DEF"
+    exit 0
+    ;;
+
   check-required)
     [ $# -ge 2 ] || usage
     STAGE="$1"; STATUS="$2"; shift 2
@@ -172,19 +234,23 @@ case "$CMD" in
       [ -e "$d" ] || continue
       TID="$(basename "$d")"
       if [ -f "${d}metadata.json" ]; then
-        jq -r --arg id "$TID" '
+        jq -r --arg id "$TID" "$COST_LINE_DEF"'
+          # jq-compat:begin list
           def stagenames: {"1":"ac","2":"plan","3":"build","4":"verify","5":"wrapup"};
           ($id) + "\tdoer\t" + (.status // "?") + "\t" + ((.current_stage // 0) | tostring) +
-          "\t" + (stagenames[(.current_stage // 0) | tostring] // "?") + "\t" + (.branch // "")
+          "\t" + (stagenames[(.current_stage // 0) | tostring] // "?") + "\t" + (.branch // "") + "\t" + cost_line
+          # jq-compat:end
         ' "${d}metadata.json"
       elif [ -f "${d}bugfix.json" ]; then
-        jq -r --arg id "$TID" '
+        jq -r --arg id "$TID" "$COST_LINE_DEF"'
+          # jq-compat:begin list_bugfix
           def stagenames: {"0":"init","1":"ingest","2":"download","3":"evidence","4":"verdict","5":"execute","6":"verify"};
           ($id) + "\tbugfix\t" + (.status // "?") + "\t" + ((.current_stage // 0) | tostring) +
-          "\t" + (stagenames[(.current_stage // 0) | tostring] // "?") + "\t"
+          "\t" + (stagenames[(.current_stage // 0) | tostring] // "?") + "\t\t" + cost_line
+          # jq-compat:end
         ' "${d}bugfix.json"
       fi
-    done | awk -F'\t' '{printf "%-9s %-7s [%-11s] Stage %-2s (%s)%s\n", $1, $2, $3, $4, $5, ($6 != "" ? "    " $6 : "")}'
+    done | awk -F'\t' '{printf "%-9s %-7s [%-11s] Stage %-2s (%s)%s%s\n", $1, $2, $3, $4, $5, ($6 != "" ? "    " $6 : ""), ($7 != "" ? "    " $7 : "")}'
     exit 0
     ;;
 esac
@@ -195,6 +261,7 @@ TICKET_ID="$1"; shift
 
 FILE_NAME="metadata.json"
 REQUIRE=""
+TRACK_COST=0
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -207,6 +274,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "metadata.sh: --require requires a value" >&2; exit 2; }
       REQUIRE="$2"
       shift 2
+      ;;
+    --track-cost)
+      TRACK_COST=1
+      shift
       ;;
     *)
       ARGS+=("$1")
@@ -235,7 +306,23 @@ case "$CMD" in
     printf '%s' "$CONTENT" | jq . > /dev/null || { echo "metadata.sh: stdin is not valid JSON, $TARGET not created" >&2; exit 1; }
     mkdir -p "$TICKET_DIR"
     TMP="${TARGET}.tmp.$$"
-    printf '%s' "$CONTENT" | jq . > "$TMP"
+    if [ "$TRACK_COST" = 1 ]; then
+      # A scratch left by cost.sh enter counts only for this very session; any other is stale.
+      ENTRY_FILE="${TICKET_DIR}/cost-entry.json"
+      INIT_SAMPLE="$(current_cost_sample)"
+      INIT_ENTRIES="[]"
+      if [ -n "$INIT_SAMPLE" ] && [ -f "$ENTRY_FILE" ]; then
+        INIT_ENTRY="$(jq -ce --argjson current "$INIT_SAMPLE" "select($COST_SAMPLE_OK and .id == \$current.id)" "$ENTRY_FILE" 2>/dev/null || true)"
+        [ -z "$INIT_ENTRY" ] || INIT_ENTRIES="[$INIT_ENTRY]"
+      fi
+      # jq-compat:begin init
+      INIT_FILTER='.cost_sessions = $entries | cost_merge($sample)'
+      # jq-compat:end
+      printf '%s' "$CONTENT" | jq "${COST_MERGE_DEF}${INIT_FILTER}" --argjson entries "$INIT_ENTRIES" --argjson sample "${INIT_SAMPLE:-null}" > "$TMP"
+      rm -f "$ENTRY_FILE"
+    else
+      printf '%s' "$CONTENT" | jq . > "$TMP"
+    fi
     mv "$TMP" "$TARGET"
     ;;
 
@@ -244,7 +331,20 @@ case "$CMD" in
     [ -f "$TARGET" ] || { echo "metadata.sh: $TARGET does not exist; use 'init' first" >&2; exit 1; }
     FILTER="$1"; shift
     TMP="${TARGET}.tmp.$$"
-    if ! jq "$FILTER" "$@" "$TARGET" > "$TMP"; then
+    # A tracked document folds one cost sample into this same transform, so the
+    # write stays a single rename. Newlines around the caller's filter keep a
+    # trailing # comment from swallowing the merge.
+    SAMPLE_ARGS=()
+    if jq -e '(.cost_sessions | type) == "array"' "$TARGET" > /dev/null 2>&1; then
+      WRITE_SAMPLE="$(current_cost_sample)"
+      if [ -n "$WRITE_SAMPLE" ]; then
+        FILTER="${COST_MERGE_DEF}(
+${FILTER}
+) | cost_merge(\$cost_sample)"
+        SAMPLE_ARGS=(--argjson cost_sample "$WRITE_SAMPLE")
+      fi
+    fi
+    if ! jq "$FILTER" "${SAMPLE_ARGS[@]+"${SAMPLE_ARGS[@]}"}" "$@" "$TARGET" > "$TMP"; then
       rm -f "$TMP"
       echo "metadata.sh: jq transform failed, $TARGET left untouched" >&2
       exit 1
@@ -303,7 +403,7 @@ case "$CMD" in
     }
     [ -f "$TARGET" ] || { echo "metadata.sh: no metadata.json or bugfix.json under $TICKET_DIR" >&2; exit 1; }
     KIND="doer"; [ "$FILE_NAME" = "bugfix.json" ] && KIND="bugfix"
-    jq -r --arg id "$TICKET_ID" --arg kind "$KIND" '
+    jq -r --arg id "$TICKET_ID" --arg kind "$KIND" "$COST_LINE_DEF"'
       # jq-compat:begin status
       def stagenames_doer: {"1":"ac","2":"plan","3":"build","4":"verify","5":"wrapup"};
       def stagenames_bugfix: {"0":"init","1":"ingest","2":"download","3":"evidence","4":"verdict","5":"execute","6":"verify"};
@@ -333,9 +433,15 @@ case "$CMD" in
         ([$order[] | "  [\(mark(.))] \(.) \($names[.])"] | join("\n")) + "\n\n" +
         "Blockers: " + (if $open_blockers == 0 then "none" else "\($open_blockers) open" end) +
         (if $kind == "doer" and ($stages | type) == "object" and ($stages["4"] | type) == "object" and $stages["4"].status == "complete"
-         then verify_block($stages["4"]) else "" end)
+         then verify_block($stages["4"]) else "" end) +
+        (cost_line as $cost_text | if $cost_text == "" then "" else "\n\n" + $cost_text end)
       # jq-compat:end
     ' "$TARGET"
+    # A key holding both files shows the other file's cost too, one line per file.
+    OTHER_NAME="bugfix.json"; [ "$FILE_NAME" = "bugfix.json" ] && OTHER_NAME="metadata.json"
+    if [ -f "${TICKET_DIR}/${OTHER_NAME}" ]; then
+      jq -r "$COST_LINE_DEF"'cost_line | select(. != "")' "${TICKET_DIR}/${OTHER_NAME}" 2>/dev/null || true
+    fi
     ;;
 
   *)

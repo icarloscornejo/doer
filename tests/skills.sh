@@ -277,6 +277,66 @@ else
   fail "state.md documents metadata.test_weakening_justifications"
 fi
 
+# --- 1d. DOER-3 cost per ticket: contract greps on the prose call sites. Fixed
+# strings on purpose; they ARE the contract between the skills and cost.sh.
+# md_section <file> <heading-prefix>: from the heading line up to (excluding)
+# the next heading of the same or a shallower level.
+md_section() {
+  awk -v prefix="$2" '
+    function level(line,   n) { n = 0; while (substr(line, n + 1, 1) == "#") n++; return n }
+    index($0, prefix) == 1 && !grab { grab = 1; lvl = level($0); print; next }
+    grab && /^#+ / && level($0) <= lvl { grab = 0 }
+    grab { print }
+  ' "$1"
+}
+cost_has() { # cost_has <desc> <text> <fixed-string>
+  if printf '%s\n' "$2" | grep -qF -- "$3"; then pass "cost prose: $1"; else fail "cost prose: $1"; fi
+}
+COST_ENTER='lib/helpers/cost.sh" enter'
+COST_RECORD='lib/helpers/cost.sh" record'
+COST_UNKNOWN='lib/helpers/cost.sh" unknown'
+COST_SLURP='--slurpfile cost'
+COST_SET='.cost = $cost[0]'
+
+AC_STEP1="$(md_section "$REPO_ROOT/skills/doer/stages/01-ac.md" '## Step 1.')"
+AC_STEP3="$(md_section "$REPO_ROOT/skills/doer/stages/01-ac.md" '## Step 3.')"
+cost_has "01-ac.md Step 1 registers the session with cost.sh enter" "$AC_STEP1" "$COST_ENTER"
+cost_has "01-ac.md Step 3 init passes --track-cost" "$AC_STEP3" 'init "<TICKET-ID>" --track-cost'
+cost_has "_resume.md registers the session with cost.sh enter" "$(cat "$REPO_ROOT/skills/doer/stages/_resume.md")" "$COST_ENTER"
+
+WRAPUP_STEP8="$(md_section "$REPO_ROOT/skills/doer/stages/05-wrapup.md" '## 8.')"
+cost_has "05-wrapup.md Step 8 runs cost.sh record" "$WRAPUP_STEP8" "$COST_RECORD"
+cost_has "05-wrapup.md Step 8 falls back to cost.sh unknown" "$WRAPUP_STEP8" "$COST_UNKNOWN"
+cost_has "05-wrapup.md Step 8 passes the record with --slurpfile cost" "$WRAPUP_STEP8" "$COST_SLURP"
+cost_has "05-wrapup.md Step 8 stores it as .cost = \$cost[0]" "$WRAPUP_STEP8" "$COST_SET"
+cost_has "05-wrapup.md Step 8 says a close is never blocked by cost" "$WRAPUP_STEP8" 'never blocked by cost'
+
+BUGFIX_MD="$REPO_ROOT/skills/bugfix/SKILL.md"
+BUGFIX_STAGE0="$(md_section "$BUGFIX_MD" '## Stage 0')"
+BUGFIX_SPIKE="$(md_section "$BUGFIX_MD" '### `not_app_bug`')"
+BUGFIX_STAGE6="$(md_section "$BUGFIX_MD" '## Stage 6')"
+cost_has "bugfix Stage 0 init passes --track-cost" "$BUGFIX_STAGE0" '--file bugfix.json --track-cost'
+cost_has "bugfix Stage 0 resume registers the session with cost.sh enter" "$BUGFIX_STAGE0" "$COST_ENTER"
+cost_has "bugfix Stage 0 creates the scratch with cost.sh enter before init" "$BUGFIX_STAGE0" 'cost-entry.json'
+cost_has "bugfix spike close records cost with cost.sh record" "$BUGFIX_SPIKE" "$COST_RECORD"
+cost_has "bugfix spike close stores .cost = \$cost[0]" "$BUGFIX_SPIKE" "$COST_SET"
+cost_has "bugfix spike close falls back to cost.sh unknown" "$BUGFIX_SPIKE" "$COST_UNKNOWN"
+cost_has "bugfix Stage 6 close records cost with cost.sh record" "$BUGFIX_STAGE6" "$COST_RECORD"
+cost_has "bugfix Stage 6 close stores .cost = \$cost[0]" "$BUGFIX_STAGE6" "$COST_SET"
+cost_has "bugfix Stage 6 close falls back to cost.sh unknown" "$BUGFIX_STAGE6" "$COST_UNKNOWN"
+
+ANALYZE_CONFIRM="$(md_section "$REPO_ROOT/skills/bugfix/analyze.md" '## 4. Confirm')"
+cost_has "analyze.md Confirm write records cost with cost.sh record" "$ANALYZE_CONFIRM" "$COST_RECORD"
+cost_has "analyze.md Confirm write stores .cost = \$cost[0]" "$ANALYZE_CONFIRM" "$COST_SET"
+cost_has "analyze.md Confirm write falls back to cost.sh unknown" "$ANALYZE_CONFIRM" "$COST_UNKNOWN"
+cost_has "analyze.md Confirm write passes --slurpfile cost" "$ANALYZE_CONFIRM" "$COST_SLURP"
+
+if grep -qF 'cost_sessions' "$REPO_ROOT/lib/state.md"; then
+  pass "state.md documents cost_sessions"
+else
+  fail "state.md documents cost_sessions"
+fi
+
 # --- 2. Mutation fixtures, one per finding from the crosscheck rounds. ---
 mutate_and_expect_fail "mutation: distinctness rule removed from Step 5" mut_drop_distinctness_rule
 mutate_and_expect_fail "mutation: Step 5.5 no longer binds to Step 5's rule (drift risk)" mut_step55_no_longer_binds_to_step5

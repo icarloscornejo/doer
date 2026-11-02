@@ -8,6 +8,8 @@ Entered when `/doer <TICKET-ID>` finds an existing `./.doer/tickets/<TICKET-ID>/
 
 2. **Version stamp check.** `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" version-check "<TICKET-ID>" "<SKILL frontmatter version>"` compares the MAJOR of `metadata.skill_version` against the MAJOR of the SKILL frontmatter version. On `incompatible <old> vs <current>` (exit 1), STOP and narrate: *"This ticket was created with skill v<old> and its schema is incompatible with v<current>. Finish it by hand or recreate it with /doer."* Do not attempt to auto-migrate.
 
+2.5. **Cost session.** Register this session: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" enter "<TICKET-ID>"`. It writes once only when the session is not yet in `cost_sessions`, does nothing for tickets created without tracking, and never fails the flow.
+
 3. If `metadata.status == "complete"`, narrate the ticket summary and stop (nothing to resume; the dev can read `metadata.json` directly or run `/doer cleanup-history`).
 
 4. Check out `metadata.branch` if not already on it.

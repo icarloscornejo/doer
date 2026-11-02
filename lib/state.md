@@ -112,9 +112,13 @@ This is a **different mechanism** from the cross-project lessons pool (`${CLAUDE
   "runtime_build_command": null,
   "last_green_sha": null, "last_green_test_command": null,
   "assumptions_validation": [], "lessons_captured": [],
-  "summary": null, "commit_message": null, "pr_description": null
+  "summary": null, "commit_message": null, "pr_description": null,
+  "cost_sessions": [{"id": "<session id>", "ts": "<ISO8601>", "usd": 4.2}],
+  "cost": null
 }
 ```
+
+Cost tracking (`lib/helpers/cost.sh`): `cost_sessions` lists the sessions that worked the ticket, each with its last known `usd` (or `null`) and `reset: true` when a later reading went lower. It exists only on tickets created with `init --track-cost`; every `metadata.sh write` on such a ticket folds a sample of the current session into the same write. `cost` is written once at close by `cost.sh record`: `status` (`known | unknown`), `total_usd`, `reason`, `scope` (always `"whole sessions; may include non-ticket work in them"`), token totals, per-session figures, `by_stage` (tokens only, or `null` with `by_stage_reason`) and `recorded_at`. Sessions are counted whole, so a session shared by two tickets counts in each; tickets created before 7.13.0 record `unknown`. No price table: dollars come only from counters other tools persist.
 
 Stage statuses: `pending | in_progress | complete | skipped | imported`. `ac`, `plan`, and later fields start absent and are written by their owning stage. `last_green_sha` is always the full 40-char `git rev-parse HEAD` output (string-equality comparisons break on abbreviation). Stage 1 can also persist `metadata.ac` in a deliberately INCOMPLETE state, with `stages.1.status = "in_progress"` and a `metadata.ac.pause_reason` set (`01-ac.md`, "Pausing Stage 1"): an obligation the dev's own edits left uncovered still needs a disposition, and only the dev can supply one. This is the same "leave the stage `in_progress` for a later resume" pattern `lib/loop.md` uses for the Stage 3 loop; `stages.1.status = "complete"` is reserved for a draft that passed the deterministic integrity pass in full.
 
@@ -144,7 +148,7 @@ Deterministic presence check (no LLM), implemented by `metadata.sh write --requi
 | 2 plan | `completed_at`, `metadata.plan` populated | n/a |
 | 3 build | `completed_at`, `iterations`, `loop_outcome`, `metadata.last_green_sha` | n/a (never skipped) |
 | 4 verify | `completed_at`, `ac_verdicts`, `recommendation`, `evidence`, `anomalies`, `rationale`; see "Stage 4 payload" below | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
-| 5 wrapup | `completed_at`, `metadata.summary`, `metadata.commit_message`, `metadata.pr_description` (or `"skipped"`) | n/a |
+| 5 wrapup | `completed_at`, `metadata.summary`, `metadata.commit_message`, `metadata.pr_description` (or `"skipped"`), `metadata.cost` (an object with a `status`) | n/a |
 
 ### Stage 4 payload
 

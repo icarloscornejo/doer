@@ -11,7 +11,7 @@ description: >-
   a forced response or flag to reproduce) and /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.12.0
+version: 7.13.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -79,11 +79,12 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
 ## Stage 0 - Init & Resume
 
 1. Parse the ticket **KEY** from the argument (full URL or bare key; regex `[A-Z]+-\d+`).
-2. If `./.doer/tickets/<KEY>/bugfix.json` exists → **resume**: read it, announce `current_stage`, jump to the next incomplete stage. Never redo work flagged `done`.
-3. Otherwise run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<KEY>" bugfix` (contract: `lib/workspace-guard.md`), then create the folders and the initial `bugfix.json` (`status=in_progress`, `current_stage=0`, all stages pending, `artifacts_dir` set):
+2. If `./.doer/tickets/<KEY>/bugfix.json` exists → **resume**: read it, announce `current_stage`, jump to the next incomplete stage. Never redo work flagged `done`. First register this session for cost: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" enter "<KEY>" --file bugfix.json` (writes only when the session is not yet in `cost_sessions`).
+3. Otherwise run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<KEY>" bugfix` (contract: `lib/workspace-guard.md`), then create the folders and the initial `bugfix.json` (`status=in_progress`, `current_stage=0`, all stages pending, `artifacts_dir` set). `cost.sh enter` runs before `init` and leaves `cost-entry.json` for it; `--track-cost` adds `cost_sessions` with the current session:
    ```bash
    mkdir -p "$HOME/Downloads/<KEY>/charles" "$HOME/Downloads/<KEY>/screenshots" ".doer/tickets/<KEY>"
-   echo '<full JSON document>' | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" init "<KEY>" --file bugfix.json
+   "${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" enter "<KEY>"
+   echo '<full JSON document>' | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" init "<KEY>" --file bugfix.json --track-cost
    ```
 4. Verify Jira access: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" config`. On missing `base_url` or absent token, run the auto-detect pass (`jira.sh detect-token-env` for candidate env var NAMEs, plus project memory, never values); if nothing resolves, stop and point the user at `/wk:setup`.
 
@@ -184,7 +185,7 @@ Mark stage 5 complete → Stage 6.
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/jira.sh" comment <KEY> "$HOME/Downloads/<KEY>/spike.md"
    ```
-   Mark `status=complete`, release the lock and session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<KEY>"`. **A spike does not
+   Close in ONE `metadata.sh write ... --file bugfix.json` that sets `status=complete` and the cost: run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" record "<KEY>" --file bugfix.json > .doer/tickets/<KEY>/cost-record.json`, add `.cost = $cost[0]` to the filter and pass `--slurpfile cost .doer/tickets/<KEY>/cost-record.json`, deleting `cost-record.json` after the successful write. If the record output is empty or not a JSON object, use `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" unknown "<reason>"` instead; never store `cost: null` and never let cost block the close. Then release the lock and session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<KEY>"`. **A spike does not
    go to device; stop here.**
 
 ## Stage 6 - Verify on device & Deliver (`app_bug` only)
@@ -214,7 +215,7 @@ Mark stage 5 complete → Stage 6.
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" pr-templates
    ```
    One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent (read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 3). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no `REPLAY`, no stage names, no verdict jargon like `app_bug`). Validate with `vocab-guard.sh` (same as step 7) before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `pr_description` or running step 10 before the dev's reply is prohibited. On requested changes, rewrite, re-validate with `vocab-guard.sh`, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks step 10; on `skip`, hold the literal `"skipped"` for step 10's write.
-10. **Close.** Precondition: step 9 has the dev's explicit approval (or `"skipped"`); if not, this step does not run. ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 7's choice), `pr_description` (step 9's approved result, or `"skipped"`), `replay` (step 1's summary, or `null`), and `stages.6="complete"`. Release the lock and session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<KEY>"`.
+10. **Close.** Precondition: step 9 has the dev's explicit approval (or `"skipped"`); if not, this step does not run. ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 7's choice), `pr_description` (step 9's approved result, or `"skipped"`), `replay` (step 1's summary, or `null`), `.cost = $cost[0]` and `stages.6="complete"`. Before the write run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" record "<KEY>" --file bugfix.json > .doer/tickets/<KEY>/cost-record.json` and pass `--slurpfile cost .doer/tickets/<KEY>/cost-record.json`, deleting `cost-record.json` after the successful write; if the output is empty or not a JSON object use `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" unknown "<reason>"`, so cost never blocks the close. Release the lock and session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<KEY>"`.
 
 ## Notes
 

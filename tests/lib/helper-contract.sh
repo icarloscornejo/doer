@@ -55,6 +55,7 @@ git-ops.sh:squash scrub-history revert-temp restore-phantoms
 workspace-guard.sh:acquire release
 stage-checks.sh:plan pre-review
 metadata.sh:check-required version-check status list
+cost.sh:enter record unknown sample
 jira.sh:detect-token-env extract-keys attachments
 lessons.sh:prune
 har.py:convert list head digest scan splice

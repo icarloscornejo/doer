@@ -328,7 +328,7 @@ check_stage4 "accepted_not_exercised with a non-object item is refused" 1 "stage
 # a wrongly typed stages.4 must not break other stages' checks
 STAGE5_FIELDS='{"completed_at":"t"}'
 for odd_stage4 in '"garbage"' '{"status":"complete","evidence":["a"],"ac_verdicts":["x"],"anomalies":"none","accepted_not_exercised":{"a":1},"override":"yes"}' '{"status":"complete","recommendation":"NEED_MORE_DATA"}'; do
-  printf '{"ac":{"in_scope":[7]},"summary":"s","commit_message":"c","pr_description":"p","stages":{"4":%s,"5":%s}}' "$odd_stage4" "$STAGE5_FIELDS" \
+  printf '{"ac":{"in_scope":[7]},"summary":"s","commit_message":"c","pr_description":"p","cost":{"status":"unknown"},"stages":{"4":%s,"5":%s}}' "$odd_stage4" "$STAGE5_FIELDS" \
     | "$METADATA_SH" check-required 5 complete - > /dev/null 2>&1
   assert_eq "stage4 check: odd stages.4 still passes check-required 5 complete ($odd_stage4)" "0" "$?"
 done
@@ -395,12 +395,17 @@ printf '%s' "$SKIPPED_STATUS_OUT" | grep -qF "Verify evidence:" \
 #   # jq-compat:begin status           ...   # jq-compat:end
 # extract_jq_part prints the lines strictly between a begin marker and the next
 # end marker. No grep -P: BSD grep must work.
-extract_jq_part() { # extract_jq_part <part-name>
+extract_jq_part() { # extract_jq_part <part-name> [file, default metadata.sh]
   awk -v part="$1" '
     $0 ~ ("# jq-compat:begin " part "([[:space:]]|$)") { inside = 1; next }
     inside && /# jq-compat:end/ { inside = 0; next }
     inside { print }
-  ' "$METADATA_SH"
+  ' "${2:-$METADATA_SH}"
+}
+
+# list_jq_parts <file>: names of every jq-compat part in a script, one per line.
+list_jq_parts() {
+  awk '{ for (i = 1; i < NF; i++) if ($i == "jq-compat:begin") print $(i + 1) }' "$1"
 }
 
 # jq_compat_problems <jq-text>: prints one line per problem; empty output means compatible.
@@ -430,6 +435,12 @@ for jq_part in missing_fields status; do
   assert_eq "jq-compat checker rejects the $jq_part text with an injected dot-before-index" "rejected" \
     "$([ -n "$(printf '%s' "$JQ_PART_TEXT" | grep -q . && jq_compat_problems "$JQ_PART_TEXT"' | .a.[0]')" ] && echo rejected || echo accepted)"
 done
+
+# --- DOER-3 cost per ticket: cost.sh + metadata.sh cost integration ---
+# Kept in its own file (sourced, so it shares pass/fail/assert_eq, the jq-compat
+# helpers above and the counters) to keep this file navigable.
+# shellcheck source=lib/cost-tests.sh
+. "${REPO_ROOT}/tests/lib/cost-tests.sh"
 
 # --- lessons.sh prune ---
 LESSONS_TEST_DIR="$TMPDIR_TEST/lessons"

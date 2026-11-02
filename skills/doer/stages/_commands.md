@@ -25,6 +25,8 @@ Progress:
 Blockers: <open BLOCKERs from the last code_review entry, or "none">
 ```
 
+When the ticket has a `cost` record, a `Cost:` line closes the output: `Cost: $17.62 across 3 sessions (whole sessions)`, or `Cost: unknown (<first reason>)`. A key holding both files prints one `Cost:` line per file.
+
 When Stage 4 is complete, a `Verify evidence:` block follows: per AC its verdict and evidence, then anomalies, rationale, and any `accepted_not_exercised` reasons (`(none recorded)` for tickets completed before 7.11.0).
 
 ## `/doer list`
@@ -38,8 +40,10 @@ One line per directory under `./.doer/tickets/`, covering both ticket kinds (`me
 ```
 ABC-123   doer     [in_progress]  Stage 3 (build)    fix-login-timeout
 PDE-2779  bugfix   [in_progress]  Stage 4 (verdict)
-ABC-119   doer     [complete]                        add-redis-cache
+ABC-119   doer     [complete]                        add-redis-cache    Cost: $4.10 across 2 sessions (whole sessions)
 ```
+
+The cost is appended only to tickets that have a `cost` record.
 
 Locale and Jira config are no longer doer subcommands: use `/wk:locale <code>`, `/wk:jira <url>`, or the guided `/wk:setup` instead (see their own `SKILL.md`). Doer still resolves locale at startup (`preferences.sh get-locale`), it just no longer sets it.
 

@@ -2,6 +2,18 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.13.0
+
+### Added
+
+- **Cost per ticket, recorded automatically.** `lib/helpers/cost.sh` (`sample`, `enter`, `record`, `unknown`) tracks the sessions that worked a `/wk:doer` ticket or `/wk:bugfix` run in `cost_sessions`, and the close writes a `cost` record (`known` total in USD, or `unknown` with the reason) plus deduplicated token totals and a per-stage token split. `metadata.sh init --track-cost` registers the first session, every later `metadata.sh write` folds in a sample in the same single write, and `--require 5:complete` now requires a `cost` object. `status` and `list` show it. Dollars come only from counters other tools already persist (status line cache, multi-instance snapshots and daily files); there is no price table.
+
+### Documented limits
+
+- Sessions are counted whole: the figure may include non-ticket work done in them, and a session shared by two tickets counts in each. The record's `scope` says so.
+- A session that ended without a later write keeps its last saved value (possibly a bit low). A counter that goes backwards, or a session with no data, makes the record `unknown` instead of a doubtful number.
+- Tickets created before 7.13.0 (or without `--track-cost`) record `unknown`. Multi-instance sources exist only on macOS with multi-instance.
+
 ## 7.12.0
 
 ### Added
