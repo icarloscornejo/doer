@@ -956,6 +956,585 @@ assert_eq "stage-checks pre-review: secrets and AC-leak are both BLOCKERs" "2" \
 assert_eq "stage-checks pre-review: a tracked .doer/ file never pollutes scope INFO" "false" \
   "$(printf '%s' "$PRE_OUT" | jq '[.info[] | select(.detail | contains(".doer/"))] | length > 0')"
 
+# --- git-checks.sh weakened-tests, and its composition into stage-checks.sh pre-review ---
+# Every case builds its own tiny repo (main = base, feature/x = work) so one
+# failing fixture never leaks state into the next. Output of the subcommand is
+# TSV: kind<TAB>file<TAB>line<TAB>text.
+WT_TAB=$'\t'
+WT_ROOT="$TMPDIR_TEST/wt"
+WT_COUNT=0
+WT_OUT=""
+WT_EXIT=0
+
+wt_new() { # fresh repo, cwd moves into it
+  WT_COUNT=$((WT_COUNT + 1))
+  new_scratch_repo "$WT_ROOT/r$WT_COUNT" main
+  cd "$WT_ROOT/r$WT_COUNT" || exit 1
+}
+wt_base() { git add -A && git commit -q --no-verify -m base && git checkout -q -b feature/x; }
+wt_work() { git add -A && git commit -q --no-verify -m work; }
+wt_run() { WT_OUT="$("$GIT_CHECKS_SH" weakened-tests main 2>/dev/null)"; WT_EXIT=$?; }
+
+# wt_expect <desc> <kind> <file> [old-or-new line]: finding present and exit 1
+wt_expect() {
+  local needle="$2${WT_TAB}$3${WT_TAB}"
+  [ -z "${4:-}" ] || needle="${needle}$4${WT_TAB}"
+  assert_eq "$1" "yes:1" "$(printf '%s\n' "$WT_OUT" | grep -qF -- "$needle" && echo yes):$WT_EXIT"
+}
+# wt_expect_none <desc>: nothing reported and exit 0
+wt_expect_none() { assert_eq "$1" "0:" "$WT_EXIT:$WT_OUT"; }
+
+# wt_write <file> <line>...: write the lines to the file (creating dirs)
+wt_write() {
+  local target="$1"; shift
+  mkdir -p "$(dirname "$target")"
+  printf '%s\n' "$@" > "$target"
+}
+
+# wt_meta <ID> <plan-files-json> [justifications-json]
+wt_meta() {
+  mkdir -p ".doer/tickets/$1"
+  jq -n --argjson f "$2" --argjson j "${3:-[]}" \
+    '{test_command:"true",lint_command:"true",typecheck_command:"true",plan:{files:$f},test_weakening_justifications:$j}' \
+    > ".doer/tickets/$1/metadata.json"
+}
+wt_pre() { PRE_OUT="$("$STAGE_CHECKS_SH" pre-review "$1" "${2:-main}" 2>/dev/null)"; PRE_EXIT=$?; }
+wt_wcount() {
+  local count
+  count="$(printf '%s' "$PRE_OUT" | jq --arg k "$1" '[.[$k][] | select(.kind == "weakened-tests")] | length' 2>/dev/null)"
+  echo "${count:-0}"
+}
+
+# usage tables document the new subcommand
+assert_eq "git-checks usage lists weakened-tests" "yes" \
+  "$("$GIT_CHECKS_SH" 2>&1 | grep -qF 'weakened-tests' && echo yes)"
+assert_eq "stage-checks usage names the weakened-tests blocker kind" "yes" \
+  "$("$STAGE_CHECKS_SH" 2>&1 | grep -qF 'weakened-tests' && echo yes)"
+
+# usage and bad base exit 2
+wt_new
+wt_write FooTest.kt 'assertEquals(a, b)'
+wt_base
+"$GIT_CHECKS_SH" weakened-tests no-such-base >/dev/null 2>&1
+assert_eq "weakened-tests: unknown base exits 2" "2" "$?"
+"$GIT_CHECKS_SH" weakened-tests >/dev/null 2>&1
+assert_eq "weakened-tests: missing base argument exits 2" "2" "$?"
+wt_run
+wt_expect_none "weakened-tests: empty diff reports nothing and exits 0"
+
+# --- removed assertions: table, one row per assertion name (positive = reported with OLD line 2) ---
+while IFS='|' read -r WT_FILE WT_LINE; do
+  [ -n "$WT_FILE" ] || continue
+  wt_new
+  wt_write "$WT_FILE" 'keep' "$WT_LINE" 'tail'
+  wt_base
+  wt_write "$WT_FILE" 'keep' 'tail'
+  wt_work; wt_run
+  wt_expect "weakened-tests: removed '$WT_LINE' in $WT_FILE is reported at old line 2" removed-assertion "$WT_FILE" 2
+done <<'EOF'
+FooTest.kt|assertEquals(a, b)
+FooTest.kt|assertThat(x).isTrue()
+FooTest.kt|assertTrue(result)
+FooTest.kt|expectThat(x).isEqualTo(1)
+FooTest.kt|verify(mock).call()
+FooTest.kt|verify { mock.call() }
+FooTest.kt|coVerify { mock.call() }
+FooTest.kt|verifyNoMoreInteractions(mock)
+FooTest.kt|assertFailsWith<IllegalStateException> {
+FooTest.kt|assertThrows<IllegalStateException> {
+foo.test.ts|assert.equal(a, b)
+foo.test.ts|expect(x).toBe(1)
+FooTests.swift|XCTAssertEqual(a, b)
+FooTests.swift|#expect(a == b)
+FooTests.swift|#require(a)
+tests/check.go|assert_eq!(a, b)
+test_foo.py|self.assertEqual(a, b)
+EOF
+
+# --- removed lines that are NOT assertions (boundary negatives) ---
+while IFS='|' read -r WT_FILE WT_LINE; do
+  [ -n "$WT_FILE" ] || continue
+  wt_new
+  wt_write "$WT_FILE" 'keep' "$WT_LINE" 'tail'
+  wt_base
+  wt_write "$WT_FILE" 'keep' 'tail'
+  wt_work; wt_run
+  wt_expect_none "weakened-tests: removing '$WT_LINE' in $WT_FILE reports nothing"
+done <<'EOF'
+FooTest.kt|unexpected(x)
+FooTest.kt|myassert(x)
+FooTest.kt|unverified(x)
+FooTest.kt|myXCTAssertLike(x)
+FooTest.kt|val coVerifyAll = true
+FooTest.kt|println("hello")
+FooTest.kt|// assertEquals(a, b)
+FooTest.kt| * verify(mock).call()
+test_foo.py|# self.assertEqual(a, b)
+test_foo.py|# assert x
+src/Foo.kt|assertEquals(a, b)
+EOF
+
+# --- commented-out assertions count as removals ---
+while IFS='|' read -r WT_FILE WT_OLD WT_NEW; do
+  [ -n "$WT_FILE" ] || continue
+  wt_new
+  wt_write "$WT_FILE" 'keep' "$WT_OLD" 'tail'
+  wt_base
+  wt_write "$WT_FILE" 'keep' "$WT_NEW" 'tail'
+  wt_work; wt_run
+  wt_expect "weakened-tests: '$WT_OLD' rewritten as '$WT_NEW' is a removed assertion" removed-assertion "$WT_FILE" 2
+done <<'EOF'
+FooTest.kt|assertEquals(a, b)|// assertEquals(a, b)
+foo.test.ts|expect(x).toBe(1)|// expect(x).toBe(1)
+foo.test.ts|expect(x).toBe(1)|/* expect(x).toBe(1) */
+test_foo.py|self.assertEqual(a, b)|# self.assertEqual(a, b)
+FooTests.swift|#expect(a == b)|// #expect(a == b)
+EOF
+
+# equivalent assertion swapped in keeps the net count equal
+wt_new
+wt_write FooTest.kt 'keep' 'assertEquals(1, x)' 'tail'
+wt_base
+wt_write FooTest.kt 'keep' 'assertThat(x).isEqualTo(1)' 'tail'
+wt_work; wt_run
+wt_expect_none "weakened-tests: an equivalent assertion added (net equal) reports nothing"
+
+# single-line removal deep in the file: hunk form "@@ -12 +11,0 @@"
+wt_new
+{ for n in 1 2 3 4 5 6 7 8 9 10 11; do printf 'line%s\n' "$n"; done
+  printf 'assertEquals(1, x)\n'; printf 'line13\nline14\n'; } > FooTest.kt
+wt_base
+{ for n in 1 2 3 4 5 6 7 8 9 10 11; do printf 'line%s\n' "$n"; done
+  printf 'line13\nline14\n'; } > FooTest.kt
+wt_work; wt_run
+wt_expect "weakened-tests: single-line removal reports the old line 12" removed-assertion FooTest.kt 12
+
+# a removed '--count;' next to a removed expect(, then added '++i;', no trailing newline
+wt_new
+printf 'keep\nexpect(a).toBe(1);\n--count;' > foo.test.js
+wt_base
+printf 'keep\n++i;' > foo.test.js
+wt_work; wt_run
+wt_expect "weakened-tests: '--count;' / '++i;' body lines do not confuse the diff parser" removed-assertion foo.test.js 2
+
+# --- moves cancel as multisets; deficits are counted ---
+wt_new
+wt_write ATest.kt 'keep' 'assertEquals(1, a)' 'assertEquals(2, b)' 'assertEquals(3, c)'
+wt_write BTest.kt 'other'
+wt_base
+wt_write ATest.kt 'keep'
+wt_write BTest.kt 'other' 'assertEquals(1, a)' 'assertEquals(2, b)' 'assertEquals(3, c)'
+wt_work; wt_run
+wt_expect_none "weakened-tests: moving 3 assertions between test files reports nothing"
+
+wt_new
+wt_write FooTest.kt 'keep' 'assertEquals(1, a)' 'assertEquals(2, b)' 'assertEquals(3, c)' 'assertEquals(4, d)' 'assertEquals(5, e)'
+wt_base
+wt_write FooTest.kt 'keep' 'assertNotNull(a)' 'assertNotNull(b)' 'assertNotNull(c)' 'assertNotNull(d)'
+wt_work; wt_run
+wt_expect "weakened-tests: replacing 5 assertions with 4 reports the removed ones" removed-assertion FooTest.kt 2
+wt_meta WTD-1 '[{"path":"FooTest.kt","change":"edit"}]'
+wt_pre WTD-1
+assert_eq "pre-review: 5 assertions replaced by 4 blocks without a justification" "1" "$PRE_EXIT"
+wt_meta WTD-1 '[{"path":"FooTest.kt","change":"edit"}]' \
+  '[{"path":"FooTest.kt","line_text":"assertEquals(1, a)","reason":"one assertion was redundant"}]'
+wt_pre WTD-1
+assert_eq "pre-review: exactly one justification covers a deficit of one (exit 0, justified INFO)" "0:yes" \
+  "$PRE_EXIT:$([ "$(wt_wcount info)" -ge 1 ] && echo yes)"
+
+# --- disabled markers: table (positive = reported as disabled) ---
+while IFS='|' read -r WT_FILE WT_LINE; do
+  [ -n "$WT_FILE" ] || continue
+  wt_new
+  wt_write "$WT_FILE" 'keep'
+  wt_base
+  wt_write "$WT_FILE" 'keep' "$WT_LINE"
+  wt_work; wt_run
+  wt_expect "weakened-tests: added '$WT_LINE' in $WT_FILE is a disabled finding" disabled "$WT_FILE"
+done <<'EOF'
+FooTest.kt|@Ignore
+FooTest.kt|@Ignore("flaky")
+FooTest.kt|@Disabled
+FooTest.kt|@Disabled("flaky")
+foo.test.ts|xit('a', () => {})
+foo.test.ts|xdescribe('a', () => {})
+foo.test.ts|xtest('a', () => {})
+foo.test.ts|it.skip('a', () => {})
+foo.test.ts|test.skip('a', () => {})
+foo.test.ts|describe.skip('a', () => {})
+foo.test.ts|context.skip('a', () => {})
+foo.test.ts|suite.skip('a', () => {})
+foo.test.ts|test.describe.skip('a', () => {})
+foo.test.ts|it.concurrent.skip('a', () => {})
+foo.test.ts|describe.concurrent.skip('a', () => {})
+foo.test.ts|it.skip.each([1])('a', () => {})
+foo.test.ts|this.skip()
+FooTests.swift|try XCTSkip("later")
+FooTests.swift|@Test(.disabled("later"))
+FooTests.swift|@Suite(.disabled("later")) struct S {}
+EOF
+
+# --- disabled false positives (boundary negatives) ---
+while IFS='|' read -r WT_FILE WT_LINE; do
+  [ -n "$WT_FILE" ] || continue
+  wt_new
+  wt_write "$WT_FILE" 'keep'
+  wt_base
+  wt_write "$WT_FILE" 'keep' "$WT_LINE"
+  wt_work; wt_run
+  wt_expect_none "weakened-tests: added '$WT_LINE' in $WT_FILE stays clean"
+done <<'EOF'
+FooTest.kt|@IgnoredOnParcel
+FooTest.kt|@DisabledIf("cond")
+FooTest.kt|MyXCTSkipHelper()
+FooTest.kt|val s = list.stream().skip(1)
+FooTest.kt|// @Disabled
+foo.test.ts|foo.this.skip()
+foo.test.ts|skipLink(1)
+foo.test.ts|form.submit.skip('a')
+foo.test.ts|latest.skip(1)
+foo.test.ts|button.disabled(true)
+test/setup.ts|process.exit(1)
+FooTests.swift|button.disabled(true)
+src/Foo.kt|@Ignore
+EOF
+
+# disabled marker already present and unchanged, or just re-indented / moved inside the file
+wt_new
+wt_write FooTest.kt '@Ignore' 'fun a() {}' 'fun b() {}'
+wt_base
+wt_write FooTest.kt '@Ignore' 'fun a() {}' 'fun b() {}' 'fun c() {}'
+wt_work; wt_run
+wt_expect_none "weakened-tests: an unchanged @Ignore is not new"
+wt_new
+wt_write FooTest.kt '@Ignore' 'fun a() {}' 'fun b() {}'
+wt_base
+wt_write FooTest.kt 'fun a() {}' '    @Ignore' 'fun b() {}'
+wt_work; wt_run
+wt_expect_none "weakened-tests: a re-indented / moved @Ignore in the same file is not new"
+
+# disabled marker moved between files is clean; a newly added one in the same diff still blocks
+wt_new
+wt_write A.test.ts 'keep' "it.skip('x', () => {})"
+wt_base
+wt_write A.test.ts 'keep'
+wt_write B.test.ts "it.skip('x', () => {})"
+wt_work; wt_run
+wt_expect_none "weakened-tests: an it.skip( moved from A.test.ts to B.test.ts reports nothing"
+wt_new
+wt_write A.test.ts 'keep' "it.skip('x', () => {})"
+wt_base
+wt_write A.test.ts 'keep'
+wt_write B.test.ts "it.skip('x', () => {})" "xit('new', () => {})"
+wt_work; wt_run
+wt_expect "weakened-tests: a newly added xit( next to a moved it.skip( still blocks" disabled B.test.ts
+assert_eq "weakened-tests: only the new marker is reported, not the moved one" "1" \
+  "$(printf '%s\n' "$WT_OUT" | grep -c "^disabled${WT_TAB}")"
+wt_new
+wt_write ATest.kt 'keep' '@Disabled'
+wt_write BTest.kt 'other'
+wt_base
+wt_write ATest.kt 'keep'
+wt_write BTest.kt 'other' '@Disabled'
+wt_work; wt_run
+wt_expect_none "weakened-tests: a @Disabled moved from ATest.kt to BTest.kt reports nothing"
+
+# --- block-commented assertions ---
+wt_new
+wt_write FooTest.kt 'class FooTest {' '    fun a() {' '        assertEquals(1, x)' '        assertEquals(2, y)' '    }' '}'
+wt_base
+wt_write FooTest.kt 'class FooTest {' '    fun a() {' '        /*' '        assertEquals(1, x)' '        assertEquals(2, y)' '        */' '    }' '}'
+wt_work; wt_run
+wt_expect "weakened-tests: wrapping two unchanged assertions in /* */ is block-commented" block-commented FooTest.kt
+wt_new
+wt_write Other.kt 'keep'
+wt_base
+wt_write FooTest.kt '/*' ' * Copyright 2026' ' */' 'class FooTest {' '    /**' '     * Explains the test.' '     */' '    fun a() {' '        assertEquals(1, x)' '    }' '}'
+wt_work; wt_run
+wt_expect_none "weakened-tests: a new test file with a license header and KDoc stays clean"
+wt_new
+wt_write FooTest.kt 'class FooTest {' '    fun a() {' '        assertEquals(1, x)' '    }' '}'
+wt_base
+wt_write FooTest.kt 'class FooTest {' '    /**' '     * Explains the test.' '     */' '    fun a() {' '        assertEquals(1, x)' '    }' '}'
+wt_work; wt_run
+wt_expect_none "weakened-tests: adding KDoc above an existing test stays clean"
+
+# --- deleted tests and renames ---
+wt_new
+wt_write FooTest.kt 'keep' 'assertEquals(1, a)' 'assertEquals(2, b)' 'assertEquals(3, c)'
+wt_write src/Foo.kt 'assertEquals(9, z)'
+wt_base
+git rm -q FooTest.kt src/Foo.kt
+wt_work; wt_run
+wt_expect "weakened-tests: a deleted test file is a deleted-test at line 0" deleted-test FooTest.kt 0
+assert_eq "weakened-tests: a deleted test file is exactly one finding (no per-assertion noise)" "1" \
+  "$(printf '%s\n' "$WT_OUT" | grep -c .)"
+wt_meta WTD-2 '[]'
+wt_pre WTD-2
+assert_eq "pre-review: an unplanned deleted test file is exactly one weakened-tests BLOCKER" "1" "$(wt_wcount blockers)"
+assert_eq "pre-review: ... and exits 1" "1" "$PRE_EXIT"
+wt_meta WTD-2 '[{"path":"FooTest.kt","change":"delete"}]'
+wt_pre WTD-2
+assert_eq "pre-review: a deleted test planned as change delete has zero weakened-tests blockers" "0" "$(wt_wcount blockers)"
+assert_eq "pre-review: ... and exits 0" "0" "$PRE_EXIT"
+
+wt_new
+wt_write FooTest.kt 'keep' 'assertEquals(1, a)' 'assertEquals(2, b)'
+wt_base
+git mv FooTest.kt BarTest.kt
+wt_work; wt_run
+wt_expect_none "weakened-tests: a pure rename (R100) reports nothing"
+
+wt_new
+wt_write FooTest.kt 'package a' 'class FooTest {' '  fun a() {' '    assertEquals(1, x)' '    println(1)' '  }' '}'
+wt_base
+git mv FooTest.kt BarTest.kt
+wt_write BarTest.kt 'package a' 'class FooTest {' '  fun a() {' '    println(1)' '  }' '}'
+wt_work; wt_run
+wt_expect "weakened-tests: a rename plus a removed assertion is reported under the new path, old line" removed-assertion BarTest.kt 4
+
+wt_new
+wt_write FooTest.kt 'keep' 'assertEquals(1, a)' 'assertEquals(2, b)'
+wt_base
+mkdir -p src && git mv FooTest.kt src/Foo.kt
+wt_work; wt_run
+wt_expect "weakened-tests: a test renamed to a non-test path is a deleted-test for the old path" deleted-test FooTest.kt
+assert_eq "weakened-tests: ... and only that one finding" "1" "$(printf '%s\n' "$WT_OUT" | grep -c .)"
+wt_meta WTD-3 '[{"path":"FooTest.kt","change":"delete"}]'
+wt_pre WTD-3
+assert_eq "pre-review: test-to-non-test rename listed change delete exits 0 (scope sees both paths)" "0" "$PRE_EXIT"
+assert_eq "pre-review: ... with zero weakened-tests blockers" "0" "$(wt_wcount blockers)"
+wt_meta WTD-3 '[]'
+wt_pre WTD-3
+assert_eq "pre-review: the same rename unplanned is one weakened-tests BLOCKER" "1" "$(wt_wcount blockers)"
+
+wt_new
+wt_write FooTest.kt 'keep' 'assertEquals(1, a)' 'assertEquals(2, b)'
+wt_base
+git mv FooTest.kt FooTest.kt.disabled
+wt_work; wt_run
+wt_expect "weakened-tests: FooTest.kt renamed to FooTest.kt.disabled is a deleted-test" deleted-test FooTest.kt
+assert_eq "weakened-tests: ... and exactly one finding" "1" "$(printf '%s\n' "$WT_OUT" | grep -c .)"
+wt_meta WTD-4 '[{"path":"FooTest.kt","change":"delete"}]'
+wt_pre WTD-4
+assert_eq "pre-review: the .disabled rename listed change delete has zero weakened-tests blockers" "0" "$(wt_wcount blockers)"
+
+wt_new
+wt_write __tests__/snap.snap 'exports[`a`] = 1;'
+wt_write __tests__/data.json '{"a":1}'
+wt_write src/Gone.kt 'assertEquals(1, 1)'
+wt_base
+git rm -q __tests__/snap.snap __tests__/data.json src/Gone.kt
+wt_work; wt_run
+wt_expect_none "weakened-tests: deleted .snap/.json fixtures and a deleted non-test file report nothing"
+
+# user git config cannot change the result
+wt_new
+git config diff.renames false
+git config diff.noprefix true
+wt_write FooTest.kt 'package a' 'class FooTest {' '  fun a() {' '    assertEquals(1, x)' '    println(1)' '  }' '}'
+wt_write other.txt 'x'
+wt_base
+git mv FooTest.kt BarTest.kt
+wt_write BarTest.kt 'package a' 'class FooTest {' '  fun a() {' '    println(1)' '  }' '}'
+wt_write other.txt 'y'
+wt_work; wt_run
+wt_expect "weakened-tests: diff.renames=false and diff.noprefix=true do not change the result" removed-assertion BarTest.kt 4
+
+# .doer/** is never analysed
+wt_new
+wt_write .doer/tickets/X/FooTest.kt 'keep' 'assertEquals(1, a)'
+wt_base
+wt_write .doer/tickets/X/FooTest.kt 'keep'
+wt_work; wt_run
+wt_expect_none "weakened-tests: changes under .doer/** are ignored"
+
+# --- pre-review integration ---
+wt_removal_fixture() { # FooTest.kt loses assertTrue(result); ticket metadata is written by the caller
+  wt_new
+  wt_write FooTest.kt 'class FooTest {' '    fun a() {' '        assertTrue(result)' '        assertEquals(1, x)' '    }' '}'
+  wt_base
+  wt_write FooTest.kt 'class FooTest {' '    fun a() {' '        assertEquals(1, x)' '    }' '}'
+  wt_work
+}
+WT_PLAN_FOO='[{"path":"FooTest.kt","change":"edit"}]'
+
+wt_new
+wt_write FooTest.kt 'keep'
+wt_base
+wt_write FooTest.kt 'keep' '@Disabled'
+wt_work
+wt_meta WTP-1 "$WT_PLAN_FOO"
+wt_pre WTP-1
+assert_eq "pre-review: a newly disabled test is a weakened-tests BLOCKER" "1" "$(wt_wcount blockers)"
+assert_eq "pre-review: ... and exits 1" "1" "$PRE_EXIT"
+
+wt_removal_fixture
+wt_meta WTP-2 "$WT_PLAN_FOO"
+wt_pre WTP-2
+assert_eq "pre-review: a removed assertion is a weakened-tests BLOCKER" "1" "$(wt_wcount blockers)"
+assert_eq "pre-review: ... and exits 1" "1" "$PRE_EXIT"
+WT_DETAIL="$(printf '%s' "$PRE_OUT" | jq -r '[.blockers[] | select(.kind == "weakened-tests")][0].detail')"
+assert_eq "pre-review: BLOCKER detail format is '<kind> <file>:<line> <text>'" "yes" \
+  "$(printf '%s' "$WT_DETAIL" | grep -qF 'removed-assertion FooTest.kt:3 assertTrue(result)' && echo yes)"
+assert_eq "pre-review: BLOCKER detail carries the exact metadata.sh write registration command" "yes" \
+  "$(printf '%s' "$WT_DETAIL" | grep -qF '"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write WTP-2 '"'"'.test_weakening_justifications = ((.test_weakening_justifications // []) + [{path: $p, line_text: $t, reason: $r}])'"'"' --arg p '"'"'FooTest.kt'"'"' --arg t '"'"'assertTrue(result)'"'"' --arg r ' && echo yes)"
+assert_eq "pre-review: BLOCKER detail also offers the batched --argjson j form" "yes" \
+  "$(printf '%s' "$WT_DETAIL" | grep -qF -- '--argjson j' && echo yes)"
+
+wt_meta WTP-2 "$WT_PLAN_FOO" '[{"path":"FooTest.kt","line_text":"assertTrue(result)","reason":"covered by the new integration test"}]'
+wt_pre WTP-2
+assert_eq "pre-review: a matching justification clears the BLOCKER" "0" "$(wt_wcount blockers)"
+assert_eq "pre-review: ... and exits 0" "0" "$PRE_EXIT"
+assert_eq "pre-review: ... the finding is INFO carrying (justified: <reason>)" "yes" \
+  "$(printf '%s' "$PRE_OUT" | jq -r '[.info[] | select(.kind == "weakened-tests") | .detail][0] // ""' \
+     | grep -qF '(justified: covered by the new integration test)' && echo yes)"
+
+wt_meta WTP-2 "$WT_PLAN_FOO" '[{"path":"FooTest.kt","line_text":"assertTrue(result)","reason":"   "}]'
+wt_pre WTP-2
+assert_eq "pre-review: a blank reason does not downgrade" "1" "$PRE_EXIT"
+wt_meta WTP-2 "$WT_PLAN_FOO" '[{"path":"FooTest.kt","line_text":"assertTrue(other)","reason":"a different line"}]'
+wt_pre WTP-2
+assert_eq "pre-review: a justification for a different line never excuses this one" "1" "$PRE_EXIT"
+wt_meta WTP-2 "$WT_PLAN_FOO" '[{"path":"Other.kt","line_text":"assertTrue(result)","reason":"a different file"}]'
+wt_pre WTP-2
+assert_eq "pre-review: a justification for a different path never excuses this one" "1" "$PRE_EXIT"
+wt_meta WTP-2 "$WT_PLAN_FOO" '["foo", 1, null]'
+wt_pre WTP-2
+assert_eq "pre-review: malformed justification entries still print JSON, block, and exit 1" "1:1" \
+  "$PRE_EXIT:$(wt_wcount blockers)"
+
+# two identical removals, one justification: the second stays a BLOCKER
+wt_new
+wt_write FooTest.kt 'class FooTest {' '    fun a() {' '        assertTrue(result)' '    }' '    fun b() {' '        assertTrue(result)' '    }' '}'
+wt_base
+wt_write FooTest.kt 'class FooTest {' '    fun a() {' '    }' '    fun b() {' '    }' '}'
+wt_work
+wt_meta WTP-3 "$WT_PLAN_FOO" '[{"path":"FooTest.kt","line_text":"assertTrue(result)","reason":"first one is redundant"}]'
+wt_pre WTP-3
+assert_eq "pre-review: one justification does not cover a second identical removal" "1" "$PRE_EXIT"
+assert_eq "pre-review: ... at least one weakened-tests BLOCKER remains" "yes" \
+  "$([ "$(wt_wcount blockers)" -ge 1 ] && echo yes)"
+wt_meta WTP-3 "$WT_PLAN_FOO" '[{"path":"FooTest.kt","line_text":"assertTrue(result)","reason":"first"},{"path":"FooTest.kt","line_text":"assertTrue(result)","reason":"second"}]'
+wt_pre WTP-3
+assert_eq "pre-review: two entries cover two identical removals (count matching, two INFO)" "0:2" "$PRE_EXIT:$(wt_wcount info)"
+
+# justified removal followed by a second, unjustified removal in the same file
+wt_new
+wt_write FooTest.kt 'class FooTest {' '    fun a() {' '        assertTrue(result)' '        assertEquals(1, x)' '    }' '}'
+wt_base
+wt_write FooTest.kt 'class FooTest {' '    fun a() {' '    }' '}'
+wt_work
+wt_meta WTP-4 "$WT_PLAN_FOO" '[{"path":"FooTest.kt","line_text":"assertTrue(result)","reason":"redundant"}]'
+wt_pre WTP-4
+assert_eq "pre-review: a second, unjustified removal in the same file still blocks" "1" "$PRE_EXIT"
+assert_eq "pre-review: ... as a weakened-tests BLOCKER" "yes" "$([ "$(wt_wcount blockers)" -ge 1 ] && echo yes)"
+
+# block-commented and commented-out through pre-review
+wt_new
+wt_write foo.test.ts 'keep' 'expect(x).toBe(1)'
+wt_base
+wt_write foo.test.ts 'keep' '// expect(x).toBe(1)'
+wt_work
+wt_meta WTP-5 '[{"path":"foo.test.ts","change":"edit"}]'
+wt_pre WTP-5
+assert_eq "pre-review: a commented-out assertion in foo.test.ts exits 1" "1" "$PRE_EXIT"
+assert_eq "pre-review: ... as a weakened-tests BLOCKER" "1" "$(wt_wcount blockers)"
+
+# invalid base is a BLOCKER, never clean
+wt_removal_fixture
+wt_meta WTP-6 "$WT_PLAN_FOO"
+wt_pre WTP-6 no-such-base
+assert_eq "pre-review: an invalid base exits 1" "1" "$PRE_EXIT"
+assert_eq "pre-review: an invalid base is a weakened-tests BLOCKER" "yes" \
+  "$([ "$(wt_wcount blockers)" -ge 1 ] && echo yes)"
+assert_eq "pre-review: ... saying the weakened-tests check failed" "yes" \
+  "$(printf '%s' "$PRE_OUT" | jq -r '[.blockers[] | select(.kind == "weakened-tests") | .detail] | join("\n")' \
+     | grep -qF 'weakened-tests check failed' && echo yes)"
+
+# .doer/** and empty diff
+wt_new
+wt_write .doer/tickets/X/FooTest.kt 'keep' 'assertEquals(1, a)'
+wt_write f.txt 'a'
+wt_base
+wt_write .doer/tickets/X/FooTest.kt 'keep'
+wt_work
+wt_meta WTP-7 '[]'
+wt_pre WTP-7
+assert_eq "pre-review: .doer/** test changes are ignored (exit 0)" "0" "$PRE_EXIT"
+wt_new
+wt_write f.txt 'a'
+wt_base
+wt_meta WTP-8 '[]'
+wt_pre WTP-8
+assert_eq "pre-review: an empty diff exits 0" "0" "$PRE_EXIT"
+
+# CRLF: trimmed identically when printed and when matched
+wt_new
+printf 'class FooTest {\r\n    fun a() {\r\n        assertTrue(done)\r\n    }\r\n}\r\n' > FooTest.kt
+wt_base
+printf 'class FooTest {\r\n    fun a() {\r\n    }\r\n}\r\n' > FooTest.kt
+wt_work; wt_run
+wt_expect "weakened-tests: a CRLF file reports its removed assertion" removed-assertion FooTest.kt 3
+assert_eq "weakened-tests: printed text carries no carriage return" "0" \
+  "$(printf '%s' "$WT_OUT" | grep -c $'\r')"
+wt_meta WTP-9 "$WT_PLAN_FOO" '[{"path":"FooTest.kt","line_text":"assertTrue(done)","reason":"crlf ok"}]'
+wt_pre WTP-9
+assert_eq "pre-review: a justification matches the CRLF line once trimmed" "0:1" "$PRE_EXIT:$(wt_wcount info)"
+
+# batching: two findings in two files, one combined write, then pre-review is clean
+wt_new
+wt_write ATest.kt 'keep' 'assertEquals(1, a)'
+wt_write b.test.ts 'keep' 'expect(b).toBe(2)'
+wt_base
+wt_write ATest.kt 'keep'
+wt_write b.test.ts 'keep'
+wt_work
+wt_meta WTP-10 '[{"path":"ATest.kt","change":"edit"},{"path":"b.test.ts","change":"edit"}]'
+wt_pre WTP-10
+assert_eq "pre-review: two findings in two files give two BLOCKERs" "2" "$(wt_wcount blockers)"
+"$METADATA_SH" write WTP-10 \
+  '.test_weakening_justifications = ((.test_weakening_justifications // []) + $j)' \
+  --argjson j '[{"path":"ATest.kt","line_text":"assertEquals(1, a)","reason":"dup"},{"path":"b.test.ts","line_text":"expect(b).toBe(2)","reason":"dup"}]' \
+  >/dev/null 2>&1
+wt_pre WTP-10
+assert_eq "pre-review: one combined justification write clears both files (exit 0, two INFO)" "0:2" "$PRE_EXIT:$(wt_wcount info)"
+
+# command safety: run the printed command verbatim, plugin path containing a space
+WT_PLUGIN="$TMPDIR_TEST/plug dir/plugin"
+mkdir -p "$WT_PLUGIN"
+cp -R "$REPO_ROOT/lib" "$WT_PLUGIN/lib"
+wt_new
+wt_write FooTest.kt 'keep' 'assertEquals("a", b)'
+wt_write foo.test.ts 'keep' "expect(x).toBe('y')" "expect(s).toBe('\$(touch PWNED)')"
+wt_base
+wt_write FooTest.kt 'keep'
+wt_write foo.test.ts 'keep'
+wt_work
+wt_meta WTP-11 '[{"path":"FooTest.kt","change":"edit"},{"path":"foo.test.ts","change":"edit"}]'
+wt_pre WTP-11
+assert_eq "pre-review: command-safety fixture has three BLOCKERs" "3" "$(wt_wcount blockers)"
+for WT_NEEDLE in 'assertEquals("a", b)' "expect(x).toBe('y')" "expect(s).toBe('\$(touch PWNED)')"; do
+  WT_DETAIL="$(printf '%s' "$PRE_OUT" | jq -r --arg t "$WT_NEEDLE" \
+    '[.blockers[] | select(.kind == "weakened-tests" and (.detail | contains($t)))][0].detail')"
+  WT_CMD='"${CLAUDE_PLUGIN_ROOT}'"${WT_DETAIL#*'"${CLAUDE_PLUGIN_ROOT}'}"
+  WT_CMD="${WT_CMD//\'<why>\'/\'don\'\\\'\'t\'}"
+  CLAUDE_PLUGIN_ROOT="$WT_PLUGIN" bash -c "$WT_CMD" >/dev/null 2>&1
+  assert_eq "command safety: the printed command runs verbatim for $WT_NEEDLE" "0" "$?"
+done
+assert_eq "command safety: three justifications were recorded" "3" \
+  "$(jq '.test_weakening_justifications | length' .doer/tickets/WTP-11/metadata.json)"
+assert_eq "command safety: the reason with an apostrophe round-trips" "don't" \
+  "$(jq -r '.test_weakening_justifications[0].reason' .doer/tickets/WTP-11/metadata.json)"
+assert_eq "command safety: a line_text with quotes round-trips" "yes" \
+  "$(jq -e '[.test_weakening_justifications[].line_text] | index("expect(x).toBe('"'"'y'"'"')") != null' \
+     .doer/tickets/WTP-11/metadata.json >/dev/null 2>&1 && echo yes)"
+assert_eq "command safety: \$(touch PWNED) was never executed" "none" \
+  "$([ -e PWNED ] || [ -e "$WT_PLUGIN/PWNED" ] && echo found || echo none)"
+wt_pre WTP-11
+assert_eq "command safety: pre-review then downgrades every finding to INFO (exit 0)" "0" "$PRE_EXIT"
+assert_eq "command safety: ... three justified INFO entries" "3" "$(wt_wcount info)"
+
 # --- har.py ---
 HAR_DIR="$TMPDIR_TEST/har"
 mkdir -p "$HAR_DIR"

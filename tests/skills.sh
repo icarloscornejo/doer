@@ -230,6 +230,53 @@ else
 fi
 rm -f "$HELPER_OUT"
 
+# --- 1c. Stage 3 weakened-tests contract: plain greps on the final text of
+# 03-build.md (who may justify a removed test line, and when pre-review must
+# be clean). Key phrases are fixed strings on purpose; they ARE the contract.
+BUILD_MD="$REPO_ROOT/skills/doer/stages/03-build.md"
+build_has() { # build_has <desc> <fixed-string>
+  if grep -qF -- "$2" "$BUILD_MD"; then pass "03-build: $1"; else fail "03-build: $1"; fi
+}
+build_has "names the weakened-tests blocker kind" 'weakened-tests'
+build_has "weakened-tests BLOCKERs go to the next fixer first" \
+  'a `weakened-tests` BLOCKER goes to the next fixer first'
+build_has "only STILL_OPEN weakened-tests items are escalated, by the orchestrator" \
+  'only STILL_OPEN `weakened-tests` items are escalated to the dev, by the orchestrator'
+build_has "the dev justifies only with an explicit reason, then pre-review re-runs" \
+  'records the justification only on the dev'"'"'s explicit reason'
+build_has "fixer prompts strip the registration command line" \
+  'strip the registration command line from every `weakened-tests` BLOCKER inlined into a fixer prompt'
+build_has "sub-agents never call metadata.sh write for justifications" \
+  'sub-agents never see the registration command and never call `metadata.sh write`'
+build_has "justifications are the orchestrator's alone" \
+  "justifications are the orchestrator's alone"
+build_has "loop state updated in the same single write" \
+  'in that same single `metadata.sh write`'
+build_has "justified id moves to prior_blockers_resolved" 'prior_blockers_resolved'
+build_has "convergence requires a clean pre-review on the final HEAD" \
+  'a clean `pre-review` on the final HEAD'
+build_has "accepted_with_residuals exemption is stated" 'accepted_with_residuals'
+build_has "residual BLOCKERs are recorded instead of re-entering the loop" \
+  'recorded as residuals instead of re-entering the loop'
+build_has "re-entry after iteration 3 goes to the escape hatch" \
+  'never a 4th automatic iteration'
+CONV_SECTION="$(awk '/^## On convergence/{grab=1} grab{print}' "$BUILD_MD")"
+conv_line() { printf '%s\n' "$CONV_SECTION" | grep -nF -- "$1" | head -1 | cut -d: -f1; }
+STRAGGLER_LINE="$(conv_line 'straggler')"
+PRE_LINE="$(conv_line 'a clean `pre-review` on the final HEAD')"
+COMPLETE_LINE="$(conv_line '--require 3:complete')"
+if [ -n "$STRAGGLER_LINE" ] && [ -n "$PRE_LINE" ] && [ -n "$COMPLETE_LINE" ] \
+   && [ "$STRAGGLER_LINE" -lt "$PRE_LINE" ] && [ "$PRE_LINE" -lt "$COMPLETE_LINE" ]; then
+  pass "03-build: On convergence orders straggler step, then clean pre-review, then the 3:complete write"
+else
+  fail "03-build: On convergence orders straggler step, then clean pre-review, then the 3:complete write"
+fi
+if grep -qF 'test_weakening_justifications' "$REPO_ROOT/lib/state.md"; then
+  pass "state.md documents metadata.test_weakening_justifications"
+else
+  fail "state.md documents metadata.test_weakening_justifications"
+fi
+
 # --- 2. Mutation fixtures, one per finding from the crosscheck rounds. ---
 mutate_and_expect_fail "mutation: distinctness rule removed from Step 5" mut_drop_distinctness_rule
 mutate_and_expect_fail "mutation: Step 5.5 no longer binds to Step 5's rule (drift risk)" mut_step55_no_longer_binds_to_step5

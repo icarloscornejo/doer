@@ -22,11 +22,13 @@ Commands:
       "fail" and "high" risk; exit 1 otherwise.
 
   pre-review <TICKET-ID> <base>
-      Prints {"blockers":[{"kind":"tests|lint|typecheck|scope|secrets|ac-leak",
+      Prints {"blockers":[{"kind":"tests|lint|typecheck|scope|secrets|ac-leak|weakened-tests",
       "detail"}],"info":[...],"missing":["lint_command",...]}.
       Runs metadata.test_command / lint_command / typecheck_command (never
       autodetects: that stays a judgment call for the caller); composes
-      git-checks.sh secrets and ac-leak; compares the diff's file list
+      git-checks.sh secrets, ac-leak and weakened-tests (removed assertions
+      are downgraded to INFO only by metadata.test_weakening_justifications;
+      an unusable base is a BLOCKER); compares the diff's file list
       against plan.files[].path. Exit 0 with zero blockers, 1 otherwise.
 EOF
   exit 2
@@ -158,7 +160,8 @@ case "$CMD" in
       BLOCKERS="$(printf '%s' "$BLOCKERS" | jq '. + [{kind: "typecheck", detail: "typecheck command failed"}]')"
     fi
 
-    DIFF_FILES="$(git diff "$BASE"...HEAD --name-only -- . ':(exclude).doer/**' 2>/dev/null)"
+    # --no-renames so a renamed test shows both old and new paths against plan.files.
+    DIFF_FILES="$(git -c core.quotePath=false diff --no-renames "$BASE"...HEAD --name-only -- . ':(exclude).doer/**' 2>/dev/null || true)"
     PLAN_FILES="$(jq -r '(.plan.files // [])[].path' "$TARGET" 2>/dev/null || true)"
     if [ -n "$PLAN_FILES" ]; then
       while IFS= read -r PF; do
@@ -183,6 +186,55 @@ case "$CMD" in
     ACLEAK_OUT="$("$HERE/git-checks.sh" ac-leak "$BASE" 2>/dev/null)" || true
     if [ -n "$ACLEAK_OUT" ]; then
       BLOCKERS="$(printf '%s' "$BLOCKERS" | jq --arg d "$ACLEAK_OUT" '. + [{kind: "ac-leak", detail: $d}]')"
+    fi
+
+    # Any exit other than 0/1 (e.g. unusable base) is a BLOCKER, never "clean".
+    WEAK_RC=0
+    WEAK_OUT="$("$HERE/git-checks.sh" weakened-tests "$BASE" 2>/dev/null)" || WEAK_RC=$?
+    if [ "$WEAK_RC" -gt 1 ]; then
+      BLOCKERS="$(printf '%s' "$BLOCKERS" | jq '. + [{kind: "weakened-tests", detail: "weakened-tests check failed"}]')"
+    elif [ -n "$WEAK_OUT" ]; then
+      # A removal is excused only by recorded {path, line_text, reason} entries, matched by
+      # count per (path, line_text); a file is excused once they cover its assertion deficit.
+      # Heredoc keeps the single quotes of the shell command inside the jq program intact.
+      WEAK_JQ="$(cat <<'JQ'
+        def trim: gsub("^\\s+|\\s+$"; "");
+        def q: "'" + gsub("'"; "'\\''") + "'";
+        ($just | map(select(type == "object" and (.path | type) == "string" and (.line_text | type) == "string" and (.reason | type) == "string")
+                     | {path, line_text: (.line_text | trim), reason: (.reason | trim)}
+                     | select(.line_text != "" and .reason != ""))) as $J
+        | def covered($g): ($g | group_by(.text)
+              | map(. as $same | [($same | length),
+                    ([$J[] | select(.path == $same[0].file and .line_text == $same[0].text)] | length)] | min)
+              | add // 0) >= $g[0].deficit;
+          def reason($f): ([$J[] | select(.path == $f.file and .line_text == $f.text)][0]
+                           // [$J[] | select(.path == $f.file)][0]).reason;
+          def cmd($f): "\"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh\" write " + $id
+              + " '.test_weakening_justifications = ((.test_weakening_justifications // []) + [{path: $p, line_text: $t, reason: $r}])'"
+              + " --arg p " + ($f.file | q) + " --arg t " + ($f.text | q) + " --arg r '<why>'";
+          def head($f): $f.kind + " " + $f.file + ":" + $f.line + " " + $f.text;
+        [split("\n")[] | select(length > 0) | split("\t")
+         | {kind: .[0], file: .[1], line: .[2], text: .[3], deficit: (.[4] | tonumber)}] as $F
+        | ($F | map(select(.kind == "removed-assertion" or .kind == "block-commented"))
+              | group_by([.kind, .file]) | map(select(covered(.))) | add // []) as $ok
+        | {blockers: [$F[] | . as $f
+              | select(.kind == "disabled"
+                       or (.kind == "deleted-test" and ($dels | index($f.file) | not))
+                       or ((.kind == "removed-assertion" or .kind == "block-commented")
+                           and ($ok | index($f) | not)))
+              | {kind: "weakened-tests",
+                 detail: (head($f) + (if .kind == "disabled" or .kind == "deleted-test" then ""
+                    else " | several findings in one write: filter '.test_weakening_justifications = ((.test_weakening_justifications // []) + $j)' with --argjson j '<array of {path,line_text,reason}>' | this one: " + cmd($f) end))}],
+           info: [$ok[] | . as $f | {kind: "weakened-tests", detail: (head($f) + " (justified: " + reason($f) + ")")}]}
+JQ
+)"
+      WEAK_JSON="$(printf '%s\n' "$WEAK_OUT" | jq -R -s -c \
+        --arg id "$TICKET_ID" \
+        --argjson just "$(jq -c 'if (.test_weakening_justifications | type) == "array" then .test_weakening_justifications else [] end' "$TARGET")" \
+        --argjson dels "$(jq -c '[(.plan.files // [])[] | select(.change == "delete") | .path]' "$TARGET")" \
+        "$WEAK_JQ")"
+      BLOCKERS="$(jq -n -c --argjson a "$BLOCKERS" --argjson w "$WEAK_JSON" '$a + $w.blockers')"
+      INFO="$(jq -n -c --argjson a "$INFO" --argjson w "$WEAK_JSON" '$a + $w.info')"
     fi
 
     RESULT_JSON="$(jq -n --argjson b "$BLOCKERS" --argjson i "$INFO" --argjson m "$MISSING" \

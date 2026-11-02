@@ -2,6 +2,17 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.12.0
+
+### Added
+
+- **`git-checks.sh weakened-tests <base>` and a matching `pre-review` check.** "Were tests weakened to pass?" was only a reviewer question. It is now also a deterministic gate: removed or commented-out assertions, newly disabled tests (`@Ignore`, `@Disabled`, `xit(`, `it.skip(`, `XCTSkip`, Swift Testing `.disabled(`), assertions wrapped in a new block comment, and deleted or renamed-away test files are `weakened-tests` BLOCKERs. Moves between files cancel out, `.doer/**` is ignored, a planned `change: delete` exempts a deleted test, and an unusable base is a BLOCKER instead of a clean pass.
+- **Justified removals.** A removed assertion is downgraded to INFO only by an entry in `metadata.test_weakening_justifications` (`{path, line_text, reason}`), matched by count. The BLOCKER detail carries the exact `metadata.sh write` command to record it.
+
+### Changed
+
+- **Stage 3 routes `weakened-tests` BLOCKERs fixer first, dev second, and requires a clean `pre-review` on the final HEAD before `3:complete`.** Only the orchestrator records justifications, and `accepted_with_residuals` records final-HEAD BLOCKERs as residuals instead of re-entering the loop.
+
 ## 7.11.0
 
 ### Added

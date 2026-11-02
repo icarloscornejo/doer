@@ -50,7 +50,7 @@ grep_callers() {
 # module docstrings).
 SUBCOMMANDS="
 vocab-guard.sh:
-git-checks.sh:base-candidates diff-files secrets ac-leak squash-gate trace revert-in-progress phantoms classify-diff temp-rounds doer-history pr-templates
+git-checks.sh:base-candidates diff-files secrets ac-leak squash-gate trace revert-in-progress phantoms classify-diff temp-rounds doer-history pr-templates weakened-tests
 git-ops.sh:squash scrub-history revert-temp restore-phantoms
 workspace-guard.sh:acquire release
 stage-checks.sh:plan pre-review

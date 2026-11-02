@@ -118,6 +118,8 @@ This is a **different mechanism** from the cross-project lessons pool (`${CLAUDE
 
 Stage statuses: `pending | in_progress | complete | skipped | imported`. `ac`, `plan`, and later fields start absent and are written by their owning stage. `last_green_sha` is always the full 40-char `git rev-parse HEAD` output (string-equality comparisons break on abbreviation). Stage 1 can also persist `metadata.ac` in a deliberately INCOMPLETE state, with `stages.1.status = "in_progress"` and a `metadata.ac.pause_reason` set (`01-ac.md`, "Pausing Stage 1"): an obligation the dev's own edits left uncovered still needs a disposition, and only the dev can supply one. This is the same "leave the stage `in_progress` for a later resume" pattern `lib/loop.md` uses for the Stage 3 loop; `stages.1.status = "complete"` is reserved for a draft that passed the deterministic integrity pass in full.
 
+Optional `test_weakening_justifications`: an array of `{path, line_text, reason}` (trimmed removed line text, non-blank reason) written only by the Stage 3 orchestrator after the dev gives an explicit reason. `stage-checks.sh pre-review` downgrades a `weakened-tests` removed-assertion BLOCKER to INFO by count per `(path, line_text)`.
+
 Since 7.9.0, each `ac.source_map` row also carries `origins` (the ticket bullet(s) it came from, with section), `added_by` (which self-review finding or dev edit introduced it, if not from Step 5), and `fidelity` (how well the landed AC restates it). Tickets created before 7.9.0 have `source_map` rows without these fields; `01-ac.md`'s Present renders them with Section `unknown` and Fidelity `unreviewed`, which counts as needing attention.
 
 ## Writing metadata.json (and bugfix.json)
