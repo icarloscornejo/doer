@@ -141,7 +141,13 @@ Deterministic presence check (no LLM), implemented by `metadata.sh write --requi
 | 1 ac | `completed_at`, `metadata.ac` populated | n/a |
 | 2 plan | `completed_at`, `metadata.plan` populated | n/a |
 | 3 build | `completed_at`, `iterations`, `loop_outcome`, `metadata.last_green_sha` | n/a (never skipped) |
-| 4 verify | `completed_at`, `ac_verdicts` | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
+| 4 verify | `completed_at`, `ac_verdicts`, `recommendation`, `evidence`, `anomalies`, `rationale`; see "Stage 4 payload" below | `skipped_reason`, `skipped_acknowledged_by = "dev"` |
 | 5 wrapup | `completed_at`, `metadata.summary`, `metadata.commit_message`, `metadata.pr_description` (or `"skipped"`) | n/a |
+
+### Stage 4 payload
+
+`stages.4` on complete: `ac_verdicts` (`PASS|FAIL|NOT_EXERCISED` per in-scope AC), `recommendation` (the analyzer's value, verbatim: `APPROVE|RETURN_TO_BUILD|NEED_MORE_DATA`), `evidence` (non-blank string per PASS/FAIL AC), `anomalies` (array, may be empty), `rationale`, plus when needed `accepted_not_exercised` (`[{ac, reason}]`, one entry with a non-blank reason per NOT_EXERCISED AC) and `override` (`{reason}`, required unless the recommendation is `APPROVE`). `null` counts as absent for the last two. All text is already redacted (`<redacted>` for credential-looking or personal values).
+
+Free text (evidence, anomalies, rationale, acceptance and override reasons) reaches the write only through `--slurpfile` from `.doer/tickets/<ID>/stage4-payload.json`, never as a literal in the filter or the shell command; the file is deleted only after the write succeeds. When `--require` refuses on evidence or acceptance, never back-fill a placeholder (exception to the generic back-fill advice above): re-dispatch the analyzer on the pasted logs, or ask the dev again.
 
 When the ticket itself transitions to `complete`: `completed_at` set, `summary` non-empty, lock file removed.

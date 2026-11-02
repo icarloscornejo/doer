@@ -38,7 +38,8 @@ Commands (take <TICKET-ID> first):
                                             "incompatible <old> vs <current>" (exit 1).
   status <TICKET-ID>                       Render a /doer status summary from
                                             metadata.json or bugfix.json, whichever
-                                            exists for this ticket.
+                                            exists for this ticket. A complete doer
+                                            Stage 4 adds a "Verify evidence:" block.
 
 Commands (no <TICKET-ID>):
   check-required <stage> <complete|skipped> [<file>|-]
@@ -47,6 +48,9 @@ Commands (no <TICKET-ID>):
                                             document (path, or stdin with '-' or
                                             omitted). Never touches metadata.json.
                                             Prints {"missing":[...]}, exit 0/1.
+                                            Stage 4 complete also validates evidence,
+                                            anomalies, rationale, recommendation, the
+                                            override and accepted_not_exercised fields.
   list                                      One line per ticket under
                                             ./.doer/tickets/, doer and bugfix alike.
 
@@ -70,13 +74,56 @@ command -v jq >/dev/null 2>&1 || { echo "metadata.sh requires jq" >&2; exit 2; }
 missing_fields() {
   local file="$1" stage="$2" status="$3" json n
   json="$(jq -c --arg stage "$stage" --arg status "$status" '
+    # jq-compat:begin missing_fields
+    def nonblank: type == "string" and test("\\S");
+    def objectish: if type == "object" then . else {} end;
+    # Stage 4 complete checks. Runs only under the stage and status guard below,
+    # so a malformed stages.4 can never break the checks of another stage.
+    def stage4_problems:
+      . as $doc
+      | ($doc.stages["4"]) as $s4
+      | if ($s4 | type) != "object" then ["stages.4"] else
+        ($s4.ac_verdicts) as $verdicts_raw
+        | ($s4.evidence) as $evidence_raw
+        | ($s4.recommendation) as $recommendation
+        | ($s4.override) as $override
+        | ($s4.accepted_not_exercised) as $accepted_raw
+        | ($verdicts_raw | objectish) as $verdicts
+        | ($evidence_raw | objectish) as $evidence
+        | ($accepted_raw | if type == "array" then map(select(type == "object")) else [] end) as $accepted
+        | ($doc.ac.in_scope) as $in_scope
+        | (
+            (if $verdicts_raw != null and ($verdicts_raw | type) != "object" then ["stages.4.ac_verdicts"] else [] end)
+          + (if $evidence_raw != null and ($evidence_raw | type) != "object" then ["stages.4.evidence"] else [] end)
+          + (if $s4.anomalies != null and ($s4.anomalies | type) != "array" then ["stages.4.anomalies"] else [] end)
+          + (if $accepted_raw != null and (($accepted_raw | type) != "array" or ($accepted_raw | length) != ($accepted | length)) then ["stages.4.accepted_not_exercised"] else [] end)
+          + (if $override != null and ($override | type) != "object" then ["stages.4.override"] else [] end)
+          + (if $recommendation == "APPROVE" or $recommendation == "RETURN_TO_BUILD" or $recommendation == "NEED_MORE_DATA" then [] else ["stages.4.recommendation"] end)
+          + (if ($override == null or ($override | type) == "object") and (($recommendation != "APPROVE") or $override != null)
+                and (($override | objectish | .reason | nonblank) | not)
+             then ["stages.4.override.reason"] else [] end)
+          + [$verdicts | to_entries[] | select((.value == "PASS" or .value == "FAIL" or .value == "NOT_EXERCISED") | not) | "stages.4.ac_verdicts.\(.key)"]
+          + (if $evidence_raw != null and ($evidence_raw | type) == "object"
+             then [$verdicts | to_entries[] | select(.value == "PASS" or .value == "FAIL") | .key as $id | select(($evidence[$id] | nonblank) | not) | "stages.4.evidence.\($id)"]
+             else [] end)
+          + [$verdicts | to_entries[] | select(.value == "NOT_EXERCISED") | .key as $id
+             | select(([$accepted[] | select(.ac == $id and (.reason | nonblank))] | length) == 0)
+             | "stages.4.accepted_not_exercised.\($id)"]
+          + (if $in_scope == null then []
+             elif ($in_scope | type) != "array" then ["ac.in_scope"]
+             else
+               (if ([$in_scope[] | select(type != "string")] | length) > 0 then ["ac.in_scope"] else [] end)
+               + ([$in_scope[] | select(type == "string") | capture("^(?<id>AC-[0-9]+)") | .id | . as $id | select($verdicts | has($id) | not) | "stages.4.ac_verdicts.\($id)"] | unique)
+             end)
+          )
+      end;
     . as $doc
     | (if $status == "complete" then
       {
         "1": [["stages","1","completed_at"], ["ac"]],
         "2": [["stages","2","completed_at"], ["plan"]],
         "3": [["stages","3","completed_at"], ["stages","3","iterations"], ["stages","3","loop_outcome"], ["last_green_sha"]],
-        "4": [["stages","4","completed_at"], ["stages","4","ac_verdicts"]],
+        "4": [["stages","4","completed_at"], ["stages","4","ac_verdicts"], ["stages","4","evidence"], ["stages","4","anomalies"], ["stages","4","rationale"]],
         "5": [["stages","5","completed_at"], ["summary"], ["commit_message"], ["pr_description"]]
       }
     elif $status == "skipped" then
@@ -89,7 +136,9 @@ missing_fields() {
           and (($doc | getpath(["stages","4","skipped_acknowledged_by"])) != null)
           and (($doc | getpath(["stages","4","skipped_acknowledged_by"])) != "dev")
        then ["stages.4.skipped_acknowledged_by must equal \"dev\""] else [] end) as $missing_value
-    | {missing: ($missing_presence + $missing_value)}
+    | (if $stage == "4" and $status == "complete" then ($doc | stage4_problems) else [] end) as $missing_stage4
+    | {missing: ($missing_presence + $missing_value + $missing_stage4)}
+    # jq-compat:end
   ' "$file")" || { echo '{"missing":["<internal: jq failed>"]}' ; return 1; }
   printf '%s\n' "$json"
   n="$(printf '%s' "$json" | jq '.missing | length')"
@@ -255,6 +304,7 @@ case "$CMD" in
     [ -f "$TARGET" ] || { echo "metadata.sh: no metadata.json or bugfix.json under $TICKET_DIR" >&2; exit 1; }
     KIND="doer"; [ "$FILE_NAME" = "bugfix.json" ] && KIND="bugfix"
     jq -r --arg id "$TICKET_ID" --arg kind "$KIND" '
+      # jq-compat:begin status
       def stagenames_doer: {"1":"ac","2":"plan","3":"build","4":"verify","5":"wrapup"};
       def stagenames_bugfix: {"0":"init","1":"ingest","2":"download","3":"evidence","4":"verdict","5":"execute","6":"verify"};
       (if $kind == "doer" then stagenames_doer else stagenames_bugfix end) as $names
@@ -264,13 +314,27 @@ case "$CMD" in
       def mark(n): stage_status(n) as $s |
         if ($s == "complete" or $s == "skipped" or $s == "imported") then "x"
         elif $s == "in_progress" then "~" else " " end;
+      # Tolerant on purpose: tickets completed before 7.11.0 lack the evidence fields.
+      def or_none: if . == null or . == "" then "(none recorded)" else tostring end;
+      def verify_block($s4):
+        ($s4.ac_verdicts | if type == "object" then . else {} end) as $verdicts
+        | ($s4.evidence | if type == "object" then . else {} end) as $evidence
+        | ($s4.accepted_not_exercised | if type == "array" then . else [] end) as $accepted
+        | "\n\nVerify evidence:\n" +
+          ([$verdicts | to_entries[] | "  \(.key): \(.value | tostring)\n    evidence: \($evidence[.key] | or_none)"] | join("\n")) + "\n" +
+          "  anomalies: " + ($s4.anomalies | if type == "array" then (if length == 0 then "(none)" else map(tostring) | join("; ") end) else or_none end) + "\n" +
+          "  rationale: " + ($s4.rationale | or_none) +
+          (if ($accepted | length) == 0 then "" else "\n  accepted_not_exercised:\n" + ([$accepted[] | "    \(if type == "object" then (.ac | or_none) else tostring end): \(if type == "object" then (.reason | or_none) else "" end)"] | join("\n")) end);
       (((.code_review[-1].blockers // []) + (.code_review[-1].prior_blockers_still_open // []) + (.code_review[-1].new_blockers // [])) | length) as $open_blockers
       | "Ticket: \($id), \(.title // "")\n" +
         "Branch: \(.branch // "n/a")  Status: \(.status // "?")\n" +
         "Current Stage: \((.current_stage // 0))  (\($names[((.current_stage // 0) | tostring)] // "?"))\n\n" +
         "Progress:\n" +
         ([$order[] | "  [\(mark(.))] \(.) \($names[.])"] | join("\n")) + "\n\n" +
-        "Blockers: " + (if $open_blockers == 0 then "none" else "\($open_blockers) open" end)
+        "Blockers: " + (if $open_blockers == 0 then "none" else "\($open_blockers) open" end) +
+        (if $kind == "doer" and ($stages | type) == "object" and ($stages["4"] | type) == "object" and $stages["4"].status == "complete"
+         then verify_block($stages["4"]) else "" end)
+      # jq-compat:end
     ' "$TARGET"
     ;;
 

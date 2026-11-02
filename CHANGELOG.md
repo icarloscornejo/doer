@@ -2,6 +2,17 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.11.0
+
+### Added
+
+- **Stage 4 now persists its verification evidence.** `stages.4` on complete carries per-AC `evidence`, `anomalies`, `rationale`, and, when needed, `accepted_not_exercised` and `override`. All text is redacted before it is stored, and reaches the write only through `--slurpfile` from `.doer/tickets/<ID>/stage4-payload.json`. `/doer status` shows a `Verify evidence:` block for a completed Stage 4 (`(none recorded)` for older tickets).
+
+### Changed
+
+- **`metadata.sh write --require 4:complete` and `check-required 4 complete` enforce it.** Evidence is required for every PASS/FAIL AC, `recommendation` and verdicts use a closed vocabulary, every in-scope AC needs a verdict, a non-APPROVE recommendation needs an override reason, and every NOT_EXERCISED AC needs an explicit acceptance with a reason. Malformed fields are reported by path instead of an internal jq failure, and other stages are unaffected.
+- **Stage 4 gates NOT_EXERCISED on any path to Finalize**, dry-runs the Finalize filter before cleanup, and ends the turn when asking the dev for an acceptance or override reason (new turn-ending event in `lib/narration.md`). The analyzer receives the cumulative logs of the current run.
+
 ## 7.10.1
 
 ### Fixed

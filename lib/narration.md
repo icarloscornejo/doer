@@ -18,6 +18,7 @@ The only events that end a turn:
 2. An Agent returned an error the user must see before retrying.
 3. The user typed a halt signal (`stop`, `wait`, `hold on`).
 4. A plain-chat question asking for approval, edits, or rejection of an already-drafted team-facing artifact (PR description, spike). The artifact goes to chat as plain text and the turn ends right there; persisting it or closing the ticket before the dev's reply is prohibited.
+5. A plain-chat question asking for a free-text reason that will be persisted as the dev's words (for example Stage 4's acceptance or override reason). The turn ends right there; a bare `ok`/`yes`/empty reply is not a reason, ask again, and never fill one in yourself.
 
 Everything else, including stage transitions and loop iterations, chains in the same turn. MUST NOT ask "Continue?" / "Shall I proceed?" / "Ready for Stage N?" between stages or iterations; the user opted in by starting the ticket. Narrate *"Stage N complete. Continuing to Stage N+1..."* and keep going.
 

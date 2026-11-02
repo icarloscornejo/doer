@@ -246,6 +246,191 @@ printf '%s' "$LIST_OUT" | grep -q '^T-6 ' && printf '%s' "$LIST_OUT" | grep -q '
 printf '%s' "$LIST_OUT" | grep -q '^T-7 ' && printf '%s' "$LIST_OUT" | grep -q 'bugfix' \
   && pass "list: includes a bugfix ticket" || fail "list: includes a bugfix ticket" "got: $LIST_OUT"
 
+# --- metadata.sh: Stage 4 verify evidence (check-required 4 complete, write --require, status) ---
+# A complete Stage 4 must carry per-criterion evidence, anomalies, rationale,
+# a closed-vocab recommendation, and explicit acceptance of unexercised criteria.
+GOOD_STAGE4_DOC='{"ac":{"in_scope":["AC-1","AC-2"]},"stages":{"4":{"status":"complete","completed_at":"t","ac_verdicts":{"AC-1":"PASS","AC-2":"PASS"},"recommendation":"APPROVE","evidence":{"AC-1":"line one","AC-2":"line two"},"anomalies":[],"rationale":"all good"}}}'
+
+# check_stage4 <desc> <expected-exit> <needle-or-empty> <jq-modifier>
+# Applies the modifier to the good doc, runs check-required 4 complete, asserts
+# the exit code, and (when a needle is given) that the output names that path
+# and is not the generic internal jq failure.
+check_stage4() {
+  local desc="$1" expected_exit="$2" needle="$3" modifier="$4" output exit_code
+  output="$(printf '%s' "$GOOD_STAGE4_DOC" | jq -c "$modifier" | "$METADATA_SH" check-required 4 complete - 2>&1)"
+  exit_code=$?
+  assert_eq "stage4 check: $desc: exit code" "$expected_exit" "$exit_code"
+  if [ -n "$needle" ]; then
+    if printf '%s' "$output" | grep -qF -- "$needle" && ! printf '%s' "$output" | grep -qF "<internal: jq failed>"; then
+      pass "stage4 check: $desc: names $needle"
+    else
+      fail "stage4 check: $desc: names $needle" "got: $output"
+    fi
+  fi
+}
+
+check_stage4 "the good document passes" 0 "" '.'
+check_stage4 "missing evidence" 1 "stages.4.evidence" 'del(.stages["4"].evidence)'
+check_stage4 "missing anomalies" 1 "stages.4.anomalies" 'del(.stages["4"].anomalies)'
+check_stage4 "missing rationale" 1 "stages.4.rationale" 'del(.stages["4"].rationale)'
+check_stage4 "empty anomalies array is present enough" 0 "" '.stages["4"].anomalies = []'
+check_stage4 "anomalies as a string is refused" 1 "stages.4.anomalies" '.stages["4"].anomalies = "none"'
+
+# recommendation and verdict vocabulary
+check_stage4 "missing recommendation" 1 "stages.4.recommendation" 'del(.stages["4"].recommendation)'
+check_stage4 "lowercase recommendation" 1 "stages.4.recommendation" '.stages["4"].recommendation = "approve"'
+check_stage4 "unknown recommendation" 1 "stages.4.recommendation" '.stages["4"].recommendation = "SHIP_IT"'
+check_stage4 "lowercase verdict value" 1 "stages.4.ac_verdicts.AC-1" '.stages["4"].ac_verdicts["AC-1"] = "pass"'
+check_stage4 "in-scope criterion missing from verdicts" 1 "stages.4.ac_verdicts.AC-2" 'del(.stages["4"].ac_verdicts["AC-2"])'
+check_stage4 "in-scope item with trailing text is matched by its id" 0 "" '.ac.in_scope = ["AC-1 : x"] | .stages["4"].ac_verdicts = {"AC-1":"PASS"}'
+check_stage4 "in-scope item with trailing text still reports a missing id" 1 "stages.4.ac_verdicts.AC-2" '.ac.in_scope = ["AC-1 : x","AC-2 : y"] | .stages["4"].ac_verdicts = {"AC-1":"PASS"}'
+check_stage4 "non-string in-scope item is refused by name, not an internal failure" 1 "ac.in_scope" '.ac.in_scope = ["AC-1", 7]'
+
+# PASS and FAIL need evidence; NOT_EXERCISED does not
+check_stage4 "PASS without evidence entry" 1 "stages.4.evidence.AC-1" 'del(.stages["4"].evidence["AC-1"])'
+check_stage4 "PASS with null evidence" 1 "stages.4.evidence.AC-1" '.stages["4"].evidence["AC-1"] = null'
+check_stage4 "PASS with blank evidence" 1 "stages.4.evidence.AC-1" '.stages["4"].evidence["AC-1"] = "   "'
+check_stage4 "PASS with empty evidence" 1 "stages.4.evidence.AC-1" '.stages["4"].evidence["AC-1"] = ""'
+check_stage4 "FAIL without evidence entry" 1 "stages.4.evidence.AC-1" '.stages["4"].ac_verdicts["AC-1"] = "FAIL" | del(.stages["4"].evidence["AC-1"])'
+check_stage4 "FAIL with null evidence" 1 "stages.4.evidence.AC-1" '.stages["4"].ac_verdicts["AC-1"] = "FAIL" | .stages["4"].evidence["AC-1"] = null'
+check_stage4 "FAIL with blank evidence" 1 "stages.4.evidence.AC-1" '.stages["4"].ac_verdicts["AC-1"] = "FAIL" | .stages["4"].evidence["AC-1"] = "\n "'
+check_stage4 "evidence entry that is not a string is refused" 1 "stages.4.evidence.AC-1" '.stages["4"].evidence["AC-1"] = 5'
+NOT_EXERCISED_ACCEPTED='.stages["4"].ac_verdicts["AC-2"] = "NOT_EXERCISED" | del(.stages["4"].evidence["AC-2"]) | .stages["4"].accepted_not_exercised = [{"ac":"AC-2","reason":"no device available"}]'
+check_stage4 "unexercised criterion needs no evidence when accepted" 0 "" "$NOT_EXERCISED_ACCEPTED"
+
+# unexercised criteria need an explicit acceptance with a reason
+NOT_EXERCISED_BASE='.stages["4"].ac_verdicts["AC-2"] = "NOT_EXERCISED" | del(.stages["4"].evidence["AC-2"])'
+check_stage4 "unexercised and unaccepted with APPROVE is refused" 1 "stages.4.accepted_not_exercised.AC-2" "$NOT_EXERCISED_BASE"
+check_stage4 "unexercised with empty acceptance list is refused" 1 "stages.4.accepted_not_exercised.AC-2" "$NOT_EXERCISED_BASE | .stages[\"4\"].accepted_not_exercised = []"
+check_stage4 "unexercised with blank acceptance reason is refused" 1 "stages.4.accepted_not_exercised.AC-2" "$NOT_EXERCISED_BASE | .stages[\"4\"].accepted_not_exercised = [{\"ac\":\"AC-2\",\"reason\":\"  \"}]"
+check_stage4 "unexercised with missing acceptance reason is refused" 1 "stages.4.accepted_not_exercised.AC-2" "$NOT_EXERCISED_BASE | .stages[\"4\"].accepted_not_exercised = [{\"ac\":\"AC-2\"}]"
+check_stage4 "acceptance for a different criterion does not cover this one" 1 "stages.4.accepted_not_exercised.AC-2" "$NOT_EXERCISED_BASE | .stages[\"4\"].accepted_not_exercised = [{\"ac\":\"AC-1\",\"reason\":\"fine\"}]"
+check_stage4 "null acceptance list counts as absent" 1 "stages.4.accepted_not_exercised.AC-2" "$NOT_EXERCISED_BASE | .stages[\"4\"].accepted_not_exercised = null"
+
+# override: required (object, non-blank reason) when recommendation is not APPROVE
+check_stage4 "APPROVE with explicit null override and null acceptance list passes" 0 "" '.stages["4"].override = null | .stages["4"].accepted_not_exercised = null'
+check_stage4 "APPROVE with string override is refused" 1 "stages.4.override" '.stages["4"].override = "yes"'
+check_stage4 "APPROVE with override lacking a reason is refused" 1 "stages.4.override.reason" '.stages["4"].override = {"reason":"  "}'
+check_stage4 "NEED_MORE_DATA without override is refused" 1 "stages.4.override.reason" '.stages["4"].recommendation = "NEED_MORE_DATA"'
+check_stage4 "RETURN_TO_BUILD with blank override reason is refused" 1 "stages.4.override.reason" '.stages["4"].recommendation = "RETURN_TO_BUILD" | .stages["4"].override = {"reason":" "}'
+check_stage4 "RETURN_TO_BUILD with null override is refused" 1 "stages.4.override.reason" '.stages["4"].recommendation = "RETURN_TO_BUILD" | .stages["4"].override = null'
+check_stage4 "NEED_MORE_DATA with string override is refused" 1 "stages.4.override" '.stages["4"].recommendation = "NEED_MORE_DATA" | .stages["4"].override = "yes"'
+check_stage4 "NEED_MORE_DATA with an override reason passes" 0 "" '.stages["4"].recommendation = "NEED_MORE_DATA" | .stages["4"].override = {"reason":"dev accepts"}'
+check_stage4 "override with an accepted unexercised criterion passes" 0 "" "$NOT_EXERCISED_ACCEPTED | .stages[\"4\"].recommendation = \"NEED_MORE_DATA\" | .stages[\"4\"].override = {\"reason\":\"dev accepts\"}"
+check_stage4 "override with an unaccepted unexercised criterion is refused" 1 "stages.4.accepted_not_exercised.AC-2" "$NOT_EXERCISED_BASE | .stages[\"4\"].recommendation = \"NEED_MORE_DATA\" | .stages[\"4\"].override = {\"reason\":\"dev accepts\"}"
+
+# type guards name the bad path instead of an internal jq failure
+check_stage4 "evidence as an array is refused" 1 "stages.4.evidence" '.stages["4"].evidence = ["a"]'
+check_stage4 "ac_verdicts as an array is refused" 1 "stages.4.ac_verdicts" '.stages["4"].ac_verdicts = ["PASS"]'
+check_stage4 "accepted_not_exercised as an object is refused" 1 "stages.4.accepted_not_exercised" '.stages["4"].accepted_not_exercised = {"ac":"AC-2","reason":"x"}'
+check_stage4 "accepted_not_exercised with a non-object item is refused" 1 "stages.4.accepted_not_exercised" '.stages["4"].accepted_not_exercised = ["AC-2"]'
+
+# a wrongly typed stages.4 must not break other stages' checks
+STAGE5_FIELDS='{"completed_at":"t"}'
+for odd_stage4 in '"garbage"' '{"status":"complete","evidence":["a"],"ac_verdicts":["x"],"anomalies":"none","accepted_not_exercised":{"a":1},"override":"yes"}' '{"status":"complete","recommendation":"NEED_MORE_DATA"}'; do
+  printf '{"ac":{"in_scope":[7]},"summary":"s","commit_message":"c","pr_description":"p","stages":{"4":%s,"5":%s}}' "$odd_stage4" "$STAGE5_FIELDS" \
+    | "$METADATA_SH" check-required 5 complete - > /dev/null 2>&1
+  assert_eq "stage4 check: odd stages.4 still passes check-required 5 complete ($odd_stage4)" "0" "$?"
+done
+
+# write --require 4:complete: refusal leaves the file untouched; a good write lands in one step
+STAGE4_FILTER='.stages["4"] = {status:"complete",completed_at:"t",ac_verdicts:$v[0].ac_verdicts,recommendation:$v[0].recommendation,evidence:$v[0].evidence,anomalies:$v[0].anomalies,rationale:$v[0].rationale}'
+printf '{"ac":{"in_scope":["AC-1","AC-2"]},"stages":{"4":{"status":"in_progress"}}}' | "$METADATA_SH" init T-8 > /dev/null
+STAGE4_BEFORE="$(cat ./.doer/tickets/T-8/metadata.json)"
+jq -n '{ac_verdicts:{"AC-1":"PASS","AC-2":"PASS"},recommendation:"APPROVE",evidence:{"AC-1":"only one"},anomalies:[],rationale:"r"}' > "$TMPDIR_TEST/stage4-bad.json"
+"$METADATA_SH" write T-8 "$STAGE4_FILTER" --slurpfile v "$TMPDIR_TEST/stage4-bad.json" --require 4:complete > /dev/null 2>&1
+assert_eq "stage4 write: evidence missing for a PASS criterion is refused, exit 1" "1" "$?"
+assert_eq "stage4 write: refusal leaves the file byte-identical" "$STAGE4_BEFORE" "$(cat ./.doer/tickets/T-8/metadata.json)"
+
+TRICKY_EVIDENCE="it's \"quoted\" \\(env.HOME) \${x} \$(echo no)"
+jq -n --arg tricky "$TRICKY_EVIDENCE" '{ac_verdicts:{"AC-1":"PASS","AC-2":"PASS"},recommendation:"APPROVE",evidence:{"AC-1":$tricky,"AC-2":"fine"},anomalies:["odd (redacted)"],rationale:"because"}' > "$TMPDIR_TEST/stage4-good.json"
+"$METADATA_SH" write T-8 "$STAGE4_FILTER" --slurpfile v "$TMPDIR_TEST/stage4-good.json" --require 4:complete > /dev/null 2>&1
+assert_eq "stage4 write: a complete payload via --slurpfile succeeds" "0" "$?"
+assert_eq "stage4 write: evidence with quotes and interpolation text is stored byte for byte" "$TRICKY_EVIDENCE" "$(jq -r '.stages["4"].evidence["AC-1"]' ./.doer/tickets/T-8/metadata.json)"
+assert_eq "stage4 write: every Stage 4 field lands in the one write" "true" \
+  "$(jq '.stages["4"] | (.status == "complete") and (.evidence | length == 2) and (.anomalies | length == 1) and (.rationale == "because") and (.recommendation == "APPROVE")' ./.doer/tickets/T-8/metadata.json)"
+
+# status: evidence block for a complete doer Stage 4
+STATUS_STAGE4_OUT="$("$METADATA_SH" status T-8)"
+STATUS_STAGE4_EXIT=$?
+assert_eq "stage4 status: complete Stage 4 exits 0" "0" "$STATUS_STAGE4_EXIT"
+for expected_fragment in "Verify evidence:" "AC-2" "fine" "odd (redacted)" "because" "PASS"; do
+  printf '%s' "$STATUS_STAGE4_OUT" | grep -qF -- "$expected_fragment" \
+    && pass "stage4 status: complete Stage 4 prints '$expected_fragment'" \
+    || fail "stage4 status: complete Stage 4 prints '$expected_fragment'" "got: $STATUS_STAGE4_OUT"
+done
+
+printf '{"ticket_id":"T-12","stages":{"4":{"status":"complete","completed_at":"t","ac_verdicts":{"AC-1":"NOT_EXERCISED"},"recommendation":"APPROVE","evidence":{},"anomalies":[],"rationale":"r","accepted_not_exercised":[{"ac":"AC-1","reason":"no device today"}]}}}' | "$METADATA_SH" init T-12 > /dev/null
+printf '%s' "$("$METADATA_SH" status T-12)" | grep -qF "no device today" \
+  && pass "stage4 status: prints accepted_not_exercised reasons" || fail "stage4 status: prints accepted_not_exercised reasons"
+
+printf '{"ticket_id":"T-9","stages":{"4":{"status":"complete","completed_at":"t","ac_verdicts":{"AC-1":"PASS"}}}}' | "$METADATA_SH" init T-9 > /dev/null
+LEGACY_STATUS_OUT="$("$METADATA_SH" status T-9 2>&1)"
+assert_eq "stage4 status: legacy complete Stage 4 exits 0" "0" "$("$METADATA_SH" status T-9 > /dev/null 2>&1; echo $?)"
+printf '%s' "$LEGACY_STATUS_OUT" | grep -qF "(none recorded)" \
+  && pass "stage4 status: legacy complete Stage 4 prints (none recorded)" || fail "stage4 status: legacy complete Stage 4 prints (none recorded)" "got: $LEGACY_STATUS_OUT"
+
+printf '{"ticket_id":"T-10","stages":{"4":{"status":"complete","completed_at":"t","ac_verdicts":{"AC-1":"PASS"},"evidence":{"AC-1":"e"},"anomalies":{"k":"v"},"rationale":{"x":1}}}}' | "$METADATA_SH" init T-10 > /dev/null
+"$METADATA_SH" status T-10 > /dev/null 2>&1
+assert_eq "stage4 status: object-valued anomalies and rationale do not break status" "0" "$?"
+
+mkdir -p ./.doer/tickets/T-11
+echo '{"ticket_id":"T-11","title":"Crash","status":"in_progress","current_stage":4,"stages":{"0":"complete","4":"complete"}}' > ./.doer/tickets/T-11/bugfix.json
+BUGFIX_COMPLETE_OUT="$("$METADATA_SH" status T-11 2>&1)"
+assert_eq "stage4 status: bugfix.json with complete string stage exits 0" "0" "$("$METADATA_SH" status T-11 > /dev/null 2>&1; echo $?)"
+printf '%s' "$BUGFIX_COMPLETE_OUT" | grep -qF "Ticket: T-11" \
+  && pass "stage4 status: bugfix.json still prints the normal summary" || fail "stage4 status: bugfix.json still prints the normal summary" "got: $BUGFIX_COMPLETE_OUT"
+printf '%s' "$BUGFIX_COMPLETE_OUT" | grep -qF "Verify evidence:" \
+  && fail "stage4 status: bugfix.json prints no evidence block" || pass "stage4 status: bugfix.json prints no evidence block"
+
+printf '{"ticket_id":"T-13","stages":{"4":{"status":"skipped","completed_at":"t","skipped_reason":"docs","skipped_acknowledged_by":"dev"}}}' | "$METADATA_SH" init T-13 > /dev/null
+SKIPPED_STATUS_OUT="$("$METADATA_SH" status T-13 2>&1)"
+assert_eq "stage4 status: skipped Stage 4 exits 0" "0" "$("$METADATA_SH" status T-13 > /dev/null 2>&1; echo $?)"
+printf '%s' "$SKIPPED_STATUS_OUT" | grep -qF "Verify evidence:" \
+  && fail "stage4 status: skipped Stage 4 prints no evidence block" || pass "stage4 status: skipped Stage 4 prints no evidence block"
+
+# --- static jq 1.6 compatibility of the jq programs inside metadata.sh ---
+# metadata.sh wraps each jq program in marker comments:
+#   # jq-compat:begin missing_fields   ...   # jq-compat:end
+#   # jq-compat:begin status           ...   # jq-compat:end
+# extract_jq_part prints the lines strictly between a begin marker and the next
+# end marker. No grep -P: BSD grep must work.
+extract_jq_part() { # extract_jq_part <part-name>
+  awk -v part="$1" '
+    $0 ~ ("# jq-compat:begin " part "([[:space:]]|$)") { inside = 1; next }
+    inside && /# jq-compat:end/ { inside = 0; next }
+    inside { print }
+  ' "$METADATA_SH"
+}
+
+# jq_compat_problems <jq-text>: prints one line per problem; empty output means compatible.
+jq_compat_problems() {
+  local jq_text="$1" if_count else_count
+  [ -n "$(printf '%s' "$jq_text" | tr -d '[:space:]')" ] || { echo "no jq text extracted"; return; }
+  if_count="$(printf '%s\n' "$jq_text" | grep -owE 'if' | wc -l | tr -d ' ')"
+  else_count="$(printf '%s\n' "$jq_text" | grep -owE 'else' | wc -l | tr -d ' ')"
+  [ "$if_count" = "$else_count" ] || echo "if/else mismatch: $if_count if vs $else_count else"
+  printf '%s\n' "$jq_text" | grep -qE '[]A-Za-z0-9_")?]\.\[' && echo "dot before index"
+  printf '%s\n' "$jq_text" | grep -qwE 'pick|abs|toarray|trim|ltrim|rtrim|have_decnum' && echo "jq 1.7-only builtin"
+  printf '%s\n' "$jq_text" | grep -qF '@base32d' && echo "jq 1.7-only builtin @base32d"
+  return 0
+}
+
+for bad_jq_sample in '.a.[k]' '.stages["4"].["x"]' '$x.[k]' 'if $x then ["p"] end' 'pick(.a)'; do
+  assert_eq "jq-compat checker rejects the sample: $bad_jq_sample" "rejected" \
+    "$([ -n "$(jq_compat_problems "$bad_jq_sample")" ] && echo rejected || echo accepted)"
+done
+assert_eq "jq-compat checker accepts ltrimstr" "accepted" \
+  "$([ -z "$(jq_compat_problems 'ltrimstr("a") | rtrimstr("b")')" ] && echo accepted || echo rejected)"
+
+for jq_part in missing_fields status; do
+  JQ_PART_TEXT="$(extract_jq_part "$jq_part")"
+  JQ_PART_PROBLEMS="$(jq_compat_problems "$JQ_PART_TEXT")"
+  assert_eq "metadata.sh $jq_part jq text is jq 1.6 compatible" "" "$JQ_PART_PROBLEMS"
+  assert_eq "jq-compat checker rejects the $jq_part text with an injected dot-before-index" "rejected" \
+    "$([ -n "$(printf '%s' "$JQ_PART_TEXT" | grep -q . && jq_compat_problems "$JQ_PART_TEXT"' | .a.[0]')" ] && echo rejected || echo accepted)"
+done
+
 # --- lessons.sh prune ---
 LESSONS_TEST_DIR="$TMPDIR_TEST/lessons"
 mkdir -p "$LESSONS_TEST_DIR"

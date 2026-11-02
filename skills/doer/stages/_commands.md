@@ -25,6 +25,8 @@ Progress:
 Blockers: <open BLOCKERs from the last code_review entry, or "none">
 ```
 
+When Stage 4 is complete, a `Verify evidence:` block follows: per AC its verdict and evidence, then anomalies, rationale, and any `accepted_not_exercised` reasons (`(none recorded)` for tickets completed before 7.11.0).
+
 ## `/doer list`
 
 ```bash
