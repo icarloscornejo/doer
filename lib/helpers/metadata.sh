@@ -187,6 +187,10 @@ def cost_line:
     elif $c.status == "known" and ($c.total_usd | type) == "number" then
       ($c.sessions | if type == "array" then length else 0 end) as $n
       | "Cost: \($c.total_usd | usd_text) across \($n) session\(if $n == 1 then "" else "s" end) (whole sessions)"
+    elif $c.status == "partial" and ($c.total_usd | type) == "number" then
+      ($c.sessions | if type == "array" then length else 0 end) as $n
+      | ($c.unpriced_models | if type == "array" then map(tostring) | join(", ") else "" end) as $models
+      | "Cost: \($c.total_usd | usd_text) across \($n) session\(if $n == 1 then "" else "s" end) (whole sessions; not priced: \(if $models == "" then "see reason" else $models end))"
     else
       "Cost: unknown (\($c.reason | if type == "string" and length > 0 then split("; ")[0] else "no reason recorded" end))"
     end;

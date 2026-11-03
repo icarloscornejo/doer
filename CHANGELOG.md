@@ -2,6 +2,21 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.13.3
+
+### Fixed
+
+- **The cost of a ticket no longer depends on other tools.** 7.13.0 took the dollar figure only from counters the status line and multi-instance persist; on a subscription account the status line writes nothing, so every ticket recorded `unknown`. `cost.sh record` now prices the tokens of the session transcripts (subagents included) with `lib/cost-rates.json`, the only price table: one entry per model and token kind (input, output, cache read, 5m and 1h cache writes), the date the rates were taken (2026-11-03) and their source URL. Models match their key exactly or with a `-YYYYMMDD` suffix. Haiku 5.5 has its long-prompt tier, Opus 5.5, 5 and 4.8 their fast-mode multiplier.
+- **Messages count once.** A message logged several times (streaming, retries) counts once at its final usage, and a message copied into a resumed or forked session counts once across all the ticket's registered sessions, attributed to the session registered first.
+- **`partial` instead of a wrong or missing number.** A model not in the table, a fast-mode call on a model without a fast multiplier, or a web-search fee is flagged in `unpriced_models`: its tokens are counted, `total_usd` covers the rest, and `status` is `partial`. `unknown` remains for a missing transcript or an unreadable rate table.
+- **Compaction is included, as an estimate.** Compaction calls are billed but are not messages in the transcript, which made long sessions come out 3% to 10% low. Each `compact_boundary` is now priced from its `compactMetadata`: `preTokens` as a cache write (a cache read when the previous request of the thread was within `compaction.cold_after_seconds`), output taken as `postTokens`. `total_usd` includes it and `compactions.estimated_usd` shows how much of the total is an estimate.
+- The status line and multi-instance counters stay only as an optional cross-check (`reported_usd`); they never decide `total_usd` or `status`. `status` and `list` show the `partial` line with the models that were not priced.
+
+### Documented limits
+
+- Rates are those of the table date; there is no network update. Haiku 5.5 over 100,000 prompt tokens and fast mode use the documented tiers; anything else billed outside token usage (other server tools) is not priced.
+- **The compaction part is an estimate and can be off in long sessions.** The real output of a compaction call is not recorded anywhere, so using `postTokens` can undercount sessions with many compactions, and whether a compaction hit the cache is decided only by the time since the previous request. In the other direction it can overestimate: measured against Claude Code's own counter, 14 of 15 calibration sessions were within 2.8% (including one with 7 compactions at -2.32%), but one long session with two compactions (counters read 13.70 at 2026-11-02T22:01:25Z and 19.64 at 2026-11-03T08:16:29Z) came out +9.37% and +8.22%, and an earlier sample of another (22c5a403) showed the opposite, a cold compaction that the counter did charge in full. Treat the total of a session with compactions as accurate to roughly 9%; `compactions.estimated_usd` tells how much of it is an estimate.
+
 ## 7.13.2
 
 ### Fixed
