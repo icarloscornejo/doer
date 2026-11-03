@@ -9,6 +9,11 @@ COST_SH="${REPO_ROOT}/lib/helpers/cost.sh"
 COST_CASE_N=0
 COST_SCOPE_TEXT="whole sessions; may include non-ticket work in them"
 
+# DOER-6: the fixture rate table (round numbers, USD per million tokens) reached
+# through COST_RATES_FILE. cold_after_seconds is 120 on purpose: a hard-coded 300
+# in the helper would fail the compaction cases.
+COST_RATES_JSON='{"taken_on":"2026-11-03","source":"https://example.test/pricing","unit":"USD per million tokens","per_tokens":1000000,"compaction":{"cold_after_seconds":120},"models":{"m-a":{"input":10,"output":20,"cache_read":1,"cache_write_5m":12.5,"cache_write_1h":20},"m-b":{"input":1,"output":2,"cache_read":0.1,"cache_write_5m":1.25,"cache_write_1h":2},"m-long":{"input":1,"output":2,"cache_read":0.1,"cache_write_5m":1.25,"cache_write_1h":2,"long_prompt":{"over_tokens":100,"input":5,"output":10,"cache_read":0.5,"cache_write_5m":6.25,"cache_write_1h":10}},"m-fast":{"input":4,"output":20,"cache_read":0.2,"cache_write_5m":5,"cache_write_1h":8,"fast_multiplier":2}}}'
+
 cost_case() { # fresh fake dirs plus an empty repo dir, cd'ed into
   COST_CASE_N=$((COST_CASE_N + 1))
   COST_ROOT="$TMPDIR_TEST/costcase-$COST_CASE_N"
@@ -16,6 +21,8 @@ cost_case() { # fresh fake dirs plus an empty repo dir, cd'ed into
   export COST_STATUSLINE_CACHE_DIR="$COST_ROOT/cache"
   export COST_MULTI_INSTANCE_DIR="$COST_ROOT/mi"
   export COST_PROJECTS_DIR="$COST_ROOT/projects"
+  printf '%s\n' "$COST_RATES_JSON" > "$COST_ROOT/rates.json"
+  export COST_RATES_FILE="$COST_ROOT/rates.json"
   cd "$COST_ROOT/repo" || exit 1
 }
 cost_run() { "$COST_SH" "$@" 2>/dev/null; }
@@ -38,10 +45,27 @@ cs_state() { # <ticket> [file]: cost_sessions without ts, keys sorted
 ticket_jq() { # <ticket> <jq-expr> [file]
   jq -c "$2" ".doer/tickets/$1/${3:-metadata.json}" 2>/dev/null
 }
-tx_line() { # <ts> <message-id> <request-id> <in> <out> <cache-read> <cache-creation>
-  jq -nc --arg ts "$1" --arg mid "$2" --arg rid "$3" --argjson i "$4" --argjson o "$5" --argjson cr "$6" --argjson cc "$7" \
-    '{type:"assistant",timestamp:$ts,requestId:$rid,message:{id:$mid,usage:{input_tokens:$i,output_tokens:$o,cache_read_input_tokens:$cr,cache_creation_input_tokens:$cc}}}'
+tx_line() { # <ts> <message-id> <request-id> <in> <out> <cache-read> <cache-creation> [model, default m-a]
+  jq -nc --arg ts "$1" --arg mid "$2" --arg rid "$3" --argjson i "$4" --argjson o "$5" --argjson cr "$6" --argjson cc "$7" --arg model "${8:-m-a}" \
+    '{type:"assistant",timestamp:$ts,requestId:$rid,message:{id:$mid,model:$model,usage:{input_tokens:$i,output_tokens:$o,cache_read_input_tokens:$cr,cache_creation_input_tokens:$cc}}}'
 }
+tx_split() { # <ts> <message-id> <request-id> <in> <out> <cache-read> <cache-5m> <cache-1h> [model, default m-a]
+  jq -nc --arg ts "$1" --arg mid "$2" --arg rid "$3" --argjson i "$4" --argjson o "$5" --argjson cr "$6" --argjson c5 "$7" --argjson c1 "$8" --arg model "${9:-m-a}" \
+    '{type:"assistant",timestamp:$ts,requestId:$rid,message:{id:$mid,model:$model,usage:{input_tokens:$i,output_tokens:$o,cache_read_input_tokens:$cr,cache_creation_input_tokens:($c5 + $c1),cache_creation:{ephemeral_5m_input_tokens:$c5,ephemeral_1h_input_tokens:$c1}}}}'
+}
+tx_boundary() { # <ts> <uuid> <pre-tokens> <post-tokens>: a compaction boundary line
+  jq -nc --arg ts "$1" --arg u "$2" --argjson pre "$3" --argjson post "$4" \
+    '{type:"system",subtype:"compact_boundary",uuid:$u,timestamp:$ts,isSidechain:false,compactMetadata:{trigger:"manual",preTokens:$pre,postTokens:$post}}'
+}
+tx_synthetic() { # <ts>: a zero-usage assistant line, as written for API errors
+  jq -nc --arg ts "$1" '{type:"assistant",timestamp:$ts,message:{id:null,model:"<synthetic>",usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}'
+}
+# usd_close <actual-json> <expected>: true when the two differ by less than 1e-9
+# (float sums are compared with a tolerance so summation order cannot matter).
+usd_close() {
+  jq -n --argjson a "${1:-null}" --argjson e "$2" '$a != null and (($a - $e) | fabs) < 0.000000001' 2>/dev/null
+}
+rec_field() { printf '%s' "$REC" | jq -c "$1" 2>/dev/null; }
 tx_put() { # <path relative to the projects dir>, lines on stdin
   mkdir -p "$(dirname "$COST_PROJECTS_DIR/$1")"
   cat >> "$COST_PROJECTS_DIR/$1"
@@ -275,12 +299,19 @@ new_doc R-1 '{"skill_version":"7.13.0","cost_sessions":[]}'
 export CLAUDE_CODE_SESSION_ID=s1; "$METADATA_SH" write R-1 '.n = 1' > /dev/null 2>&1
 export CLAUDE_CODE_SESSION_ID=s2; "$METADATA_SH" write R-1 '.n = 2' > /dev/null 2>&1
 export CLAUDE_CODE_SESSION_ID=s3
+# DOER-6: the total comes from the transcripts (m-b: input 1, output 2, cache read 0.1 per million);
+# the counters above only feed the optional reported_usd cross-check.
+tx_line 2026-01-02T00:00:00Z a1 r1 1000000 0 0 0 m-b | tx_put proj/s1.jsonl
+tx_line 2026-01-02T00:00:00Z a2 r2 0 1000000 0 0 m-b | tx_put proj/s2.jsonl
+tx_line 2026-01-02T00:00:00Z a3 r3 0 0 1000000 0 m-b | tx_put proj/s3.jsonl
 REC="$(cost_run record R-1)"; REC_EXIT=$?
 assert_eq "cost record: exit 0" "0" "$REC_EXIT"
 is_one_object "$REC" && pass "cost record: prints exactly one JSON object" || fail "cost record: prints exactly one JSON object" "got: $REC"
-assert_eq "cost record: three sessions across the three sources give the exact sum" '["known",7.75]' "$(printf '%s' "$REC" | jq -c '[.status, .total_usd]' 2>/dev/null)"
-assert_eq "cost record: every session id is listed with its cost" '[["s1",1.5],["s2",4.25],["s3",2]]' \
-  "$(printf '%s' "$REC" | jq -c '[.sessions[] | [.id, .cost_usd]]' 2>/dev/null)"
+assert_eq "cost record: three sessions priced from their transcripts give the exact sum" '["known",true]' \
+  "$(printf '%s' "$REC" | jq -c '[.status, ((.total_usd - 3.1) | fabs) < 0.000000001]' 2>/dev/null)"
+assert_eq "cost record: every session id is listed with its computed cost (micro-dollars)" '[["s1",1000000],["s2",2000000],["s3",100000]]' \
+  "$(printf '%s' "$REC" | jq -c '[.sessions[] | [.id, (.cost_usd * 1000000 | round)]]' 2>/dev/null)"
+assert_eq "cost record: the counters of the three sources are only the cross-check (reported_usd 7.75)" "7.75" "$(rec_field '.reported_usd')"
 assert_eq "cost record: scope states whole sessions" "$COST_SCOPE_TEXT" "$(printf '%s' "$REC" | jq -r '.scope' 2>/dev/null)"
 assert_eq "cost record: recorded_at is a UTC ISO8601 string" "true" \
   "$(printf '%s' "$REC" | jq '.recorded_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")' 2>/dev/null)"
@@ -294,16 +325,16 @@ cost_case
 export CLAUDE_CODE_SESSION_ID=sess-A
 cost_snapshot inst sess-A 12
 new_doc R-2 '{"skill_version":"7.13.0","cost_sessions":[{"id":"sess-A","ts":"2026-01-01T00:00:00Z","usd":5}]}'
+tx_line 2026-01-02T00:00:00Z a1 r1 4000000 0 0 0 m-b | tx_put proj/sess-A.jsonl
 REC="$(cost_run record R-2)"
-assert_eq "cost record: the closing session is sampled at record time (saved 5, snapshot 12 gives 12)" '["known",12]' "$(printf '%s' "$REC" | jq -c '[.status, .total_usd]' 2>/dev/null)"
-printf '%s' "$REC" > "$COST_ROOT/rec.json"
-"$METADATA_SH" write R-2 '.cost = $cost[0]' --slurpfile cost "$COST_ROOT/rec.json" > /dev/null 2>&1
-assert_eq "cost record: the persisted .cost equals the persisted session cost" "true" \
-  "$(ticket_jq R-2 '.cost.total_usd == .cost_sessions[0].usd and .cost.total_usd == 12')"
+assert_eq "cost record: the closing session transcript is priced (4 million input tokens at 1 per million is 4)" '["known",true]' \
+  "$(printf '%s' "$REC" | jq -c '[.status, ((.total_usd - 4) | fabs) < 0.000000001]' 2>/dev/null)"
+assert_eq "cost record: the closing counter sample (snapshot 12) is only the cross-check" "12" "$(rec_field '.reported_usd')"
 unset CLAUDE_CODE_SESSION_ID
 new_doc R-2b '{"skill_version":"7.13.0","cost_sessions":[{"id":"only","ts":"2026-01-01T00:00:00Z","usd":3}]}'
-assert_eq "cost record: with no closing session id the saved values still sum" '["known",3]' \
-  "$(cost_run record R-2b | jq -c '[.status, .total_usd]' 2>/dev/null)"
+tx_line 2026-01-02T00:00:00Z a1 r1 3000000 0 0 0 m-b | tx_put proj/only.jsonl
+assert_eq "cost record: with no closing session id the saved sessions still sum from their transcripts" '["known",true]' \
+  "$(cost_run record R-2b | jq -c '[.status, ((.total_usd - 3) | fabs) < 0.000000001]' 2>/dev/null)"
 
 # unknown variants: every one is one valid object, exit 0, null total, a reason
 unknown_case() { # <desc> <reason-fragment-or-empty> <ticket> [record-args...]
@@ -321,23 +352,17 @@ unknown_case() { # <desc> <reason-fragment-or-empty> <ticket> [record-args...]
 cost_case
 export CLAUDE_CODE_SESSION_ID=sess-A
 new_doc U-1 '{"skill_version":"7.13.0","cost_sessions":[{"id":"sess-A","ts":"t","usd":null}]}'
-unknown_case "closing session without data" "no cost data for sess-A" U-1
+unknown_case "closing session without a transcript" "no transcript found for sess-A" U-1
 new_doc U-2 '{"skill_version":"7.13.0","cost_sessions":[{"id":"gone-1","ts":"t","usd":null},{"id":"sess-A","ts":"t","usd":4}]}'
-unknown_case "another session without data" "no cost data for gone-1" U-2
-new_doc U-3 '{"skill_version":"7.13.0","cost_sessions":[{"id":"back-1","ts":"t","usd":8,"reset":true}]}'
-unknown_case "saved reset flag" "cost counter went backwards for back-1" U-3
-cost_snapshot inst sess-A 3
-new_doc U-4 '{"skill_version":"7.13.0","cost_sessions":[{"id":"sess-A","ts":"t","usd":8}]}'
-unknown_case "reset detected at record time" "cost counter went backwards for sess-A" U-4
+unknown_case "another session without a transcript" "no transcript found for gone-1" U-2
 COST_STATUSLINE_CACHE_DIR="$COST_ROOT/none" COST_MULTI_INSTANCE_DIR="$COST_ROOT/none" COST_PROJECTS_DIR="$COST_ROOT/none" \
-  unknown_case "no source dirs exist" "no cost data for" U-1
+  unknown_case "no source dirs exist" "no transcript found for" U-1
 printf 'garbage' > "$COST_MULTI_INSTANCE_DIR/bad.json"; printf '{{' > "$COST_STATUSLINE_CACHE_DIR/daily-2026-01-02.json"
-rm -f "$COST_MULTI_INSTANCE_DIR/inst.json"
-unknown_case "only malformed source files" "no cost data for sess-A" U-1
+unknown_case "only malformed counter files" "no transcript found for sess-A" U-1
 cost_case
 export CLAUDE_CODE_SESSION_ID=sess-A
 new_doc U-5 '{"skill_version":"7.13.0","cost_sessions":[{"id":"sess-A","ts":"t","usd":null}]}'
-unknown_case "empty cache dir" "no cost data for sess-A" U-5
+unknown_case "empty projects dir" "no transcript found for sess-A" U-5
 new_doc U-6 '{"skill_version":"7.9.0"}'
 unknown_case "older ticket without cost_sessions" "predates cost tracking" U-6
 new_doc U-7 '{"skill_version":"7.13.0"}'
@@ -398,7 +423,9 @@ printf 'this line is not json\n' >> "$COST_PROJECTS_DIR/proj/tk-1.jsonl"
 REC="$(cost_run record K-2)"; REC_EXIT=$?
 assert_eq "cost tokens: a corrupt transcript line keeps exit 0" "0" "$REC_EXIT"
 is_one_object "$REC" && pass "cost tokens: a corrupt transcript still gives one valid object" || fail "cost tokens: a corrupt transcript still gives one valid object" "got: $REC"
-assert_eq "cost tokens: a corrupt transcript does not change the cost" '["known",3]' "$(printf '%s' "$REC" | jq -c '[.status, .total_usd]' 2>/dev/null)"
+# m-a: input 10, output 20, cache read 1, cache write 12.5 per million, on the deduplicated 111/222/333/444 tokens
+assert_eq "cost tokens: a corrupt transcript does not change the priced cost" '["known",true]' \
+  "$(printf '%s' "$REC" | jq -c '[.status, ((.total_usd - 0.011433) | fabs) < 0.000000001]' 2>/dev/null)"
 
 # --- record: by_stage ---
 cost_case
@@ -448,6 +475,239 @@ REC="$(cost_run record B-5)"
 assert_eq "cost by_stage: out-of-order timestamps give null by_stage with a reason" '[null,"string"]' \
   "$(printf '%s' "$REC" | jq -c '[.by_stage, (.by_stage_reason | type)]' 2>/dev/null)"
 
+# =====================================================================
+# DOER-6: the cost is priced from the transcripts with a shipped rate table
+# =====================================================================
+# Fixture table (COST_RATES_JSON): m-a 10/20/1/12.5/20, m-b 1/2/0.1/1.25/2 per million
+# (input/output/cache read/cache write 5m/cache write 1h); m-long has a long_prompt tier
+# above 100 prompt tokens; m-fast has fast_multiplier 2; cold_after_seconds is 120.
+price_doc() { # <ticket> <session-id>...: a tracked ticket with these registered sessions
+  local ticket="$1" sessions="[]" session_id; shift
+  for session_id in "$@"; do
+    sessions="$(printf '%s' "$sessions" | jq -c --arg id "$session_id" '. + [{id: $id, ts: "2026-01-01T00:00:00Z", usd: null}]')"
+  done
+  new_doc "$ticket" "$(jq -nc --argjson s "$sessions" '{skill_version: "7.13.3", cost_sessions: $s}')"
+}
+
+# AC-1: two sessions, two models, no counter source of any kind
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-1 p1-a p1-b
+tx_split 2026-01-01T10:00:00Z a1 r1 100 50 200 40 10 m-a | tx_put proj/p1-a.jsonl
+tx_split 2026-01-01T10:00:00Z b1 r1 1000 500 2000 400 100 m-b | tx_put proj/p1-b.jsonl
+REC="$(COST_STATUSLINE_CACHE_DIR="$COST_ROOT/none" COST_MULTI_INSTANCE_DIR="$COST_ROOT/none" cost_run record P-1)"
+assert_eq "cost price: two models from transcripts alone give a known record" "known" "$(rec_field '.status' | tr -d '"')"
+assert_eq "cost price: total_usd sums input, output, cache read, 5m and 1h writes per model (2900 + 2900 micro-dollars)" "true" \
+  "$(usd_close "$(rec_field '.total_usd')" 0.0058)"
+assert_eq "cost price: by_model prices each model separately" "true" "$(usd_close "$(rec_field '.by_model["m-b"].usd')" 0.0029)"
+assert_eq "cost price: by_model carries the model's four token sums" '[100,50,200,50]' \
+  "$(rec_field '.by_model["m-a"] | [.input_tokens, .output_tokens, .cache_read_tokens, .cache_creation_tokens]')"
+assert_eq "cost price: the record names when the rates were taken and where" '["2026-11-03","https://example.test/pricing"]' \
+  "$(rec_field '[.rates.taken_on, .rates.source]')"
+assert_eq "cost price: nothing is unpriced" "[]" "$(rec_field '.unpriced_models')"
+assert_eq "cost price: no counters at all means reported_usd is null" "null" "$(rec_field '.reported_usd')"
+
+# AC-2: models the table does not hold
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-2 p2
+{
+  tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 m-b
+  tx_line 2026-01-01T10:00:01Z a2 r2 500 500 0 0 m-zzz
+} | tx_put proj/p2.jsonl
+REC="$(cost_run record P-2)"
+assert_eq "cost price: an unlisted model makes the record partial, not unknown" "partial" "$(rec_field '.status' | tr -d '"')"
+assert_eq "cost price: partial total_usd covers the priced model only" "true" "$(usd_close "$(rec_field '.total_usd')" 1)"
+assert_eq "cost price: unpriced_models names the model" '["m-zzz"]' "$(rec_field '.unpriced_models')"
+assert_eq "cost price: the unpriced model's tokens are still counted" '[1000500,500]' "$(rec_field '[.input_tokens, .output_tokens]')"
+assert_eq "cost price: the reason says which model was not priced" "true" "$(rec_field '.reason | type == "string" and contains("m-zzz")')"
+assert_eq "cost price: by_model usd of the unpriced model is null" "null" "$(rec_field '.by_model["m-zzz"].usd')"
+
+price_doc P-2b p2b
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 m-b-20260101 | tx_put proj/p2b.jsonl
+REC="$(cost_run record P-2b)"
+assert_eq "cost price: a listed id with a -YYYYMMDD suffix is priced" '["known",true]' "$(rec_field '[.status, ((.total_usd - 1) | fabs) < 0.000000001]')"
+price_doc P-2c p2c
+{
+  tx_line 2026-01-01T10:00:00Z a1 r1 1000 0 0 0 m-b-2
+  tx_line 2026-01-01T10:00:01Z a2 r2 1000 0 0 0 m-b-2-extra
+  tx_line 2026-01-01T10:00:02Z a3 r3 1000 0 0 0 m-b-202601011
+} | tx_put proj/p2c.jsonl
+REC="$(cost_run record P-2c)"
+assert_eq "cost price: look-alike ids are never matched to a neighbour (partial, total 0)" '["partial",["m-b-2","m-b-2-extra","m-b-202601011"],0]' \
+  "$(rec_field '[.status, (.unpriced_models | sort), .total_usd]')"
+price_doc P-2d p2d
+tx_line 2026-01-01T10:00:00Z a1 r1 10 10 0 0 m-zzz | tx_put proj/p2d.jsonl
+REC="$(cost_run record P-2d)"
+assert_eq "cost price: only unpriced models gives partial with total 0" '["partial",0]' "$(rec_field '[.status, .total_usd]')"
+
+price_doc P-2e p2e
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 m-fast | jq -c '.message.usage.speed = "fast"' | tx_put proj/p2e.jsonl
+REC="$(cost_run record P-2e)"
+assert_eq "cost price: a fast-mode event on a model with fast_multiplier is priced at twice the rates" '["known",true]' \
+  "$(rec_field '[.status, ((.total_usd - 8) | fabs) < 0.000000001]')"
+price_doc P-2f p2f
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 m-b | jq -c '.message.usage.speed = "fast"' | tx_put proj/p2f.jsonl
+REC="$(cost_run record P-2f)"
+assert_eq "cost price: a fast-mode event on a model without fast_multiplier is counted but flagged not priced" '["partial",["m-b (fast mode)"],1000000]' \
+  "$(rec_field '[.status, .unpriced_models, .input_tokens]')"
+price_doc P-2g p2g
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 m-b | jq -c '.message.usage.server_tool_use.web_search_requests = 2' | tx_put proj/p2g.jsonl
+REC="$(cost_run record P-2g)"
+assert_eq "cost price: a web-search event keeps its token cost and flags only the search fee" '["partial",["m-b (web search fee)"],true]' \
+  "$(rec_field '[.status, .unpriced_models, ((.total_usd - 1) | fabs) < 0.000000001]')"
+price_doc P-2h p2h
+tx_line 2026-01-01T10:00:00Z a1 r1 100 0 0 0 m-long | tx_put proj/p2h.jsonl
+REC="$(cost_run record P-2h)"
+assert_eq "cost price: a prompt exactly at the long_prompt threshold is priced at the base tier" "true" "$(usd_close "$(rec_field '.total_usd')" 0.0001)"
+price_doc P-2i p2i
+tx_line 2026-01-01T10:00:00Z a1 r1 101 0 0 0 m-long | tx_put proj/p2i.jsonl
+REC="$(cost_run record P-2i)"
+assert_eq "cost price: a prompt over the threshold is priced at the long tier" "true" "$(usd_close "$(rec_field '.total_usd')" 0.000505)"
+price_doc P-2j p2j
+tx_line 2026-01-01T10:00:00Z a1 r1 60 0 50 0 m-long | tx_put proj/p2j.jsonl
+REC="$(cost_run record P-2j)"
+assert_eq "cost price: the prompt length counts cache reads too (60 + 50 > 100 is the long tier)" "true" \
+  "$(usd_close "$(rec_field '.total_usd')" 0.000325)"
+
+# AC-3: a message logged more than once counts once
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-3 p3
+{
+  tx_line 2026-01-01T10:00:00Z m1 r1 0 10 0 0 m-b
+  tx_line 2026-01-01T10:00:01Z m1 r1 0 50 0 0 m-b
+  tx_line 2026-01-01T10:00:02Z m1 r1 0 50 0 0 m-b
+  tx_line 2026-01-01T10:00:03Z m1 r-retry 0 50 0 0 m-b
+} | tx_put proj/p3.jsonl
+REC="$(cost_run record P-3)"
+assert_eq "cost dedupe: streaming and retried lines of one message id count once at the final usage" '[50,true]' \
+  "$(rec_field '[.output_tokens, ((.total_usd - 0.0001) | fabs) < 0.000000001]')"
+{
+  tx_line 2026-01-01T10:00:04Z x 1 0 7 0 0 m-b | jq -c 'del(.message.id)'
+  tx_line 2026-01-01T10:00:05Z x 2 0 7 0 0 m-b | jq -c 'del(.message.id)'
+} | tx_put proj/p3.jsonl
+REC="$(cost_run record P-3)"
+assert_eq "cost dedupe: lines without a message id each count" "64" "$(rec_field '.output_tokens')"
+
+# AC-3 across sessions: a resumed or forked session copies earlier lines
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-3b zz-orig aa-copy
+{
+  tx_line 2026-01-01T10:00:00Z x1 r1 1000000 0 0 0 m-b
+  tx_line 2026-01-01T10:00:10Z y1 r2 1000000 0 0 0 m-b
+  tx_boundary 2026-01-01T10:05:00Z u1 1000000 10000
+} | tx_put proj/zz-orig.jsonl
+{
+  tx_boundary 2026-01-01T10:05:00Z u1 1000000 10000
+  tx_line 2026-01-01T10:00:00Z x1 r1 1000000 0 0 0 m-b
+  tx_line 2026-01-01T10:06:00Z z1 r3 1000000 0 0 0 m-b
+} | tx_put proj/aa-copy.jsonl
+REC="$(cost_run record P-3b)"
+assert_eq "cost dedupe: a message copied into a second session counts once; the shared boundary is priced once (1 + 1 + 1 + 1.27)" '["known",1,true]' \
+  "$(rec_field '[.status, .compactions.count, ((.total_usd - 4.27) | fabs) < 0.000000001]')"
+assert_eq "cost dedupe: the copied message is attributed to the session registered first, not the alphabetical first" '[["zz-orig",2000000],["aa-copy",1000000]]' \
+  "$(rec_field '[.sessions[] | [.id, .input_tokens]]')"
+assert_eq "cost dedupe: token totals count the copied message once" "3000000" "$(rec_field '.input_tokens')"
+
+# a session with no transcript, or an unreadable rate table: unknown, still one object, exit 0
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-4 p4-ok p4-gone
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 m-b | tx_put proj/p4-ok.jsonl
+unknown_case "one registered session has no transcript" "no transcript found for p4-gone" P-4
+price_doc P-4b p4b
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 m-b | tx_put proj/p4b.jsonl
+COST_RATES_FILE="$COST_ROOT/missing-rates.json" unknown_case "the rate table file is missing" "rate table" P-4b
+printf '{{' > "$COST_ROOT/bad-rates.json"
+COST_RATES_FILE="$COST_ROOT/bad-rates.json" unknown_case "the rate table is not JSON" "rate table" P-4b
+printf '{"taken_on":"2026-11-03"}' > "$COST_ROOT/empty-rates.json"
+COST_RATES_FILE="$COST_ROOT/empty-rates.json" unknown_case "the rate table has no models" "rate table" P-4b
+
+# counters are only a cross-check
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc P-5 '{"skill_version":"7.13.3","cost_sessions":[{"id":"c1","ts":"2026-01-01T00:00:00Z","usd":100}]}'
+tx_line 2026-01-01T10:00:00Z a1 r1 3000000 0 0 0 m-b | tx_put proj/c1.jsonl
+REC="$(cost_run record P-5)"
+assert_eq "cost cross-check: a counter of 100 never replaces the priced transcript (3)" '["known",true,100]' \
+  "$(rec_field '[.status, ((.total_usd - 3) | fabs) < 0.000000001, .reported_usd]')"
+new_doc P-5b '{"skill_version":"7.13.3","cost_sessions":[{"id":"c2","ts":"2026-01-01T00:00:00Z","usd":8,"reset":true}]}'
+tx_line 2026-01-01T10:00:00Z a1 r1 3000000 0 0 0 m-b | tx_put proj/c2.jsonl
+REC="$(cost_run record P-5b)"
+assert_eq "cost cross-check: a counter that went backwards no longer makes the record unknown, reported_usd is null" '["known",true,null]' \
+  "$(rec_field '[.status, ((.total_usd - 3) | fabs) < 0.000000001, .reported_usd]')"
+
+# compaction: priced from the boundary metadata (cold: cache write 5m, warm: cache read, output = postTokens)
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-6a p6a
+{
+  tx_line 2026-01-01T10:00:00Z a1 r1 1 0 0 0 m-a
+  tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000
+} | tx_put proj/p6a.jsonl
+REC="$(cost_run record P-6a)"
+assert_eq "cost compaction: 121 s after the previous request is cold (1000000 x 12.5 + 10000 x 20 per million = 12.7)" '["known",1,true,true]' \
+  "$(rec_field '[.status, .compactions.count, ((.compactions.estimated_usd - 12.7) | fabs) < 0.000000001, ((.total_usd - 12.70001) | fabs) < 0.000000001]')"
+price_doc P-6b p6b
+{
+  tx_line 2026-01-01T10:00:00Z a1 r1 1 0 0 0 m-a
+  tx_boundary 2026-01-01T10:02:00Z u1 1000000 10000
+} | tx_put proj/p6b.jsonl
+REC="$(cost_run record P-6b)"
+assert_eq "cost compaction: 120 s after the previous request is warm (cache read: 1.0 + 0.2 = 1.2)" "true" \
+  "$(usd_close "$(rec_field '.compactions.estimated_usd')" 1.2)"
+price_doc P-6c p6c
+{
+  tx_line 2026-01-01T10:00:00Z a1 r1 1 0 0 0 m-a
+  tx_synthetic 2026-01-01T10:03:20Z
+  tx_boundary 2026-01-01T10:04:10Z u1 1000000 10000
+} | tx_put proj/p6c.jsonl
+REC="$(cost_run record P-6c)"
+assert_eq "cost compaction: a zero-usage synthetic line is never the previous request (cold from the real line, known)" '["known",true]' \
+  "$(rec_field '[.status, ((.compactions.estimated_usd - 12.7) | fabs) < 0.000000001]')"
+price_doc P-6d p6d
+tx_boundary 2026-01-01T10:02:00Z u1 1000000 10000 | tx_put proj/p6d.jsonl
+REC="$(cost_run record P-6d)"
+assert_eq "cost compaction: a boundary with no previous request is flagged and the record is partial" "partial" "$(rec_field '.status' | tr -d '"')"
+assert_eq "cost compaction: ... naming the compaction in unpriced_models" "true" "$(rec_field '.unpriced_models | any(.[]; contains("compaction"))')"
+price_doc P-6e p6e
+{
+  tx_line 2026-01-01T10:00:00Z a1 r1 1 0 0 0 m-zzz
+  tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000
+} | tx_put proj/p6e.jsonl
+REC="$(cost_run record P-6e)"
+assert_eq "cost compaction: a boundary after an unpriced model is flagged as that model's compaction" '["partial",true]' \
+  "$(rec_field '[.status, (.unpriced_models | index("m-zzz (compaction)") != null)]')"
+price_doc P-6f p6f
+{
+  tx_line 2026-01-01T10:00:00Z a1 r1 1 0 0 0 m-a
+  tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000
+  tx_line 2026-01-01T11:00:00Z a2 r2 1 0 0 0 m-a
+  tx_boundary 2026-01-01T11:02:01Z u2 1000000 10000
+} | tx_put proj/p6f.jsonl
+REC="$(cost_run record P-6f)"
+assert_eq "cost compaction: two boundaries add up" '[2,true]' "$(rec_field '[.compactions.count, ((.compactions.estimated_usd - 25.4) | fabs) < 0.000000001]')"
+
+# compaction in a subagent file pairs with that file's own thread, never with the main thread
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-6g p6g
+tx_line 2026-01-01T10:00:00Z a1 r1 1 0 0 0 m-a | tx_put proj/p6g.jsonl
+{
+  tx_line 2026-01-01T10:00:00Z s1 r2 1 0 0 0 m-b | jq -c '.isSidechain = true'
+  tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000 | jq -c '.isSidechain = true'
+} | tx_put proj/p6g/subagents/agent-a.jsonl
+REC="$(cost_run record P-6g)"
+assert_eq "cost compaction: a boundary inside a subagent file is priced with that file's own model (m-b: 1.25 + 0.02)" "true" \
+  "$(usd_close "$(rec_field '.compactions.estimated_usd')" 1.27)"
+price_doc P-6h p6h
+tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000 | tx_put proj/p6h.jsonl
+tx_line 2026-01-01T10:00:00Z s1 r2 1 0 0 0 m-b | jq -c '.isSidechain = true' | tx_put proj/p6h/subagents/agent-a.jsonl
+REC="$(cost_run record P-6h)"
+assert_eq "cost compaction: a main-file boundary is never paired with a subagent line (partial)" "partial" "$(rec_field '.status' | tr -d '"')"
+
 # --- close (--require 5:complete) and display (status / list) ---
 CLOSE_DOC='{"summary":"s","commit_message":"c","pr_description":"p","stages":{"5":{"completed_at":"t"}}}'
 for cost_value in '{"status":"unknown","reason":"r"}' '{"status":"known","total_usd":1}'; do
@@ -483,6 +743,13 @@ STATUS_OUT="$("$METADATA_SH" status D-2 2>&1)"
 printf '%s\n' "$STATUS_OUT" | grep -qFx 'Cost: unknown (no cost data for s1)' \
   && pass "cost status: an unknown cost prints the first reason clause" \
   || fail "cost status: an unknown cost prints the first reason clause" "got: $STATUS_OUT"
+new_doc D-2b '{"title":"T","status":"complete","current_stage":5,"stages":{"5":{"status":"complete"}},"cost":{"status":"partial","total_usd":2.5,"reason":"models not priced: m-x, m-y","unpriced_models":["m-x","m-y (fast mode)"],"sessions":[{"id":"a"},{"id":"b"}]}}'
+STATUS_OUT="$("$METADATA_SH" status D-2b 2>&1)"
+printf '%s\n' "$STATUS_OUT" | grep -qFx 'Cost: $2.50 across 2 sessions (whole sessions; not priced: m-x, m-y (fast mode))' \
+  && pass "cost status: a partial cost prints the total and the models that were not priced" \
+  || fail "cost status: a partial cost prints the total and the models that were not priced" "got: $STATUS_OUT"
+"$METADATA_SH" list 2>&1 | grep '^D-2b ' | grep -qF '$2.50' \
+  && pass "cost list: a partial cost shows its total" || fail "cost list: a partial cost shows its total"
 new_doc D-3 '{"title":"T","status":"complete","current_stage":5,"stages":{"5":{"status":"complete"}}}'
 STATUS_OUT="$("$METADATA_SH" status D-3 2>&1)"; STATUS_EXIT=$?
 assert_eq "cost status: a ticket without cost exits 0" "0" "$STATUS_EXIT"
@@ -533,9 +800,86 @@ assert_eq "cost.sh carries at least one jq-compat part" "yes" \
 # every `jq` program in cost.sh sits inside a marked part: a bare jq filter outside markers is unscanned
 assert_eq "cost.sh: no jq program is left outside a jq-compat part" "0" \
   "$([ -f "$COST_SH" ] && awk '/# jq-compat:begin/{inside=1; next} /# jq-compat:end/{inside=0; next} !inside && /(^|[^A-Za-z_-])jq[[:space:]]+(-[A-Za-z]+[[:space:]]+)*(--[a-z-]+[[:space:]]+[^[:space:]]+[[:space:]]+)*\047/ {n++} END{print n+0}' "$COST_SH" || echo missing)"
-assert_eq "cost.sh: no price table or rate-like constants" "clean" \
-  "$([ -f "$COST_SH" ] && { grep -qiE 'per_?million|per_?mtok|price|rate_?table|usd_per|1e6|1000000|1_000_000|opus|sonnet|haiku|0\.0000[0-9]' "$COST_SH" && echo found || echo clean; } || echo missing)"
+# DOER-6: the rates live in lib/cost-rates.json only. The helpers hold no model name, divisor, rate
+# literal or compaction parameter (the words "price" and "priced" are fine now: unpriced_models).
+COST_RATES_REAL="${REPO_ROOT}/lib/cost-rates.json"
+for rate_free_file in "$COST_SH" "${REPO_ROOT}/lib/helpers/metadata.sh"; do
+  assert_eq "$(basename "$rate_free_file"): no model name, divisor or rate-like constant" "clean" \
+    "$([ -f "$rate_free_file" ] && { grep -qiE 'opus|sonnet|haiku|fable|mythos|per_?million|per_?mtok|usd_per|1e6|1000000|1_000_000|0\.0000[0-9]' "$rate_free_file" && echo found || echo clean; } || echo missing)"
+done
+assert_eq "cost.sh: no compaction threshold literal" "clean" \
+  "$([ -f "$COST_SH" ] && { grep -qE '(^|[^0-9.])(300|120)([^0-9.]|$)' "$COST_SH" && echo found || echo clean; } || echo missing)"
+assert_eq "cost-rates.json is valid JSON with the date, source, divisor and compaction parameter" "true" \
+  "$(jq '(.taken_on | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and (.source | test("^https://")) and (.per_tokens | type == "number") and (.compaction.cold_after_seconds | type == "number") and (.models | type == "object" and length > 0)' "$COST_RATES_REAL" 2>/dev/null || echo false)"
+assert_eq "cost-rates.json: every model has the five numeric rates" "true" \
+  "$(jq '[.models[] | [.input, .output, .cache_read, .cache_write_5m, .cache_write_1h] | all(type == "number")] | all' "$COST_RATES_REAL" 2>/dev/null || echo false)"
+assert_eq "cost-rates.json: only claude-haiku-5-5 has a long_prompt tier" '["claude-haiku-5-5"]' \
+  "$(jq -c '[.models | to_entries[] | select(.value.long_prompt != null) | .key]' "$COST_RATES_REAL" 2>/dev/null)"
+assert_eq "cost-rates.json: fast_multiplier 2 on Opus 5.5, 5 and 4.8 only" '["claude-opus-4-8","claude-opus-5","claude-opus-5-5"]' \
+  "$(jq -c '[.models | to_entries[] | select(.value.fast_multiplier == 2) | .key] | sort' "$COST_RATES_REAL" 2>/dev/null)"
 
-unset CLAUDE_CODE_SESSION_ID COST_STATUSLINE_CACHE_DIR COST_MULTI_INSTANCE_DIR COST_PROJECTS_DIR MV_LOG
+# every model id of the shipped table prices (real file, COST_RATES_FILE unset, from a temp dir,
+# CLAUDE_PLUGIN_ROOT unset): input|output|cache read|write 5m|write 1h, USD per million tokens
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+cost_run_real() { (cd "$COST_ROOT/repo" && env -u COST_RATES_FILE -u CLAUDE_PLUGIN_ROOT "$COST_SH" "$@" 2>/dev/null); }
+while IFS='|' read -r model_id rate_in rate_out rate_read rate_w5 rate_w1; do
+  [ -n "$model_id" ] || continue
+  price_doc "T-$model_id" "t-$model_id"
+  tx_split 2026-01-01T10:00:00Z a1 r1 10000 10000 10000 10000 10000 "$model_id" | tx_put "proj/t-$model_id.jsonl"
+  REC="$(cost_run_real record "T-$model_id")"
+  expected_usd="$(jq -n --arg r "$rate_in+$rate_out+$rate_read+$rate_w5+$rate_w1" '$r | split("+") | map(tonumber) | add * 0.01')"
+  assert_eq "cost table: $model_id prices 10000 tokens of each kind at the documented rates" '["known",[],true]' \
+    "$(printf '%s' "$REC" | jq -c --argjson e "$expected_usd" '[.status, .unpriced_models, ((.total_usd - $e) | fabs) < 0.000000001]' 2>/dev/null)"
+done <<'RATES'
+claude-fable-5-1|10|50|0.25|12.5|20
+claude-fable-5|10|50|1|12.5|20
+claude-mythos-5-1|10|50|0.25|12.5|20
+claude-mythos-5|10|50|1|12.5|20
+claude-opus-5-5|4|20|0.2|5|8
+claude-opus-5|5|25|0.5|6.25|10
+claude-opus-4-8|5|25|0.5|6.25|10
+claude-opus-4-7|5|25|0.5|6.25|10
+claude-opus-4-6|5|25|0.5|6.25|10
+claude-opus-4-5|5|25|0.5|6.25|10
+claude-opus-4-1|15|75|1.5|18.75|30
+claude-opus-4|15|75|1.5|18.75|30
+claude-sonnet-5-5|2|10|0.1|2.5|4
+claude-sonnet-5|2|10|0.2|2.5|4
+claude-sonnet-4-6|3|15|0.3|3.75|6
+claude-sonnet-4-5|3|15|0.3|3.75|6
+claude-sonnet-4|3|15|0.3|3.75|6
+claude-haiku-5-5|0.1|0.5|0.01|0.125|0.2
+claude-haiku-4-5|1|5|0.1|1.25|2
+claude-3-5-haiku|0.8|4|0.08|1|1.6
+RATES
+# a dated snapshot id, the long-prompt edge of Haiku 5.5, fast mode and a search fee on the real table
+price_doc T-dated t-dated
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 claude-opus-5-5-20261101 | tx_put proj/t-dated.jsonl
+REC="$(cost_run_real record T-dated)"
+assert_eq "cost table: a dated snapshot id of a listed model is priced (4 per million input)" '["known",true]' \
+  "$(printf '%s' "$REC" | jq -c '[.status, ((.total_usd - 4) | fabs) < 0.000000001]' 2>/dev/null)"
+price_doc T-edge1 t-edge1
+tx_line 2026-01-01T10:00:00Z a1 r1 100000 0 0 0 claude-haiku-5-5 | tx_put proj/t-edge1.jsonl
+REC="$(cost_run_real record T-edge1)"
+assert_eq "cost table: a Haiku 5.5 prompt of 100000 tokens is priced at the base tier (0.01)" "true" "$(usd_close "$(printf '%s' "$REC" | jq -c '.total_usd' 2>/dev/null)" 0.01)"
+price_doc T-edge2 t-edge2
+tx_line 2026-01-01T10:00:00Z a1 r1 100001 0 0 0 claude-haiku-5-5 | tx_put proj/t-edge2.jsonl
+REC="$(cost_run_real record T-edge2)"
+assert_eq "cost table: a Haiku 5.5 prompt of 100001 tokens is priced at the long tier (0.0500005)" "true" "$(usd_close "$(printf '%s' "$REC" | jq -c '.total_usd' 2>/dev/null)" 0.0500005)"
+price_doc T-fast t-fast
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 claude-opus-5-5 | jq -c '.message.usage.speed = "fast"' | tx_put proj/t-fast.jsonl
+REC="$(cost_run_real record T-fast)"
+assert_eq "cost table: Opus 5.5 fast mode is priced at twice the input rate (8 per million)" '["known",true]' \
+  "$(printf '%s' "$REC" | jq -c '[.status, ((.total_usd - 8) | fabs) < 0.000000001]' 2>/dev/null)"
+price_doc T-search t-search
+tx_line 2026-01-01T10:00:00Z a1 r1 1000000 0 0 0 claude-sonnet-5-5 | jq -c '.message.usage.server_tool_use.web_search_requests = 1' | tx_put proj/t-search.jsonl
+REC="$(cost_run_real record T-search)"
+assert_eq "cost table: a web-search event keeps its token cost (2) and flags the search fee" '["partial",["claude-sonnet-5-5 (web search fee)"],true]' \
+  "$(printf '%s' "$REC" | jq -c '[.status, .unpriced_models, ((.total_usd - 2) | fabs) < 0.000000001]' 2>/dev/null)"
+assert_eq "cost table: the default table path works from another directory with COST_RATES_FILE and CLAUDE_PLUGIN_ROOT unset" \
+  "$(jq -r '.taken_on' "$COST_RATES_REAL" 2>/dev/null)" "$(printf '%s' "$REC" | jq -r '.rates.taken_on' 2>/dev/null)"
+
+unset CLAUDE_CODE_SESSION_ID COST_STATUSLINE_CACHE_DIR COST_MULTI_INSTANCE_DIR COST_PROJECTS_DIR COST_RATES_FILE MV_LOG
 cd "$JIRA_PROJECT_DIR" || exit 1
 
