@@ -196,7 +196,7 @@ done
 # --- (e) a check that can exit 2 is never piped or chained, and every caller says what exit 2 means ---
 EXIT2_PHRASE='Exit 2 means the base is unusable or git failed'
 EXIT2_FILES="$(find "$ROOT/skills" "$ROOT/lib" -name '*.md' -type f -print0 2>/dev/null \
-  | xargs -0 grep -lE 'git-checks\.sh"? (doer-history|trace|revert-in-progress|temp-rounds|classify-diff|diff-files)|stage-checks\.sh"? pre-review' 2>/dev/null)"
+  | xargs -0 grep -lE 'git-checks\.sh"? (doer-history|trace|revert-in-progress|temp-rounds|classify-diff|diff-files)|stage-checks\.sh"? pre-review|git-ops\.sh"? (squash|scrub-history|revert-temp|restore-phantoms)' 2>/dev/null)"
 for exit2_file in $EXIT2_FILES; do
   exit2_rel="${exit2_file#"$ROOT"/}"
   if grep -qF -- "$EXIT2_PHRASE" "$exit2_file"; then
@@ -208,6 +208,22 @@ for exit2_file in $EXIT2_FILES; do
     fail "exit-2 contract: $exit2_rel: a check is piped or chained, which hides its exit code"
   else
     pass "exit-2 contract: $exit2_rel: no check is piped or chained"
+  fi
+  # git-ops.sh may legitimately be the LAST element of `printf ... | git-ops.sh squash`; an operator after it is not allowed
+  if join_continuations "$exit2_file" | grep -E 'git-ops\.sh"? (squash|scrub-history|revert-temp|restore-phantoms)[^`]*(&&|;| \|\| | \| )' | grep -qE 'git-ops\.sh"? (squash|scrub-history|revert-temp|restore-phantoms)[^`]* (\|\||&&|;|\|) '; then
+    fail "exit-2 contract: $exit2_rel: a git-ops command is followed by a pipe or a chain, which hides its exit code"
+  else
+    pass "exit-2 contract: $exit2_rel: no git-ops command is followed by a pipe or a chain"
+  fi
+done
+# scrub-history exits 1 either before touching anything (dirty tree, no BACKUP line) or after
+# the rewrite (.doer/ survived); callers must tell the two apart so no rollback is offered for the first.
+for scrub_file in $(find "$ROOT/skills" "$ROOT/lib" -name '*.md' -type f -print0 2>/dev/null | xargs -0 grep -lE 'git-ops\.sh"? scrub-history' 2>/dev/null); do
+  scrub_rel="${scrub_file#"$ROOT"/}"
+  if grep -qF -- 'no BACKUP line' "$scrub_file"; then
+    pass "exit-2 contract: $scrub_rel: tells a dirty-tree refusal (exit 1, no BACKUP line) from a surviving .doer/"
+  else
+    fail "exit-2 contract: $scrub_rel: calls scrub-history but never explains exit 1 with 'no BACKUP line'"
   fi
 done
 

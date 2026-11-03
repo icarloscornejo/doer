@@ -1967,17 +1967,33 @@ while [ "$idx" -lt "$#" ]; do
     *) break ;;
   esac
 done
-[ "${args[$idx]:-}" = "$FC_FAIL_SUB" ] && exit 128
+subcommand="${args[$idx]:-}"
+[ -z "${FC_GIT_LOG:-}" ] || printf '%s\n' "$subcommand" >> "$FC_GIT_LOG"
+if [ "$subcommand" = "$FC_FAIL_SUB" ]; then
+  nth="${FC_FAIL_NTH:-0}"
+  [ "$nth" -ne 0 ] || exit 128
+  count="$(cat "$FC_COUNT_FILE" 2>/dev/null || echo 0)"
+  count=$((count + 1))
+  printf '%s' "$count" > "$FC_COUNT_FILE"
+  [ "$count" -ne "$nth" ] || exit 128
+fi
 exec "$FC_REAL_GIT" "$@"
 SHIM
 chmod +x "$FC_SHIM_DIR/git"
+# Optional environment for one call: FC_FAIL_NTH=<n> fails only the n-th call of the
+# subcommand (default: every call); FC_GIT_LOG=<file> logs every git subcommand run.
+# Combined stdout and stderr land in FC_OUT. A subcommand that never runs (such as
+# "none") makes it a pure logging wrapper.
 fc_fail() {
-  local failing_subcommand="$1"
+  local failing_subcommand="$1" count_file
   shift
-  ( PATH="$FC_SHIM_DIR:$PATH"; FC_FAIL_SUB="$failing_subcommand"; FC_REAL_GIT="$FC_REAL_GIT"
-    export PATH FC_FAIL_SUB FC_REAL_GIT
-    "$@" ) >/dev/null 2>&1
+  count_file="$TMPDIR_TEST/fc-count.$$.$RANDOM"
+  FC_OUT="$( PATH="$FC_SHIM_DIR:$PATH"; FC_FAIL_SUB="$failing_subcommand"; FC_REAL_GIT="$FC_REAL_GIT"
+    FC_FAIL_NTH="${FC_FAIL_NTH:-0}"; FC_COUNT_FILE="$count_file"; FC_GIT_LOG="${FC_GIT_LOG:-}"
+    export PATH FC_FAIL_SUB FC_REAL_GIT FC_FAIL_NTH FC_COUNT_FILE FC_GIT_LOG
+    "$@" 2>&1 )"
   FC_EXIT=$?
+  rm -f "$count_file"
 }
 
 # squash-gate: a marker that is only context, hunk header or removed is not a trace
@@ -2120,6 +2136,275 @@ fc_run "$GIT_OPS_SH" scrub-history main X doer
 assert_eq "scrub-history: verification ignores .doer commits before the base" "0" "$FC_EXIT"
 fc_run "$GIT_CHECKS_SH" doer-history main
 assert_eq "scrub-history: nothing is left in the range afterwards" "" "$FC_OUT"
+
+# =====================================================================
+# DOER-7: git-ops.sh fails closed; the squash gate honors .doer-gate-ignore
+# =====================================================================
+FC_LOG="$TMPDIR_TEST/fc-git.log"
+fc_log_has() { grep -qx -- "$1" "$FC_LOG" 2>/dev/null && echo yes || echo no; }
+fc_logged() { : > "$FC_LOG"; FC_GIT_LOG="$FC_LOG" fc_fail none "$@"; } # run with the git subcommand log, failing nothing
+fc_head() { git rev-parse HEAD; }
+fc_backup_refs() { git for-each-ref --format='%(refname)' 'refs/doer-backup/' | wc -l | tr -d ' '; }
+
+# ---- restore-phantoms: a repo with a dirty phantom (g.txt) and a staged-only one (h.txt) ----
+fc_phantoms() {
+  fc_new
+  printf 'f1\n' > f.txt; printf 'g1\n' > g.txt; printf 'h1\n' > h.txt
+  mkdir -p sub; printf 's1\n' > sub/g.txt
+  fc_base
+  printf 'f2\n' > f.txt
+  fc_work
+  printf 'g2\n' > g.txt                       # unstaged change outside the diff: a dirty phantom
+  printf 'h2\n' > h.txt; git add h.txt        # staged-only change: a clean phantom (no unstaged diff)
+}
+fc_untouched() { assert_eq "$1" "g2|h2|h" "$(cat g.txt)|$(cat h.txt)|$(git diff --cached --name-only | tr -d '\n' | cut -c1)"; }
+
+fc_phantoms
+fc_logged "$GIT_OPS_SH" restore-phantoms no-such-base
+assert_eq "restore-phantoms: an unusable base exits 2" "2" "$FC_EXIT"
+assert_eq "restore-phantoms: an unusable base never calls git restore" "no" "$(fc_log_has restore)"
+fc_untouched "restore-phantoms: an unusable base leaves the working tree and the index as they were"
+for fc_nth in 1 2 3 4 5; do
+  : > "$FC_LOG"
+  FC_FAIL_NTH="$fc_nth" FC_GIT_LOG="$FC_LOG" fc_fail diff "$GIT_OPS_SH" restore-phantoms main
+  assert_eq "restore-phantoms: git diff call #$fc_nth failing exits 2" "2" "$FC_EXIT"
+  assert_eq "restore-phantoms: ... and git restore never runs" "no" "$(fc_log_has restore)"
+  fc_untouched "restore-phantoms: ... and nothing was touched"
+done
+fc_fail restore "$GIT_OPS_SH" restore-phantoms main
+assert_eq "restore-phantoms: a failing git restore exits 2" "2" "$FC_EXIT"
+fc_untouched "restore-phantoms: ... with nothing else touched"
+
+fc_phantoms
+fc_logged "$GIT_OPS_SH" restore-phantoms main
+assert_eq "restore-phantoms: with a valid base it succeeds" "0" "$FC_EXIT"
+assert_eq "restore-phantoms: ... prints only the dirty phantom" "g.txt" "$FC_OUT"
+assert_eq "restore-phantoms: ... and restores the clean one in a single git restore" "yes" "$(fc_log_has restore)"
+fc_phantoms; git checkout -q -- g.txt        # only the staged-only (clean) phantom is left
+fc_logged "$GIT_OPS_SH" restore-phantoms main
+assert_eq "restore-phantoms: only a clean phantom: exit 0 and nothing printed" "0:" "$FC_EXIT:$FC_OUT"
+fc_phantoms; git checkout -q -- g.txt; git reset -q h.txt; git checkout -q -- h.txt   # no phantoms at all
+fc_logged "$GIT_OPS_SH" restore-phantoms main
+assert_eq "restore-phantoms: no phantoms: exit 0 and nothing printed" "0:" "$FC_EXIT:$FC_OUT"
+fc_phantoms; git reset -q h.txt; git checkout -q -- h.txt   # only the dirty phantom is left
+fc_logged "$GIT_OPS_SH" restore-phantoms main
+assert_eq "restore-phantoms: only a dirty phantom: exit 0, its path printed" "0:g.txt" "$FC_EXIT:$FC_OUT"
+assert_eq "restore-phantoms: ... and git restore never runs" "no" "$(fc_log_has restore)"
+
+fc_phantoms
+( cd sub && fc_logged "$GIT_OPS_SH" restore-phantoms main; printf '%s\n%s\n' "$FC_EXIT" "$FC_OUT" > "$TMPDIR_TEST/fc-sub.out" )
+assert_eq "restore-phantoms: run from a subdirectory it still reports the root-relative dirty phantom" "0|g.txt" \
+  "$(head -1 "$TMPDIR_TEST/fc-sub.out")|$(sed -n 2p "$TMPDIR_TEST/fc-sub.out")"
+( cd sub && FC_FAIL_NTH=1 FC_GIT_LOG="$FC_LOG" && : > "$FC_LOG" && fc_fail rev-parse "$GIT_OPS_SH" restore-phantoms main; printf '%s\n' "$FC_EXIT" > "$TMPDIR_TEST/fc-sub.out" )
+assert_eq "restore-phantoms: a failing rev-parse --show-toplevel exits 2" "2" "$(head -1 "$TMPDIR_TEST/fc-sub.out")"
+assert_eq "restore-phantoms: ... before any diff or restore runs" "no|no" "$(fc_log_has diff)|$(fc_log_has restore)"
+
+# ---- squash: every git step that decides or changes something exits 2 on failure ----
+fc_squash_repo() {
+  fc_new
+  printf 'a\n' > f.txt
+  fc_base
+  printf 'b\n' >> f.txt; git add -A; git commit -q --no-verify -m s1
+  printf 'c\n' >> f.txt; git add -A; git commit -q --no-verify -m s2
+  printf 'd\n' >> f.txt; git add -A; git commit -q --no-verify -m s3
+  FC_HEAD0="$(fc_head)"
+}
+fc_squash() { # fc_squash <fc_fail-subcommand> [args...]: pipe a message into git-ops squash under the shim
+  local sub="$1"; shift
+  fc_fail "$sub" bash -c 'printf "fix: squashed" | "$0" squash "${1:-main}" T-1 doer' "$GIT_OPS_SH" "$@"
+}
+fc_squash_repo
+fc_squash status
+assert_eq "squash: a failing git status exits 2" "2" "$FC_EXIT"
+assert_eq "squash: ... without squashing or creating a backup ref" "$FC_HEAD0|0" "$(fc_head)|$(fc_backup_refs)"
+fc_squash_repo
+fc_squash none no-such-base
+assert_eq "squash: an unusable base exits 2" "2" "$FC_EXIT"
+assert_eq "squash: ... without squashing or creating a backup ref" "$FC_HEAD0|0" "$(fc_head)|$(fc_backup_refs)"
+fc_squash_repo
+git branch side main && git checkout -q side && printf 'x\n' > side.txt && git add -A && git commit -q --no-verify -m side && git checkout -q feature/x
+fc_squash none side
+assert_eq "squash: a base that is not an ancestor of HEAD still refuses with exit 1" "1" "$FC_EXIT"
+assert_eq "squash: ... without squashing" "$FC_HEAD0" "$(fc_head)"
+for fc_step in rev-list update-ref stripspace; do
+  fc_squash_repo
+  fc_squash "$fc_step"
+  assert_eq "squash: a failing git $fc_step exits 2" "2" "$FC_EXIT"
+  assert_eq "squash: ... and HEAD did not move" "$FC_HEAD0" "$(fc_head)"
+done
+fc_squash_repo
+fc_squash reset
+assert_eq "squash: a failing git reset exits 2 and names the backup ref" "2:yes" "$FC_EXIT:$(printf '%s' "$FC_OUT" | grep -q 'refs/doer-backup/T-1-pre-squash' && echo yes || echo no)"
+assert_eq "squash: ... HEAD did not move and the backup ref exists" "$FC_HEAD0|1" "$(fc_head)|$(fc_backup_refs)"
+fc_squash_repo
+fc_squash commit
+assert_eq "squash: a failing git commit after the reset exits 2 and names the backup ref" "2:yes" "$FC_EXIT:$(printf '%s' "$FC_OUT" | grep -q 'refs/doer-backup/T-1-pre-squash' && echo yes || echo no)"
+assert_eq "squash: ... the backup ref still points at the old HEAD" "$FC_HEAD0" "$(git rev-parse "$(git for-each-ref --format='%(refname)' 'refs/doer-backup/')")"
+fc_squash_repo
+fc_squash none
+assert_eq "squash: with a valid base it collapses to one commit" "0:1" "$FC_EXIT:$(git rev-list --count main..HEAD)"
+
+# ---- scrub-history: clean tree first, then fail closed ----
+fc_scrub_repo() {
+  fc_new
+  printf 'a\n' > f.txt
+  fc_base
+  mkdir -p .doer/tickets/S-1; printf '{}\n' > .doer/tickets/S-1/metadata.json
+  git add -f -A; git commit -q --no-verify -m "doer(S-1): oops"
+  FC_HEAD0="$(fc_head)"
+}
+fc_scrub() { fc_fail "$1" "$GIT_OPS_SH" scrub-history "${2:-main}" S-1 doer; }
+fc_scrub_repo; fc_scrub none no-such-base
+assert_eq "scrub-history: an unusable base exits 2 and creates no backup ref" "2|0" "$FC_EXIT|$(fc_backup_refs)"
+fc_scrub_repo; fc_scrub status
+assert_eq "scrub-history: a failing git status exits 2 and creates no backup ref" "2|0" "$FC_EXIT|$(fc_backup_refs)"
+for fc_dirt in modified staged untracked; do
+  fc_scrub_repo
+  case "$fc_dirt" in
+    modified) printf 'dirty\n' >> f.txt ;;
+    staged) printf 'dirty\n' >> f.txt; git add f.txt ;;
+    untracked) printf 'dirty\n' > new.txt ;;
+  esac
+  fc_scrub none
+  assert_eq "scrub-history: a $fc_dirt change refuses with exit 1" "1" "$FC_EXIT"
+  assert_eq "scrub-history: ... prints no BACKUP line and creates no ref" "no|0" "$(printf '%s' "$FC_OUT" | grep -q '^BACKUP' && echo yes || echo no)|$(fc_backup_refs)"
+done
+fc_scrub_repo; fc_scrub filter-branch
+assert_eq "scrub-history: a failing filter-branch exits 2, names the backup ref and keeps HEAD" "2:yes:$FC_HEAD0" \
+  "$FC_EXIT:$(printf '%s' "$FC_OUT" | grep -q '^BACKUP refs/doer-backup/S-1-pre-cleanup' && echo yes || echo no):$(fc_head)"
+fc_scrub_repo; fc_scrub log
+assert_eq "scrub-history: a failing verification git log exits 2 and the backup ref exists" "2|1" "$FC_EXIT|$(fc_backup_refs)"
+
+# ---- revert-temp ----
+fc_revert_repo() { # a [TEMP] PROTOLOG commit that a later commit conflicts with
+  fc_new
+  printf '1\n' > a.txt
+  fc_base
+  printf '2\n' > a.txt; git add -A; git commit -q --no-verify -m "[TEMP] PROTOLOG round 1. DO NOT MERGE"
+  FC_TEMP_SHA="$(fc_head)"
+  printf '3\n' > a.txt; git add -A; git commit -q --no-verify -m "real change"
+}
+fc_revert_repo
+fc_fail log "$GIT_OPS_SH" revert-temp PROTOLOG
+assert_eq "revert-temp: a failing git log exits 2 (it used to print NONE and exit 0)" "2" "$FC_EXIT"
+fc_revert_repo
+git revert --no-edit "$FC_TEMP_SHA" >/dev/null 2>&1
+printf 'resolved by hand\n' > a.txt
+fc_fail none "$GIT_OPS_SH" revert-temp PROTOLOG
+assert_eq "revert-temp: a revert already in progress is refused with exit 2" "2" "$FC_EXIT"
+assert_eq "revert-temp: ... the user's revert is still in progress with their resolution intact" "yes|resolved by hand" \
+  "$(git rev-parse -q --verify REVERT_HEAD >/dev/null 2>&1 && echo yes || echo no)|$(cat a.txt)"
+git revert --abort >/dev/null 2>&1 || true
+fc_revert_repo
+fc_fail show "$GIT_OPS_SH" revert-temp PROTOLOG
+assert_eq "revert-temp: a failing git show while labelling a conflict exits 2" "2" "$FC_EXIT"
+assert_eq "revert-temp: ... and no revert is left in progress" "no" "$(git rev-parse -q --verify REVERT_HEAD >/dev/null 2>&1 && echo yes || echo no)"
+fc_revert_repo
+fc_fail none "$GIT_OPS_SH" revert-temp PROTOLOG
+assert_eq "revert-temp: a real conflict still reports CONFLICT with exit 1" "1:yes" "$FC_EXIT:$(printf '%s' "$FC_OUT" | grep -q "^CONFLICT $FC_TEMP_SHA a.txt" && echo yes || echo no)"
+
+# ---- B4: every spot of git-ops.sh that can hide a git failure says why it is safe ----
+GITOPS_FAILOPEN="$(awk '
+  { line[NR] = $0 }
+  END {
+    for (n = 1; n <= NR; n++) {
+      l = line[n]
+      if (l ~ /^[[:space:]]*#/) continue
+      hide = (l ~ /2>\/dev\/null/ || l ~ />\/dev\/null 2>&1/)
+      ortrue = (l ~ /\|\| true/)
+      gitpipe = (l ~ /git [a-z-]+[^|]*\|[^|]/)
+      if (!(hide || ortrue || gitpipe)) continue
+      if (l ~ /fail-open ok/ || line[n-1] ~ /fail-open ok/ || line[n-2] ~ /fail-open ok/) continue
+      checked = (l ~ /\|\| fail/ || l ~ /\|\| exit/ || l ~ /\|\| \{/ || l ~ /if / || l ~ /\$\?/ || l ~ /! /)
+      if (hide && !ortrue && !gitpipe && checked) continue
+      print n ": " l
+    }
+  }' "$GIT_OPS_SH")"
+assert_eq "git-ops.sh: every hidden git error, '|| true' and git-then-pipe carries 'fail-open ok' or is checked" "" "$GITOPS_FAILOPEN"
+
+# ---- squash-gate: .doer-gate-ignore at the BASE exempts paths where the marker text is legitimate ----
+fc_gate_repo() { # base holds .doer-gate-ignore ($1 = its content) plus a few files; cwd moves into the repo
+  fc_new
+  printf '%s' "$1" > .doer-gate-ignore
+  mkdir -p fixtures/sub lib/a sub
+  printf 'x\n' > notes.md; printf 'x\n' > fixtures/a.txt; printf 'x\n' > fixtures/sub/a.txt
+  printf 'x\n' > lib/x.md; printf 'x\n' > lib/a/b.md; printf 'x\n' > src.kt; printf 'x\n' > sub/keep.txt
+  fc_base
+}
+FC_IGNORE=$'# markers are documented in these files\n\nnotes.md\nfixtures/*\nlib/**/*.md\n'
+fc_marker() { for fc_path in "$@"; do printf '// PROTOLOG - x\n' >> "$fc_path"; done; git add -A; git commit -q --no-verify -m "marker"; }
+fc_shells="bash"; [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo ok' 2>/dev/null)" = "ok" ] && fc_shells="bash /bin/bash"
+for fc_shell in $fc_shells; do
+  fc_gate_repo "$FC_IGNORE"
+  fc_marker notes.md fixtures/a.txt lib/x.md lib/a/b.md
+  fc_run "$fc_shell" "$GIT_CHECKS_SH" squash-gate main
+  assert_eq "squash-gate [$fc_shell]: markers only in exempted paths exit 0" "0" "$FC_EXIT"
+  ( cd sub && fc_run "$fc_shell" "$GIT_CHECKS_SH" squash-gate main; printf '%s\n' "$FC_EXIT" > "$TMPDIR_TEST/fc-sub.out" )
+  assert_eq "squash-gate [$fc_shell]: ... also from a subdirectory (the base file is read from the repo root)" "0" "$(cat "$TMPDIR_TEST/fc-sub.out")"
+  fc_marker fixtures/sub/a.txt
+  fc_run "$fc_shell" "$GIT_CHECKS_SH" squash-gate main
+  assert_eq "squash-gate [$fc_shell]: a single * does not cross a slash (fixtures/sub/a.txt is not exempt)" "1:fixtures/sub/a.txt" \
+    "$FC_EXIT:$(printf '%s\n' "$FC_OUT" | sed -n 's/^\([^:]*\):.*/\1/p' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  git reset -q --hard HEAD~1
+  fc_marker src.kt
+  fc_run "$fc_shell" "$GIT_CHECKS_SH" squash-gate main
+  assert_eq "squash-gate [$fc_shell]: a marker outside the exempted paths still exits 1 and is printed" "1:src.kt" \
+    "$FC_EXIT:$(printf '%s\n' "$FC_OUT" | sed -n 's/^\([^:]*\):.*/\1/p' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  ( cd sub && fc_run "$fc_shell" "$GIT_CHECKS_SH" squash-gate main; printf '%s\n' "$FC_EXIT" > "$TMPDIR_TEST/fc-sub.out" )
+  assert_eq "squash-gate [$fc_shell]: ... also when run from a subdirectory" "1" "$(cat "$TMPDIR_TEST/fc-sub.out")"
+done
+fc_gate_repo "$FC_IGNORE"; fc_marker src.kt
+( cd sub && GIT_CONFIG_PARAMETERS="'diff.relative'='true'" fc_run "$GIT_CHECKS_SH" squash-gate main; printf '%s\n' "$FC_EXIT" > "$TMPDIR_TEST/fc-sub.out" )
+assert_eq "squash-gate: diff.relative=true cannot hide a marker outside the current directory" "1" "$(cat "$TMPDIR_TEST/fc-sub.out")"
+GIT_LITERAL_PATHSPECS=1 fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: GIT_LITERAL_PATHSPECS=1 cannot make the gate pass everything" "1" "$FC_EXIT"
+GIT_LITERAL_PATHSPECS=1 fc_run "$GIT_CHECKS_SH" ac-leak main
+assert_eq "ac-leak: GIT_LITERAL_PATHSPECS=1 does not break the check (clean diff exits 0)" "0" "$FC_EXIT"
+fc_new; printf 'notes.md\n' > .doer-gate-ignore; printf 'x\n' > NOTES.md; fc_base; fc_marker NOTES.md
+GIT_ICASE_PATHSPECS=1 fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: GIT_ICASE_PATHSPECS=1 does not widen the exemptions (NOTES.md is not notes.md)" "1" "$FC_EXIT"
+fc_gate_repo ""; fc_marker notes.md
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: an empty ignore file exempts nothing" "1" "$FC_EXIT"
+fc_gate_repo $'# only a comment\n\n'; fc_marker notes.md
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a comment-only ignore file exempts nothing" "1" "$FC_EXIT"
+fc_new; printf 'x\n' > notes.md; fc_base
+printf 'notes.md\n' > .doer-gate-ignore; git add -A; git commit -q --no-verify -m "adds its own exemption"
+fc_marker notes.md
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: an ignore file added by the branch itself exempts nothing (it is read from the base)" "1" "$FC_EXIT"
+fc_gate_repo "$FC_IGNORE"; fc_marker notes.md
+fc_fail ls-tree "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a failing ls-tree while looking for the ignore file exits 2" "2" "$FC_EXIT"
+fc_fail show "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a failing git show of the ignore file exits 2" "2" "$FC_EXIT"
+FC_FAIL_NTH=1 fc_fail rev-parse "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a failing rev-parse --show-toplevel exits 2" "2" "$FC_EXIT"
+( cd sub && : > "$FC_LOG" && FC_FAIL_NTH=1 FC_GIT_LOG="$FC_LOG" fc_fail rev-parse "$GIT_CHECKS_SH" squash-gate main; printf '%s\n' "$FC_EXIT" > "$TMPDIR_TEST/fc-sub.out" )
+assert_eq "squash-gate: ... from a subdirectory it stops before any diff or ls-tree" "2|no|no" "$(cat "$TMPDIR_TEST/fc-sub.out")|$(fc_log_has diff)|$(fc_log_has ls-tree)"
+
+# ---- Doer's own repo: the tracked tree of this checkout passes the gate on a clean branch ----
+FC_DOER_ROOT="$TMPDIR_TEST/fc-doer"
+mkdir -p "$FC_DOER_ROOT"
+git -C "$REPO_ROOT" ls-files -z --cached --others --exclude-standard | tar -C "$REPO_ROOT" --null -T - -cf - | tar -C "$FC_DOER_ROOT" -xf -
+( cd "$FC_DOER_ROOT" && git init -q -b main . && git config user.email t@t.t && git config user.name t && git add -A && git commit -q --no-verify -m base && git checkout -q -b feature/x )
+cd "$FC_DOER_ROOT" || exit 1
+FC_MARKER_RE='REPLAY START|REPLAY END|REPLAY-ORIG:|PROTOLOG_RESPONSE - |PROTOLOG - '
+FC_HIT_FILES="$(git grep -lE "$FC_MARKER_RE" -- . ':(exclude).doer' | sort)"
+assert_eq "doer repo: the marker text is documented in some tracked files (the premise of the exemption file)" "yes" "$([ -n "$FC_HIT_FILES" ] && echo yes || echo no)"
+for fc_path in $FC_HIT_FILES; do printf '\nPROTOLOG - documented here\n' >> "$fc_path"; done
+git add -A; git commit -q --no-verify -m "docs mention the markers"
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "doer repo: a clean branch that touches every file documenting the markers passes the gate" "0:" "$FC_EXIT:$FC_OUT"
+for fc_negative in tests/new-fixture.txt skills/doer/stages/new-script.sh lib/helpers/cost.sh; do
+  git checkout -q -B neg main
+  mkdir -p "$(dirname "$fc_negative")"; printf 'PROTOLOG - leftover\n' >> "$fc_negative"; git add -A; git commit -q --no-verify -m neg
+  fc_run "$GIT_CHECKS_SH" squash-gate main
+  assert_eq "doer repo: a marker added in $fc_negative still fails the gate" "1" "$FC_EXIT"
+done
+assert_eq "doer repo: .doer-gate-ignore has no directory-wide entry" "0" "$({ grep -cE '(/\*\*|/)[[:space:]]*$' "$FC_DOER_ROOT/.doer-gate-ignore" 2>/dev/null || true; })"
+assert_eq "doer repo: .doer-gate-ignore exists" "yes" "$([ -f "$FC_DOER_ROOT/.doer-gate-ignore" ] && echo yes || echo no)"
 
 cd "$REPO_ROOT" || exit 1
 
