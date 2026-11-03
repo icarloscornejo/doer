@@ -15,7 +15,8 @@ Commands:
   diff-files <base>               Union of changed files (tree+index+vs base)
   secrets <base>                  Lines added since <base> that look like a credential
   ac-leak <base>                  Added lines (excluding .doer/**) leaking an AC-N label
-  squash-gate <base>               REPLAY/PROTOLOG markers still in the diff vs <base>
+  squash-gate <base>              file: line of every REPLAY/PROTOLOG marker ADDED since <base>
+                                  (context lines, hunk headers and removed lines never count)
   trace <PROTOLOG|REPLAY>         Tracked + untracked lines still carrying the tag
   revert-in-progress              Whether a git revert is currently unresolved
   phantoms <base>                 Dirty files not explained by the diff vs <base>
@@ -27,10 +28,12 @@ Commands:
                                   assertions, newly disabled tests, block-commented
                                   assertions, deleted tests (exit 2 on an unusable base)
 
-Exit: base-candidates/diff-files/phantoms/classify-diff/temp-rounds/
-doer-history/pr-templates always exit 0 (an empty result is a valid answer).
-secrets/ac-leak/squash-gate/trace/revert-in-progress/weakened-tests exit 1 when they find
-something, so callers can branch on the exit code alone.
+Exit: base-candidates/pr-templates always exit 0 (an empty result is a valid answer: they
+only list suggestions). diff-files/phantoms/classify-diff/temp-rounds/doer-history exit 0
+with their result. secrets/ac-leak/squash-gate/trace/revert-in-progress/weakened-tests exit 1
+when they find something, so callers can branch on the exit code alone.
+Every command that takes a <base>, plus trace/revert-in-progress/temp-rounds, exits 2 on an
+unusable base or a git error, never 0: an empty result must not hide a failed check.
 EOF
   exit 2
 }
@@ -39,6 +42,23 @@ EOF
 command -v jq >/dev/null 2>&1 || { echo "git-checks.sh requires jq" >&2; exit 2; }
 
 CMD="$1"; shift
+
+# Pinned so the user's diff.* / color.* config can never change what a check parses.
+GIT_FLAGS=(-c core.quotePath=false)
+DIFF_FLAGS=(diff --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/)
+
+# A git failure is never an empty result: callers capture git output first,
+# then parse it, and stop here when git itself failed.
+fail_git() { echo "git-checks.sh $CMD: git failed" >&2; exit 2; }
+
+# require_base <base>: the base must resolve to a commit that shares history with HEAD.
+require_base() {
+  if ! { git rev-parse --verify -q "${1}^{commit}" >/dev/null 2>&1 \
+         && git merge-base "$1" HEAD >/dev/null 2>&1; }; then
+    echo "git-checks.sh $CMD: unusable base '$1'" >&2
+    exit 2
+  fi
+}
 
 case "$CMD" in
   base-candidates)
@@ -62,16 +82,19 @@ case "$CMD" in
   diff-files)
     [ $# -ge 1 ] || usage
     BASE="$1"
-    { git diff "$BASE"...HEAD --name-only 2>/dev/null
-      git diff --name-only 2>/dev/null
-      git diff --cached --name-only 2>/dev/null
-    } | sed '/^$/d' | sort -u
+    require_base "$BASE"
+    RANGE_FILES="$(git diff "$BASE"...HEAD --name-only)" || fail_git
+    WORK_FILES="$(git diff --name-only)" || fail_git
+    INDEX_FILES="$(git diff --cached --name-only)" || fail_git
+    printf '%s\n%s\n%s\n' "$RANGE_FILES" "$WORK_FILES" "$INDEX_FILES" | sed '/^$/d' | sort -u
     ;;
 
   secrets)
     [ $# -ge 1 ] || usage
     BASE="$1"
-    MATCHES="$(git diff "$BASE"..HEAD 2>/dev/null \
+    require_base "$BASE"
+    DIFF_TEXT="$(git "${GIT_FLAGS[@]}" "${DIFF_FLAGS[@]}" "$BASE"..HEAD)" || fail_git
+    MATCHES="$(printf '%s\n' "$DIFF_TEXT" \
       | grep -nEi '(api[_-]?key|secret|token|password|bearer|aws_)[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{8,}' \
       || true)"
     [ -z "$MATCHES" ] && exit 0
@@ -82,8 +105,9 @@ case "$CMD" in
   ac-leak)
     [ $# -ge 1 ] || usage
     BASE="$1"
-    MATCHES="$(git diff "$BASE"..HEAD -- . ':(exclude).doer/**' 2>/dev/null \
-      | grep -E '^\+' | grep -E '\bAC-[0-9]+\b' || true)"
+    require_base "$BASE"
+    DIFF_TEXT="$(git "${GIT_FLAGS[@]}" "${DIFF_FLAGS[@]}" "$BASE"..HEAD -- . ':(exclude).doer/**')" || fail_git
+    MATCHES="$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -E '\bAC-[0-9]+\b' || true)"
     [ -z "$MATCHES" ] && exit 0
     printf '%s\n' "$MATCHES"
     exit 1
@@ -92,8 +116,20 @@ case "$CMD" in
   squash-gate)
     [ $# -ge 1 ] || usage
     BASE="$1"
-    MATCHES="$(git diff "$BASE"..HEAD 2>/dev/null \
-      | grep -nE 'REPLAY START|REPLAY END|REPLAY-ORIG:|PROTOLOG_RESPONSE - |PROTOLOG - ' || true)"
+    require_base "$BASE"
+    DIFF_TEXT="$(git "${GIT_FLAGS[@]}" "${DIFF_FLAGS[@]}" "$BASE"..HEAD)" || fail_git
+    # Only lines ADDED by the branch count. A header line (+++) is recognised only
+    # before the first @@ of a file, so an added line that itself starts with "++"
+    # is content; context lines, hunk headers (@@ ... @@ <function context>) and
+    # removed lines are never searched.
+    MATCHES="$(printf '%s\n' "$DIFF_TEXT" | awk '
+      /^diff --git / { in_hunk = 0; path = ""; next }
+      !in_hunk && /^\+\+\+ / { path = substr($0, 7); sub(/\t.*$/, "", path); next }
+      /^@@/ { in_hunk = 1; next }
+      in_hunk && /^\+/ {
+        added = substr($0, 2)
+        if (added ~ /REPLAY START|REPLAY END|REPLAY-ORIG:|PROTOLOG_RESPONSE - |PROTOLOG - /) print path ": " added
+      }')"
     [ -z "$MATCHES" ] && exit 0
     printf '%s\n' "$MATCHES"
     exit 1
@@ -107,7 +143,10 @@ case "$CMD" in
       REPLAY) PAT='REPLAY START|REPLAY END|REPLAY-ORIG:|PROTOLOG_RESPONSE - ' ;;
       *) echo "git-checks.sh trace: unknown tag '$TAG' (want PROTOLOG or REPLAY)" >&2; exit 2 ;;
     esac
-    TRACKED="$(git grep -nE "$PAT" 2>/dev/null || true)"
+    # git grep: exit 1 = no match; anything above 1 (or not a repo) is a failed check.
+    TRACKED_RC=0
+    TRACKED="$(git grep -nE "$PAT")" || TRACKED_RC=$?
+    [ "$TRACKED_RC" -le 1 ] || fail_git
     # grep -rn over "." always prefixes matches with "./", unlike git grep;
     # strip it so the same tracked file's two results collapse under sort -u
     # instead of surviving as look-alike duplicates.
@@ -123,7 +162,8 @@ case "$CMD" in
 
   revert-in-progress)
     HEAD_MARK="$(git rev-parse -q --verify REVERT_HEAD 2>/dev/null || true)"
-    CONFLICTS="$(git status --porcelain 2>/dev/null | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' || true)"
+    STATUS_TEXT="$(git status --porcelain)" || fail_git
+    CONFLICTS="$(printf '%s\n' "$STATUS_TEXT" | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' || true)"
     [ -z "$HEAD_MARK" ] && [ -z "$CONFLICTS" ] && exit 0
     [ -n "$HEAD_MARK" ] && echo "REVERT IN PROGRESS"
     [ -n "$CONFLICTS" ] && printf '%s\n' "$CONFLICTS"
@@ -133,20 +173,27 @@ case "$CMD" in
   phantoms)
     [ $# -ge 1 ] || usage
     BASE="$1"
-    DIRTY="$({ git diff --name-only 2>/dev/null; git diff --cached --name-only 2>/dev/null; } | sed '/^$/d' | sort -u)"
-    INTENDED="$(git diff "$BASE"...HEAD --name-only 2>/dev/null | sed '/^$/d' | sort -u)"
-    PHANTOMS="$(comm -23 <(printf '%s\n' "$DIRTY") <(printf '%s\n' "$INTENDED") 2>/dev/null | sed '/^$/d')"
+    require_base "$BASE"
+    WORK_FILES="$(git diff --name-only)" || fail_git
+    INDEX_FILES="$(git diff --cached --name-only)" || fail_git
+    RANGE_FILES="$(git diff "$BASE"...HEAD --name-only)" || fail_git
+    DIRTY="$(printf '%s\n%s\n' "$WORK_FILES" "$INDEX_FILES" | sed '/^$/d' | sort -u)"
+    INTENDED="$(printf '%s\n' "$RANGE_FILES" | sed '/^$/d' | sort -u)"
+    PHANTOMS="$(comm -23 <(printf '%s\n' "$DIRTY") <(printf '%s\n' "$INTENDED") | sed '/^$/d')"
     if [ -z "$PHANTOMS" ]; then
       echo '[]'
       exit 0
     fi
     ENTRIES=()
     while IFS= read -r f; do
-      if git diff --quiet -- "$f" 2>/dev/null; then
-        ENTRIES+=("$(jq -n --arg p "$f" '{path: $p, clean: true}')")
-      else
-        ENTRIES+=("$(jq -n --arg p "$f" '{path: $p, clean: false}')")
-      fi
+      # git diff --quiet: 0 = no unstaged change, 1 = changed, anything else = git failed.
+      QUIET_RC=0
+      git diff --quiet -- "$f" || QUIET_RC=$?
+      case "$QUIET_RC" in
+        0) ENTRIES+=("$(jq -n --arg p "$f" '{path: $p, clean: true}')") ;;
+        1) ENTRIES+=("$(jq -n --arg p "$f" '{path: $p, clean: false}')") ;;
+        *) fail_git ;;
+      esac
     done <<< "$PHANTOMS"
     printf '%s\n' "${ENTRIES[@]}" | jq -s '.'
     ;;
@@ -155,7 +202,8 @@ case "$CMD" in
     # ponytail: path heuristic, never a skip decision
     [ $# -ge 1 ] || usage
     BASE="$1"
-    FILES="$(git diff "$BASE"...HEAD --name-only 2>/dev/null)"
+    require_base "$BASE"
+    FILES="$(git diff "$BASE"...HEAD --name-only)" || fail_git
     if [ -z "$FILES" ]; then echo "non-runtime"; exit 0; fi
     while IFS= read -r f; do
       case "$f" in
@@ -171,13 +219,18 @@ case "$CMD" in
     # last cleanup; matches the current prose behavior verbatim.
     [ $# -ge 1 ] || usage
     TAG="$1"
-    git log --oneline --grep "\[TEMP\] $TAG" 2>/dev/null | wc -l | tr -d ' '
+    TEMP_LOG="$(git log --oneline --no-color --grep "\[TEMP\] $TAG")" || fail_git
+    printf '%s\n' "$TEMP_LOG" | sed '/^$/d' | wc -l | tr -d ' '
     ;;
 
   doer-history)
     [ $# -ge 1 ] || usage
     BASE="$1"
-    git log --format=%H --diff-filter=ACMR -- '.doer/*' "$BASE..HEAD" 2>/dev/null
+    require_base "$BASE"
+    # The range comes before "--": after it git reads it as a path and lists
+    # every .doer commit in the whole history.
+    DOER_LOG="$(git log --no-color --format=%H --diff-filter=ACMR "$BASE..HEAD" -- '.doer/*')" || fail_git
+    [ -z "$DOER_LOG" ] || printf '%s\n' "$DOER_LOG"
     ;;
 
   pr-templates)
@@ -197,11 +250,7 @@ case "$CMD" in
     # and the global multiset cancel can hide a swap between unrelated test files.
     [ $# -ge 1 ] || usage
     BASE="$1"
-    if ! { git rev-parse --verify -q "${BASE}^{commit}" >/dev/null 2>&1 \
-           && git merge-base "$BASE" HEAD >/dev/null 2>&1; }; then
-      echo "git-checks.sh weakened-tests: unusable base '$BASE'" >&2
-      exit 2
-    fi
+    require_base "$BASE"
     # Flags are pinned so user diff.* config can never change the result.
     GIT_FLAGS=(-c core.quotePath=false -c diff.renames=true)
     DIFF_FLAGS=(diff --no-ext-diff --no-textconv --no-color -M --src-prefix=a/ --dst-prefix=b/)

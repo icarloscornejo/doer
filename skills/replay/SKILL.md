@@ -431,7 +431,7 @@ anchors (`REPLAY START`, `[TEMP] REPLAY`) KEY-independent so cleanup works eithe
 way. `<N>` starts at 1 and increments each time inject runs again on this branch
 without an intervening cleanup (same round semantics as `/wk:protologs`;
 `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" temp-rounds REPLAY` tells you
-the current count). Never push.
+the current count; exit 2 means git failed, so stop and report it instead of reading a missing count as zero). Never push.
 
 ### Step 9 - Hand off
 
@@ -533,7 +533,7 @@ Narrate the processed files.
 ```
 
 Exit 1 (prints something): STOP, do not verify, do not report success; narrate the
-in-flight revert, abort it, return to Step 2+3's ON CONFLICT block.
+in-flight revert, abort it, return to Step 2+3's ON CONFLICT block. Exit 2 means the base is unusable or git failed: stop and report it, never read it as "no revert in progress".
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace REPLAY
@@ -541,6 +541,7 @@ in-flight revert, abort it, return to Step 2+3's ON CONFLICT block.
 
 Exit 0 (empty): narrate *"No trace of REPLAY blocks or `PROTOLOG_RESPONSE - ` remains."*
 Exit 1 (lines printed): show which, do not delete automatically, ask the dev to review by hand.
+Exit 2: git failed, stop and report it, never read it as an empty or clean result.
 
 ### Step 5 - Mandatory compile verification
 

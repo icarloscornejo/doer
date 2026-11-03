@@ -62,11 +62,11 @@ edit path, and a plain-chat reply (`1`, `2`, `3`, `edit: <text>`) is equally val
 `vocab-guard.sh` on any edited text before accepting it. Persist ONLY the chosen message to
 `metadata.commit_message` via a single `metadata.sh write`.
 
-**Squash gate, then offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). If this ticket ever ran `/wk:replay` or `/wk:protologs` standalone against this branch, gate on content before offering, since a legitimate `[TEMP]`/revert pair can remain in history even after a clean cleanup, so grepping commit subjects proves nothing:
+**Squash gate, then offer to squash now** (`AskUserQuestion`: `Yes` / `No, I'll squash manually`). If this ticket ever ran `/wk:replay` or `/wk:protologs` standalone against this branch, gate on content before offering, since a legitimate `[TEMP]`/revert pair can remain in history even after a clean cleanup, so grepping commit subjects proves nothing. Run the squash gate as its own Bash command, never chained with the squash or any other step (`&&`, `;`, `||` or a pipe): its exit code is the decision.
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" squash-gate <base>
 ```
-Any match (exit 1): STOP, do not offer the squash, tell the dev cleanup did not fully net out and point at the offending file. Only on a clean gate (exit 0, or when neither skill ever ran on this branch), proceed: on yes,
+Exit 1 or 2: STOP. Do not squash and do not offer the squash. Report the printed lines to the dev (and to the orchestrator when one is driving), even when the match looks like a false positive; only the dev decides what happens next. Exit 1 means a marker was added by the branch (the printed lines name the file); exit 2 means the base is unusable or git failed. Only on a clean gate (exit 0, or when neither skill ever ran on this branch), proceed in a separate command: on yes,
 ```bash
 printf '%s' "<chosen message>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> <TICKET-ID> doer
 ```
@@ -88,7 +88,7 @@ Dispatch a PR-description writer Agent (read budget 0; inline a user-facing AC p
 "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" doer-history <base>
 ```
 
-Empty (the normal case with the Workspace Guard active from intake) → skip. Otherwise confirm with the dev (destructive, rewrites SHAs), then:
+Exit 2 means the base is unusable or git failed: stop and report it, never read it as an empty or clean result. Empty (the normal case with the Workspace Guard active from intake) → skip. Otherwise confirm with the dev (destructive, rewrites SHAs), then:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" scrub-history <base> <TICKET-ID> doer

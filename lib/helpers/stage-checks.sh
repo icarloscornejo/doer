@@ -28,8 +28,9 @@ Commands:
       autodetects: that stays a judgment call for the caller); composes
       git-checks.sh secrets, ac-leak and weakened-tests (removed assertions
       are downgraded to INFO only by metadata.test_weakening_justifications;
-      an unusable base is a BLOCKER); compares the diff's file list
-      against plan.files[].path. Exit 0 with zero blockers, 1 otherwise.
+      an unusable base or a failed check stops the stage with exit 2); compares the
+      diff's file list against plan.files[].path. Exit 0 with zero blockers, 1 with
+      blockers, 2 when the base is unusable or a git command failed (no result is printed).
 EOF
   exit 2
 }
@@ -134,6 +135,13 @@ case "$CMD" in
     [ $# -ge 1 ] || usage
     BASE="$1"
     [ -f "$TARGET" ] || { echo "stage-checks.sh: $TARGET does not exist" >&2; exit 2; }
+    # A base that does not resolve is not something a fixer can fix: stop here
+    # (exit 2) before running any command, never report a clean or partial result.
+    if ! { git rev-parse --verify -q "${BASE}^{commit}" >/dev/null 2>&1 \
+           && git merge-base "$BASE" HEAD >/dev/null 2>&1; }; then
+      echo "stage-checks.sh pre-review: unusable base '$BASE'" >&2
+      exit 2
+    fi
 
     BLOCKERS="[]"
     INFO="[]"
@@ -161,7 +169,8 @@ case "$CMD" in
     fi
 
     # --no-renames so a renamed test shows both old and new paths against plan.files.
-    DIFF_FILES="$(git -c core.quotePath=false diff --no-renames "$BASE"...HEAD --name-only -- . ':(exclude).doer/**' 2>/dev/null || true)"
+    DIFF_FILES="$(git -c core.quotePath=false diff --no-renames "$BASE"...HEAD --name-only -- . ':(exclude).doer/**')" || {
+      echo "stage-checks.sh pre-review: git diff failed" >&2; exit 2; }
     PLAN_FILES="$(jq -r '(.plan.files // [])[].path' "$TARGET" 2>/dev/null || true)"
     if [ -n "$PLAN_FILES" ]; then
       while IFS= read -r PF; do
@@ -178,22 +187,26 @@ case "$CMD" in
       done <<< "$DIFF_FILES"
     fi
 
-    SECRETS_OUT="$("$HERE/git-checks.sh" secrets "$BASE" 2>/dev/null)" || true
+    # Exit 1 means "found something" (a BLOCKER); any higher exit is a failed check and stops the stage.
+    SECRETS_RC=0
+    SECRETS_OUT="$("$HERE/git-checks.sh" secrets "$BASE" 2>/dev/null)" || SECRETS_RC=$?
+    [ "$SECRETS_RC" -le 1 ] || { echo "stage-checks.sh pre-review: the secrets check failed" >&2; exit 2; }
     if [ -n "$SECRETS_OUT" ]; then
       BLOCKERS="$(printf '%s' "$BLOCKERS" | jq --arg d "$SECRETS_OUT" '. + [{kind: "secrets", detail: $d}]')"
     fi
 
-    ACLEAK_OUT="$("$HERE/git-checks.sh" ac-leak "$BASE" 2>/dev/null)" || true
+    ACLEAK_RC=0
+    ACLEAK_OUT="$("$HERE/git-checks.sh" ac-leak "$BASE" 2>/dev/null)" || ACLEAK_RC=$?
+    [ "$ACLEAK_RC" -le 1 ] || { echo "stage-checks.sh pre-review: the ac-leak check failed" >&2; exit 2; }
     if [ -n "$ACLEAK_OUT" ]; then
       BLOCKERS="$(printf '%s' "$BLOCKERS" | jq --arg d "$ACLEAK_OUT" '. + [{kind: "ac-leak", detail: $d}]')"
     fi
 
-    # Any exit other than 0/1 (e.g. unusable base) is a BLOCKER, never "clean".
+    # Any exit other than 0/1 means the check itself failed: stop the stage, never report "clean".
     WEAK_RC=0
     WEAK_OUT="$("$HERE/git-checks.sh" weakened-tests "$BASE" 2>/dev/null)" || WEAK_RC=$?
-    if [ "$WEAK_RC" -gt 1 ]; then
-      BLOCKERS="$(printf '%s' "$BLOCKERS" | jq '. + [{kind: "weakened-tests", detail: "weakened-tests check failed"}]')"
-    elif [ -n "$WEAK_OUT" ]; then
+    [ "$WEAK_RC" -le 1 ] || { echo "stage-checks.sh pre-review: the weakened-tests check failed" >&2; exit 2; }
+    if [ -n "$WEAK_OUT" ]; then
       # A removal is excused only by recorded {path, line_text, reason} entries, matched by
       # count per (path, line_text); a file is excused once they cover its assertion deficit.
       # Heredoc keeps the single quotes of the shell command inside the jq program intact.

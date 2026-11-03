@@ -8,7 +8,7 @@ Classify the diff first (UX only, not a skip decision):
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" classify-diff <base>
 ```
-prints `runtime` or `non-runtime` (paths like `*.md`, `docs/`, CI config, version-only dependency edits are non-runtime; everything else is runtime). Then ALWAYS ask via `AskUserQuestion`:
+prints `runtime` or `non-runtime`. Exit 2 means the base is unusable or git failed: stop and report it, never read it as an empty or clean result (an unusable base must not turn into `non-runtime` and a skipped Stage 4). Paths like `*.md`, `docs/`, CI config, version-only dependency edits are non-runtime; everything else is runtime). Then ALWAYS ask via `AskUserQuestion`:
 
 - **All non-runtime:** *"The diff is docs/config only; likely nothing to exercise on device."* Options: `Skip Stage 4 (Recommended)` / `Run it anyway`.
 - **Any runtime path:** *"Exercise the ACs on a device/simulator now?"* Options: `Run Stage 4 (Recommended)` / `Skip (you own runtime correctness)`.

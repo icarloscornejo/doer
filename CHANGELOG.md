@@ -2,6 +2,15 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.13.2
+
+### Fixed
+
+- **`git-checks.sh squash-gate` no longer fails on a marker the branch did not add.** It searched the whole `git diff`, so an unchanged line containing `PROTOLOG - ` (as context or in a `@@ ... @@ <function context>` hunk header) or a marker the branch removed made it exit 1 with no real trace. It now looks only at added lines and prints `<file>: <line>`.
+- **A failed gate stops the flow.** The doer and bugfix instructions now require running `squash-gate` as its own Bash command and stopping on exit 1 or 2 (report to the dev, no squash), even when the match looks like a false positive. `tests/lib/helper-contract.sh` fails if a stage chains the gate with the squash, hides it behind a pipe, or stops saying what exit 2 means.
+- **Git checks fail closed.** `diff-files`, `secrets`, `ac-leak`, `squash-gate`, `phantoms`, `classify-diff`, `doer-history`, `temp-rounds`, `trace`, `revert-in-progress`, `stage-checks.sh pre-review` and `git-ops.sh scrub-history` used to hide a git failure (`2>/dev/null`, `|| true`) so an unusable base or a git error read as an empty, clean result (for example `classify-diff` answered `non-runtime` and Stage 4 recommended skipping). They now exit 2. `pre-review` stops with exit 2 on an unusable base instead of reporting a fixable `weakened-tests` BLOCKER. Every parsed diff pins `--no-ext-diff --no-textconv --no-color`, so `color.diff=always` or `diff.external` can no longer blind `ac-leak` or the gate. `base-candidates` and the untracked half of `trace` stay tolerant on purpose (suggestions only; one unreadable file must not make the check unusable).
+- **`doer-history` and `scrub-history` listed `.doer` commits from the whole history.** Their revision range sat after `--`, so git read it as a path. The range now comes first.
+
 ## 7.13.1
 
 ### Fixed

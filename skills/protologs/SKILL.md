@@ -66,7 +66,7 @@ free-text `AskUserQuestion`. The chosen branch is used as `<BASE>` for the rest 
 
 Union of changed files (staged + unstaged + diff vs base), deduplicated, one per line,
 into `<DIFF_FILES>`. Do not stop yet if this is empty; Step 2.5 decides whether an empty
-diff is fatal.
+diff is fatal. Exit 2 means the base is unusable or git failed: stop and report it, never read it as an empty or clean result.
 
 ### Step 2.5 - Confirm entry point (root point)
 
@@ -491,7 +491,7 @@ git add -A && git commit --no-verify -m "[TEMP] PROTOLOG debug logs (round <N>).
 `<N>` starts at 1 and increments each time inject mode runs again on the same branch
 without an intervening cleanup (the dev asking for more logs after reviewing the first
 batch is the common case: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" temp-rounds PROTOLOG`
-tells you the current count). This is what makes cleanup a plain revert instead of a text-matching
+tells you the current count; exit 2 means git failed, so stop and report it instead of reading a missing count as zero). This is what makes cleanup a plain revert instead of a text-matching
 sed pass, and what keeps a fix the dev asks for mid-verification cleanly separated from
 the logs: a `[TEMP]` commit contains ONLY PROTOLOG lines, never a fix. If the dev asks
 for a fix while logs are live, that fix is committed separately (its own message,
@@ -603,10 +603,12 @@ history.
 ### Step 2-fallback - Text-match removal (only when no [TEMP] commit applies)
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace PROTOLOG | cut -d: -f1 | sort -u
+"${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace PROTOLOG
 ```
 
-Tracked and untracked files alike. If no file has the tag, narrate:
+Run it as its own command, never piped: a pipe hides the exit code. Exit 2 means the base is unusable or git failed: stop and report it, never read it as an empty or clean result.
+Tracked and untracked files alike. On exit 1 the files are the part of each printed line
+before the first `:`, deduplicated. On exit 0 (nothing printed) narrate:
 *"No lines with `PROTOLOG - ` found in the repo. The code is already clean."*
 and stop.
 
@@ -658,7 +660,7 @@ Step 1+2's ON CONFLICT rule was not followed:
 
 If it exits 1 (prints something), STOP: do not verify, do not report cleanup as done.
 Narrate that a revert is in flight, run `git revert --abort`, and return to Step 1+2's
-ON CONFLICT block.
+ON CONFLICT block. If it exits 2, git failed: stop and report it, never read it as "no revert in progress".
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" trace PROTOLOG
@@ -667,6 +669,7 @@ ON CONFLICT block.
 - Exit 0 (empty) -> narrate: *"No trace of `PROTOLOG - ` remains. Proceeding to restore phantom files."*
 - Exit 1 (lines printed) -> narrate which ones, do NOT delete them automatically;
   ask the user to review them manually before continuing.
+- Exit 2 -> git failed: stop and report it, never read it as an empty or clean result.
 
 ### Step 3b - Restore files outside the original diff
 

@@ -95,7 +95,10 @@ case "$CMD" in
     git filter-branch -f --index-filter 'git rm -r --cached --ignore-unmatch .doer/' \
       --prune-empty "${BASE}..HEAD"
     git update-ref -d "refs/original/refs/heads/${BRANCH}" 2>/dev/null || true
-    REMAINING="$(git log --format=%H --diff-filter=ACMR -- '.doer/*' "${BASE}..HEAD" 2>/dev/null)"
+    # The range comes before "--" (after it git reads it as a path), and a git
+    # failure here must not read as "verified clean".
+    REMAINING="$(git log --no-color --format=%H --diff-filter=ACMR "${BASE}..HEAD" -- '.doer/*')" \
+      || { echo "git-ops.sh scrub-history: git log failed while verifying" >&2; exit 2; }
     [ -z "$REMAINING" ] \
       || { echo "git-ops.sh scrub-history: .doer/ still present after filter-branch" >&2; exit 1; }
     ;;
