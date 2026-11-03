@@ -53,6 +53,7 @@ vocab-guard.sh:
 git-checks.sh:base-candidates diff-files secrets ac-leak squash-gate trace revert-in-progress phantoms classify-diff temp-rounds doer-history pr-templates weakened-tests
 git-ops.sh:squash scrub-history revert-temp restore-phantoms
 workspace-guard.sh:acquire release
+session.sh:ensure-exclude
 stage-checks.sh:plan pre-review
 metadata.sh:check-required version-check status list
 cost.sh:enter record unknown sample
@@ -116,6 +117,17 @@ check_gone "raw git update-ref refs/ invocation (git-ops.sh is the only implemen
 check_gone 'raw git grep -l "PROTOLOG - " invocation (git-checks.sh trace is the only implementation)' 'git grep -l "PROTOLOG - "'
 check_gone "raw mkdir -p .git/info invocation (workspace-guard.sh is the only implementation)" 'mkdir -p .git/info'
 check_gone 'raw makehar invocation (har.py convert is the only implementation)' 'makehar "<in.chls>"'
+
+# --- (c) no helper script hardcodes the raw .git/info path ---
+# In a linked worktree .git is a file, so any hardcoded .git/info/... breaks
+# there (DOER-4). The exclude path comes from `git rev-parse --git-path`,
+# implemented once in session.sh ensure-exclude.
+RAW_GIT_INFO_HITS="$(find "$ROOT/lib/helpers" -type f \( -name '*.sh' -o -name '*.py' \) -print0 2>/dev/null | xargs -0 grep -lF -- '.git/info' 2>/dev/null)"
+if [ -z "$RAW_GIT_INFO_HITS" ]; then
+  pass "no helper script hardcodes the raw .git/info path (worktree-safe)"
+else
+  fail "no helper script hardcodes the raw .git/info path (worktree-safe)" "found in: $RAW_GIT_INFO_HITS"
+fi
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

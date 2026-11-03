@@ -2,8 +2,8 @@
 # wk plugin: per-repo session marker helper.
 # Spec: lib/state.md, lib/workspace-guard.md.
 #
-# Storage: ./.doer/wk-session-<pid>.json (per-clone, excluded via
-# .git/info/exclude, never committed).
+# Storage: ./.doer/wk-session-<pid>.json (per-clone, excluded via the
+# repo's info/exclude file, never committed).
 #
 # Every PreToolUse guard shipped by this plugin (git-commit-no-verify-guard.sh,
 # protolog-temp-commit-integrity-guard.sh, protolog-revert-conflict-guard.sh,
@@ -25,6 +25,7 @@ Commands:
   start <skill>   Write ./.doer/wk-session-\$PPID.json ({"pid","host","skill","touched_at"}),
                   ensuring .doer/ is git-excluded first. Also prunes markers whose pid
                   is no longer a live claude process on this host.
+  ensure-exclude  Add .doer/ to the repo's git exclude file (worktree-safe). Idempotent.
   stop            Remove ./.doer/wk-session-\$PPID.json for the current session.
   active          Exit 0 if any live marker exists in this repo, exit 1 otherwise.
 
@@ -42,10 +43,16 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 2
 fi
 
+# The single implementation of the .doer/ exclude rule (workspace-guard.sh
+# calls it via `ensure-exclude`). --git-path resolves the right file in a
+# normal clone and in a linked worktree, where .git is a file and the shared
+# exclude lives in the common git dir.
 ensure_exclude() {
-  mkdir -p .git/info
-  [ -f .git/info/exclude ] || touch .git/info/exclude
-  grep -qxF '.doer/' .git/info/exclude || echo '.doer/' >> .git/info/exclude
+  local exclude_file
+  exclude_file="$(git rev-parse --git-path info/exclude)"
+  mkdir -p "$(dirname "$exclude_file")"
+  [ -f "$exclude_file" ] || touch "$exclude_file"
+  grep -qxF '.doer/' "$exclude_file" || echo '.doer/' >> "$exclude_file"
 }
 
 is_live_claude_pid() {
@@ -83,6 +90,10 @@ case "$CMD" in
     jq -n --arg skill "$SKILL" --arg host "$(hostname)" --argjson pid "$PPID" --argjson t "$(date +%s)" \
       '{pid: $pid, host: $host, skill: $skill, touched_at: $t}' > "$TMP"
     mv "$TMP" "$OUT"
+    ;;
+
+  ensure-exclude)
+    ensure_exclude
     ;;
 
   stop)

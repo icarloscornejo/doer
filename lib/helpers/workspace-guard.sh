@@ -39,17 +39,11 @@ command -v jq >/dev/null 2>&1 || { echo "workspace-guard.sh requires jq" >&2; ex
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-ensure_exclude() {
-  mkdir -p .git/info
-  [ -f .git/info/exclude ] || touch .git/info/exclude
-  grep -qxF '.doer/' .git/info/exclude || echo '.doer/' >> .git/info/exclude
-}
-
 # Steps 1-3: exclude rule, verify it took effect, report already-tracked
 # .doer/ files. Exits 1 if the exclude rule is not effective. Prints
 # "TRACKED <path>" (one file, the first found) if any are tracked.
 run_steps_1_to_3() {
-  ensure_exclude
+  "$HERE/session.sh" ensure-exclude
   mkdir -p .doer && touch .doer/.guard-test
   STATUS="$(git status --porcelain .doer/.guard-test 2>/dev/null)"
   rm -f .doer/.guard-test

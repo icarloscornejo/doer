@@ -874,6 +874,59 @@ assert_eq "workspace-guard release: removes the lock" "no" \
 assert_eq "workspace-guard release: removes the session marker" "no" \
   "$([ -f ".doer/wk-session-$$.json" ] && echo yes || echo no)"
 
+# --- workspace-guard.sh inside a linked git worktree (DOER-4) ---
+# In a worktree .git is a FILE, so the exclude rule must go through
+# `git rev-parse --git-path info/exclude`. All script output goes to
+# $TMPDIR_TEST, never into the worktree: an untracked output file there
+# would make git-ops squash refuse for the wrong reason. The guard deletes
+# its own .guard-test probe, so the tests write a real file under .doer/
+# themselves before checking exclusion or squashing.
+WT_MAIN="$TMPDIR_TEST/wt-main"
+WT_DIR="$TMPDIR_TEST/wt-linked"
+WT_OUT="$TMPDIR_TEST/wt_out.txt"
+new_scratch_repo "$WT_MAIN" main
+( cd "$WT_MAIN" && git commit -q --no-verify --allow-empty -m base && git worktree add -q -b feature/wt "$WT_DIR" )
+cd "$WT_DIR" || exit 1
+assert_eq "worktree fixture: .git is a file, not a directory" "yes" \
+  "$([ -f .git ] && echo yes || echo no)"
+
+"$WORKSPACE_GUARD_SH" acquire --no-lock > "$WT_OUT" 2>&1
+assert_eq "worktree: workspace-guard acquire --no-lock exits 0" "0" "$?"
+mkdir -p .doer/tickets/WT-1 && echo '{}' > .doer/tickets/WT-1/metadata.json
+assert_eq "worktree: acquire --no-lock leaves .doer/ files ignored by git" "" \
+  "$(git status --porcelain)"
+git check-ignore -q .doer/tickets/WT-1/metadata.json \
+  && pass "worktree: check-ignore confirms .doer/ is excluded" \
+  || fail "worktree: check-ignore confirms .doer/ is excluded"
+
+"$WORKSPACE_GUARD_SH" acquire WT-1 doer > "$WT_OUT" 2>&1
+assert_eq "worktree: workspace-guard acquire <ID> doer exits 0" "0" "$?"
+assert_eq "worktree: acquire writes lock.json with this session's pid" "$$" \
+  "$(jq -r '.pid' .doer/tickets/WT-1/lock.json 2>/dev/null)"
+assert_eq "worktree: acquire writes the session marker" "yes" \
+  "$([ -f ".doer/wk-session-$$.json" ] && echo yes || echo no)"
+
+for step in 1 2 3; do
+  printf '%s\n' "$step" >> wt.txt && git add wt.txt && git commit -q --no-verify -m "step$step"
+done
+printf 'feat: squashed in worktree' | "$GIT_OPS_SH" squash main WT-1 doer > "$WT_OUT" 2>&1
+assert_eq "worktree: git-ops squash exits 0 with .doer/ present" "0" "$?"
+assert_eq "worktree: git-ops squash collapses to 1 commit" "1" "$(git rev-list --count main..HEAD)"
+
+# sibling: a second acquire never duplicates the exclude rule
+EXCLUDE_FILE="$(git rev-parse --git-path info/exclude)"
+"$WORKSPACE_GUARD_SH" acquire --no-lock > "$WT_OUT" 2>&1
+assert_eq "worktree: re-running the guard keeps exactly one .doer/ exclude line" "1" \
+  "$(grep -cxF '.doer/' "$EXCLUDE_FILE")"
+"$WORKSPACE_GUARD_SH" release WT-1 > "$WT_OUT" 2>&1
+
+# sibling: session.sh start alone (replay/protologs call it without the guard)
+rm -f "$EXCLUDE_FILE"
+"${REPO_ROOT}/lib/helpers/session.sh" start doer > "$WT_OUT" 2>&1
+assert_eq "worktree: session.sh start alone exits 0 and re-creates the exclude rule" "1" \
+  "$(grep -cxF '.doer/' "$EXCLUDE_FILE" 2>/dev/null || echo 0)"
+"${REPO_ROOT}/lib/helpers/session.sh" stop
+
 # --- stage-checks.sh plan (02-plan.md Step 3, "no LLM") ---
 SC_DIR="$TMPDIR_TEST/stage-checks-plan"
 mkdir -p "$SC_DIR/.doer/tickets/SCT-1"

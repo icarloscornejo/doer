@@ -2,6 +2,13 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.13.1
+
+### Fixed
+
+- **The Workspace Guard now works inside a git worktree.** In a linked worktree `.git` is a file, so the hardcoded `mkdir -p .git/info` in `ensure_exclude` failed with `Not a directory` and `/wk:doer` and `/wk:bugfix` could not start. The exclude rule now resolves its file with `git rev-parse --git-path info/exclude` (the shared exclude of the clone), and lives in one place: `session.sh ensure-exclude`, which `workspace-guard.sh` calls instead of keeping its own copy. The squash failure seen in worktrees had the same cause (`.doer/` showed up untracked, so `git-ops.sh squash` refused the dirty tree); `squash` itself needed no change.
+- `tests/lib/helper-contract.sh` now fails if any helper script hardcodes `.git/info` again, and `tests/helpers.sh` covers the guard, session marker and squash inside a worktree.
+
 ## 7.13.0
 
 ### Added
