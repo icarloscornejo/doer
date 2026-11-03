@@ -16,7 +16,8 @@ Commands:
   secrets <base>                  Lines added since <base> that look like a credential
   ac-leak <base>                  Added lines (excluding .doer/**) leaking an AC-N label
   squash-gate <base>              file: line of every REPLAY/PROTOLOG marker ADDED since <base>
-                                  (context lines, hunk headers and removed lines never count)
+                                  (context lines, hunk headers and removed lines never count);
+                                  paths globbed in .doer-gate-ignore at <base> are skipped
   trace <PROTOLOG|REPLAY>         Tracked + untracked lines still carrying the tag
   revert-in-progress              Whether a git revert is currently unresolved
   phantoms <base>                 Dirty files not explained by the diff vs <base>
@@ -42,6 +43,11 @@ EOF
 command -v jq >/dev/null 2>&1 || { echo "git-checks.sh requires jq" >&2; exit 2; }
 
 CMD="$1"; shift
+
+# The caller's environment must not change what a pathspec means (under
+# GIT_LITERAL_PATHSPECS the ":(top)" magic below would read as a file name and the
+# squash gate would pass everything).
+unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
 
 # Pinned so the user's diff.* / color.* config can never change what a check parses.
 GIT_FLAGS=(-c core.quotePath=false)
@@ -116,8 +122,27 @@ case "$CMD" in
   squash-gate)
     [ $# -ge 1 ] || usage
     BASE="$1"
+    # Work from the repo root: the exemption globs and the diff are root-relative whatever
+    # the caller's directory is (and a user's diff.relative cannot narrow the diff).
+    TOP="$(git rev-parse --show-toplevel)" || fail_git
+    cd "$TOP" || fail_git
     require_base "$BASE"
-    DIFF_TEXT="$(git "${GIT_FLAGS[@]}" "${DIFF_FLAGS[@]}" "$BASE"..HEAD)" || fail_git
+    # Paths where the marker text is legitimate (a repo that documents or tests the
+    # markers) are listed, one glob per line, in .doer-gate-ignore AT THE BASE: reading
+    # the base means a branch cannot exempt its own marker by adding a path in the same
+    # diff. No file at a valid base means no exemptions. "**/" matches zero or more
+    # directories, a single "*" stops at "/".
+    EXCLUDES=()
+    IGNORE_LISTED="$(git ls-tree --name-only "$BASE" -- .doer-gate-ignore)" || fail_git
+    if [ -n "$IGNORE_LISTED" ]; then
+      IGNORE_TEXT="$(git show "$BASE:.doer-gate-ignore")" || fail_git
+      while IFS= read -r IGNORE_LINE; do
+        IGNORE_LINE="${IGNORE_LINE%$'\r'}"
+        case "$IGNORE_LINE" in ''|'#'*) continue ;; esac
+        EXCLUDES+=(":(top,exclude,glob)$IGNORE_LINE")
+      done <<< "$IGNORE_TEXT"
+    fi
+    DIFF_TEXT="$(git "${GIT_FLAGS[@]}" "${DIFF_FLAGS[@]}" "$BASE"..HEAD -- ':(top)' ${EXCLUDES[@]+"${EXCLUDES[@]}"})" || fail_git
     # Only lines ADDED by the branch count. A header line (+++) is recognised only
     # before the first @@ of a file, so an added line that itself starts with "++"
     # is content; context lines, hunk headers (@@ ... @@ <function context>) and

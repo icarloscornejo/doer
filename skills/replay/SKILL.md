@@ -482,8 +482,9 @@ an auto-abort wrapper. Output, one line per commit:
 - `CONFLICT <sha> <files...>`: run Step 3-fallback for exactly those files.
 
 Exit 0: skip to Step 4. Exit 1: handle each `CONFLICT` via Step 3-fallback, then continue
-to Step 4. Exit 2 (`REVERT_HEAD` still set after the script's own abort, should not
-happen): STOP immediately, narrate the exact error.
+to Step 4. Exit 2: STOP immediately, narrate the exact error. It means a revert was
+ALREADY in progress before the script started (the dev's own: never abort it, ask the
+dev), or `REVERT_HEAD` stayed set after the script's own abort, or git failed. Exit 2 means the base is unusable or git failed: stop and report it, never read it as an empty or clean result.
 
 **ON CONFLICT (mandatory, no exceptions), identical rule to `/wk:protologs`:**
 FORBIDDEN to resolve by hand, run `git revert --continue`/`--quit`, or `git

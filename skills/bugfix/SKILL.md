@@ -11,7 +11,7 @@ description: >-
   a forced response or flag to reproduce) and /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.13.3
+version: 7.13.4
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -205,11 +205,11 @@ Mark stage 5 complete → Stage 6.
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" squash-gate <base>
    ```
-   Exit 1 or 2: STOP. Do not squash and do not offer the squash. Report the printed lines to the dev (and to the orchestrator when one is driving), even when the match looks like a false positive; only the dev decides what happens next. Exit 1 means a marker was added by the branch (the printed lines name the file); exit 2 means the base is unusable or git failed. Only on a clean gate (exit 0), proceed to the squash offer, in a separate command. On yes:
+   Exit 1 or 2: STOP. Do not squash and do not offer the squash. Report the printed lines to the dev (and to the orchestrator when one is driving), even when the match looks like a false positive; only the dev decides what happens next. Exit 1 means a marker was added by the branch (the printed lines name the file); exit 2 means the base is unusable or git failed. A repo that documents or tests the markers (this kit does) lists the paths where that text is legitimate in `.doer-gate-ignore` at its base branch; the gate skips only those paths and still fails on a marker anywhere else. Only on a clean gate (exit 0), proceed to the squash offer, in a separate command. On yes:
    ```bash
    printf '%s' "<chosen message>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> <KEY> bugfix
    ```
-   prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`). Never append a `Co-Authored-By` trailer to any candidate; `git-ops.sh squash` strips one and prints `STRIPPED Co-Authored-By trailer`, and exits 1 if a repo-side git hook re-injects it.
+   prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`). Exit 1 means it refused for a stated reason (dirty tree, base not an ancestor) and changed nothing; exit 2 after a `BACKUP <ref>` line means a git step failed after the backup, so narrate the ref and the rollback and stop. Never append a `Co-Authored-By` trailer to any candidate; `git-ops.sh squash` strips one and prints `STRIPPED Co-Authored-By trailer`, and exits 1 if a repo-side git hook re-injects it.
 9. **PR description.** Auto-detect a template:
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" pr-templates

@@ -1,0 +1,14 @@
+# Paths where the marker text (REPLAY and PROTOLOG lines) is legitimate in this repo:
+# the kit documents, tests and cleans those markers. One glob per line; the squash gate
+# (lib/helpers/git-checks.sh squash-gate) reads this file from the BASE branch, so a
+# branch cannot exempt its own marker. Keep every entry bound to a file or an extension,
+# never to a whole directory.
+CHANGELOG.md
+README.md
+hooks/protolog-restore.py
+hooks/replay-restore.py
+lib/helpers/git-checks.sh
+docs/**/*.md
+lib/**/*.md
+skills/**/*.md
+tests/**/*.sh

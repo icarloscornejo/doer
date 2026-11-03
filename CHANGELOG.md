@@ -2,6 +2,19 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.13.4
+
+### Fixed
+
+- **`git-ops.sh` fails closed.** Same pattern DOER-5 fixed in `git-checks.sh`, in the commands that change or discard work. `restore-phantoms` with an unusable base or any git error computed an empty "intended" list, so every dirty file counted as a phantom and was restored; it now classifies every phantom first (changing nothing), revalidates the clean ones right before a single `git restore`, and exits 2 on any git error. `squash` read a failing `git status` as a clean tree and went ahead; it now exits 2, as it does for an unusable base (before, exit 1), a failing `rev-list`, `stripspace`, `update-ref`, `reset` or `commit` (after the backup ref was printed, the message names it and the rollback). `revert-temp` printed `NONE` and exited 0 when `git log` failed, and aborted a revert the dev had started; it now exits 2 in both cases. `scrub-history` validates its base and refuses on a dirty tree (exit 1, no BACKUP line) before creating the backup ref. Every spot that stays open on purpose carries a `fail-open ok` comment, and a test fails if a new one appears without it.
+- **The squash gate can run on a repo that documents the markers.** `.doer-gate-ignore` at the repo root lists, one glob per line, the paths where the marker text is legitimate. The gate reads it from the BASE branch (so a branch cannot exempt its own marker), skips only those paths and still fails on a marker anywhere else; no file means no exemptions. This kit ships its own list (changelog, readme, the two restore hooks, the gate itself, `docs`/`lib`/`skills` markdown and `tests` scripts, never whole directories). The gate and `restore-phantoms` now work from the repo root, so running them from a subdirectory or with `diff.relative` or `GIT_LITERAL_PATHSPECS` set cannot hide a marker.
+- Callers now say what each exit means: `scrub-history` exit 1 with no BACKUP line is a dirty-tree refusal (nothing to roll back), exit 2 after a BACKUP line names the ref, and the helper contract test checks it.
+
+### Documented limits
+
+- The branch that introduces `.doer-gate-ignore` does not see it (the gate reads the base), so it still fails the gate once; every branch cut after it is merged passes.
+- `git-checks.sh trace` (the repo-wide grep after cleanup) is a different check and is unchanged.
+
 ## 7.13.3
 
 ### Fixed
