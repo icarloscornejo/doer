@@ -1505,16 +1505,12 @@ wt_pre WTP-5
 assert_eq "pre-review: a commented-out assertion in foo.test.ts exits 1" "1" "$PRE_EXIT"
 assert_eq "pre-review: ... as a weakened-tests BLOCKER" "1" "$(wt_wcount blockers)"
 
-# invalid base is a BLOCKER, never clean
+# invalid base stops the stage with exit 2, never clean and never a fixable BLOCKER
 wt_removal_fixture
 wt_meta WTP-6 "$WT_PLAN_FOO"
 wt_pre WTP-6 no-such-base
-assert_eq "pre-review: an invalid base exits 1" "1" "$PRE_EXIT"
-assert_eq "pre-review: an invalid base is a weakened-tests BLOCKER" "yes" \
-  "$([ "$(wt_wcount blockers)" -ge 1 ] && echo yes)"
-assert_eq "pre-review: ... saying the weakened-tests check failed" "yes" \
-  "$(printf '%s' "$PRE_OUT" | jq -r '[.blockers[] | select(.kind == "weakened-tests") | .detail] | join("\n")' \
-     | grep -qF 'weakened-tests check failed' && echo yes)"
+assert_eq "pre-review: an invalid base exits 2" "2" "$PRE_EXIT"
+assert_eq "pre-review: an invalid base prints no clean result" "" "$PRE_OUT"
 
 # .doer/** and empty diff
 wt_new
@@ -1936,6 +1932,194 @@ LEGACY_RENDER="$(python3 "$AC_GRAPH_PY" render-table legacy_row.json)"
 printf '%s\n' "$LEGACY_RENDER" | grep -qF '| "(persisted text, not a ticket quote)" | unknown | AC-1 | unreviewed |' \
   && pass "ac-graph render-table: a legacy row with no origins renders as unknown/unreviewed" \
   || fail "ac-graph render-table: a legacy row with no origins renders as unknown/unreviewed" "got: $LEGACY_RENDER"
+
+# --- DOER-5: squash-gate reads only added lines; every base-taking check fails closed ---
+# Each case builds its own tiny repo (main = base, feature/x = work), so the only
+# marker in a diff is the one the case is about.
+FC_ROOT="$TMPDIR_TEST/fc"
+FC_COUNT=0
+FC_OUT=""
+FC_EXIT=0
+fc_new() { # fresh repo, cwd moves into it
+  FC_COUNT=$((FC_COUNT + 1))
+  new_scratch_repo "$FC_ROOT/r$FC_COUNT" main
+  cd "$FC_ROOT/r$FC_COUNT" || exit 1
+}
+fc_base() { git add -A && git commit -q --no-verify -m base && git checkout -q -b feature/x; }
+fc_work() { git add -A && git commit -q --no-verify -m work; }
+fc_run() { FC_OUT="$("$@" 2>/dev/null)"; FC_EXIT=$?; }
+
+# fc_fail <git-subcommand> <command...>: runs the command with a git shim first
+# on PATH that exits 128 for that one subcommand (skipping git's global options
+# such as -c and -C) and execs the real git otherwise. The shim lives only in a
+# subshell, so PATH never leaks into later tests.
+FC_REAL_GIT="$(command -v git)"
+FC_SHIM_DIR="$TMPDIR_TEST/fc-shim"
+mkdir -p "$FC_SHIM_DIR"
+cat > "$FC_SHIM_DIR/git" <<'SHIM'
+#!/usr/bin/env bash
+args=("$@")
+idx=0
+while [ "$idx" -lt "$#" ]; do
+  case "${args[$idx]}" in
+    -c|-C) idx=$((idx + 2)) ;;
+    --no-pager|--no-optional-locks|--git-dir=*|--work-tree=*) idx=$((idx + 1)) ;;
+    *) break ;;
+  esac
+done
+[ "${args[$idx]:-}" = "$FC_FAIL_SUB" ] && exit 128
+exec "$FC_REAL_GIT" "$@"
+SHIM
+chmod +x "$FC_SHIM_DIR/git"
+fc_fail() {
+  local failing_subcommand="$1"
+  shift
+  ( PATH="$FC_SHIM_DIR:$PATH"; FC_FAIL_SUB="$failing_subcommand"; FC_REAL_GIT="$FC_REAL_GIT"
+    export PATH FC_FAIL_SUB FC_REAL_GIT
+    "$@" ) >/dev/null 2>&1
+  FC_EXIT=$?
+}
+
+# squash-gate: a marker that is only context, hunk header or removed is not a trace
+fc_new
+printf 'PROTOLOG - old\n    mid\n    target\n    tail\n' > ctx.txt
+fc_base
+printf 'PROTOLOG - old\n    mid\n    changed\n    tail\n' > ctx.txt
+fc_work
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a marker only in a context line exits 0" "0" "$FC_EXIT"
+
+fc_new
+fc_header_file() { # fc_header_file <last-line>: marker line, ten filler lines, then <last-line>
+  printf 'PROTOLOG - legacy\n'
+  for fc_line in 1 2 3 4 5 6 7 8 9 10; do printf '    filler %s\n' "$fc_line"; done
+  printf '    %s\n' "$1"
+}
+fc_header_file target > hdr.txt
+fc_base
+fc_header_file changed > hdr.txt
+fc_work
+assert_eq "squash-gate fixture: the hunk header really carries the marker" "yes" \
+  "$(git diff main..HEAD | grep -q '^@@.*PROTOLOG - legacy' && echo yes)"
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a marker only in a hunk header exits 0" "0" "$FC_EXIT"
+
+fc_new
+printf '    a\nPROTOLOG - gone\n    b\n' > rm.txt
+fc_base
+printf '    a\n    b\n' > rm.txt
+fc_work
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a marker line removed on the branch exits 0" "0" "$FC_EXIT"
+
+# squash-gate: real added markers are still caught and printed with their file
+fc_new
+printf 'a\n' > keep.txt
+fc_base
+printf 'println("PROTOLOG - x")\n' > rep.kt
+fc_work
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: an added PROTOLOG line exits 1" "1" "$FC_EXIT"
+assert_eq "squash-gate: ... and prints the added line" "yes" \
+  "$(printf '%s\n' "$FC_OUT" | grep -qF 'PROTOLOG - x' && echo yes)"
+assert_eq "squash-gate: ... prefixed with the file it was added to" "yes" \
+  "$(printf '%s\n' "$FC_OUT" | grep -q '^rep.kt: ' && echo yes)"
+
+for fc_marker in 'PROTOLOG_RESPONSE - body' 'REPLAY-ORIG: x' 'REPLAY END T1'; do
+  fc_new
+  printf 'a\n' > keep.txt
+  fc_base
+  printf 'val x = "%s"\n' "$fc_marker" > rep.kt
+  fc_work
+  fc_run "$GIT_CHECKS_SH" squash-gate main
+  assert_eq "squash-gate: an added '$fc_marker' line exits 1" "1" "$FC_EXIT"
+done
+
+fc_new
+printf 'PROTOLOG - old\n    mid\n    target\n    tail\n' > ctx.txt
+fc_base
+printf 'PROTOLOG - old\n    mid\n    // REPLAY START T1\n    tail\n' > ctx.txt
+fc_work
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: a context marker does not mask a real added marker" "1" "$FC_EXIT"
+
+fc_new
+printf 'a\n' > keep.txt
+fc_base
+printf '+ PROTOLOG - x\n' > plus.txt
+fc_work
+fc_run "$GIT_CHECKS_SH" squash-gate main
+assert_eq "squash-gate: an added line that itself starts with + is not mistaken for a header" "1" "$FC_EXIT"
+
+# squash-gate and ac-leak must not depend on the user's diff configuration
+fc_new
+printf 'a\n' > keep.txt
+fc_base
+printf 'println("PROTOLOG - x") // AC-1\n' > rep.kt
+fc_work
+FC_COLOR_CONFIG="'color.diff'='always'"
+FC_OUT="$(GIT_CONFIG_PARAMETERS="$FC_COLOR_CONFIG" "$GIT_CHECKS_SH" squash-gate main 2>/dev/null)"; FC_EXIT=$?
+assert_eq "squash-gate: color.diff=always does not hide an added marker" "1" "$FC_EXIT"
+FC_OUT="$(GIT_CONFIG_PARAMETERS="$FC_COLOR_CONFIG" "$GIT_CHECKS_SH" ac-leak main 2>/dev/null)"; FC_EXIT=$?
+assert_eq "ac-leak: color.diff=always does not hide an added AC label" "1" "$FC_EXIT"
+FC_OUT="$(GIT_CONFIG_PARAMETERS="'diff.external'='true'" "$GIT_CHECKS_SH" squash-gate main 2>/dev/null)"; FC_EXIT=$?
+assert_eq "squash-gate: an external diff driver does not hide an added marker" "1" "$FC_EXIT"
+
+# every base-taking check: an unusable base, or a git error, exits 2 and never 0
+fc_new
+printf 'a\n' > f.txt
+printf 'g\n' > g.txt
+fc_base
+printf 'a2\n' > f.txt
+fc_work
+for fc_cmd in diff-files secrets ac-leak squash-gate phantoms classify-diff doer-history weakened-tests; do
+  fc_run "$GIT_CHECKS_SH" "$fc_cmd" no-such-base
+  assert_eq "git-checks $fc_cmd: an unusable base exits 2" "2" "$FC_EXIT"
+done
+for fc_cmd in diff-files secrets ac-leak squash-gate phantoms classify-diff weakened-tests; do
+  fc_fail diff "$GIT_CHECKS_SH" "$fc_cmd" main
+  assert_eq "git-checks $fc_cmd: a git diff error exits 2" "2" "$FC_EXIT"
+done
+fc_fail log "$GIT_CHECKS_SH" doer-history main
+assert_eq "git-checks doer-history: a git log error exits 2" "2" "$FC_EXIT"
+fc_fail log "$GIT_CHECKS_SH" temp-rounds PROTOLOG
+assert_eq "git-checks temp-rounds: a git log error exits 2" "2" "$FC_EXIT"
+fc_fail grep "$GIT_CHECKS_SH" trace PROTOLOG
+assert_eq "git-checks trace: a git grep error exits 2" "2" "$FC_EXIT"
+fc_fail status "$GIT_CHECKS_SH" revert-in-progress
+assert_eq "git-checks revert-in-progress: a git status error exits 2" "2" "$FC_EXIT"
+fc_fail diff git -c a.b=c diff
+assert_eq "fc_fail shim: git -c a.b=c diff is intercepted" "128" "$FC_EXIT"
+fc_fail diff git rev-parse HEAD
+assert_eq "fc_fail shim: other git subcommands pass through" "0" "$FC_EXIT"
+
+# pre-review: an unusable base or a git error stops the stage with exit 2
+wt_meta FC-1 '[]'
+fc_run "$STAGE_CHECKS_SH" pre-review FC-1 no-such-base
+assert_eq "pre-review: an unusable base exits 2" "2" "$FC_EXIT"
+fc_fail diff "$STAGE_CHECKS_SH" pre-review FC-1 main
+assert_eq "pre-review: a git diff error exits 2" "2" "$FC_EXIT"
+
+# doer-history: the range is a revision, not a path
+fc_new
+mkdir -p .doer/tickets/X
+printf '{}\n' > .doer/tickets/X/metadata.json
+printf 'a\n' > f.txt
+git add -f -A && git commit -q --no-verify -m "old doer commit"
+printf 'a2\n' > f.txt
+fc_base
+printf 'b\n' > g.txt
+fc_work
+fc_run "$GIT_CHECKS_SH" doer-history main
+assert_eq "doer-history: a .doer commit before the base is not listed" "" "$FC_OUT"
+printf '{"in":"range"}\n' > .doer/tickets/X/metadata.json
+git add -f -A && git commit -q --no-verify -m "doer(X): in range"
+fc_run "$GIT_CHECKS_SH" doer-history main
+assert_eq "doer-history: a .doer commit inside the range is listed" "1" "$(printf '%s\n' "$FC_OUT" | sed '/^$/d' | wc -l | tr -d ' ')"
+fc_run "$GIT_OPS_SH" scrub-history main X doer
+assert_eq "scrub-history: verification ignores .doer commits before the base" "0" "$FC_EXIT"
+fc_run "$GIT_CHECKS_SH" doer-history main
+assert_eq "scrub-history: nothing is left in the range afterwards" "" "$FC_OUT"
 
 cd "$REPO_ROOT" || exit 1
 

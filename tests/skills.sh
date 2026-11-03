@@ -337,6 +337,71 @@ else
   fail "state.md documents cost_sessions"
 fi
 
+# --- 1e. DOER-5: helper-contract.sh rejects a squash gate chained with the squash,
+# and a check whose exit 2 is not explained. Each mutation runs on a copy of
+# skills/, lib/ and hooks/ and must fail with the specific contract line; the
+# unmutated copy must pass, so a failure cannot come from an unrelated check.
+contract_dir() {
+  local tmp
+  tmp="$(mktemp -d)"
+  cp -R "$REPO_ROOT/skills" "$REPO_ROOT/lib" "$REPO_ROOT/hooks" "$tmp/"
+  printf '%s' "$tmp"
+}
+
+# contract_mutation_fails <desc> <expected FAIL fragment> <file> <old> <new>
+contract_mutation_fails() {
+  local desc="$1" expected="$2" rel="$3" old="$4" new="$5" tmp out
+  tmp="$(contract_dir)"
+  if ! replace_once "$tmp/$rel" "$old" "$new"; then
+    fail "$desc (mutation did not apply; the text it targets is missing or ambiguous)"
+    rm -rf "$tmp"
+    return
+  fi
+  out="$(bash "$HELPER_CHECKER" "$tmp" 2>&1)"
+  if [ $? -ne 0 ] && printf '%s\n' "$out" | grep -qF -- "FAIL  $expected"; then
+    pass "$desc"
+  else
+    fail "$desc" "expected the line 'FAIL  $expected'"
+  fi
+  rm -rf "$tmp"
+}
+
+CONTRACT_COPY="$(contract_dir)"
+if bash "$HELPER_CHECKER" "$CONTRACT_COPY" >/dev/null 2>&1; then
+  pass "helper-contract.sh passes on an unmutated copy of the tree"
+else
+  fail "helper-contract.sh passes on an unmutated copy of the tree"
+fi
+rm -rf "$CONTRACT_COPY"
+
+GATE_CHAIN=' && "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> T-1 doer'
+contract_mutation_fails "contract: the gate chained with the squash in the 05-wrapup fence is rejected" \
+  'squash-gate contract: skills/doer/stages/05-wrapup.md' \
+  skills/doer/stages/05-wrapup.md 'squash-gate <base>' "squash-gate <base>$GATE_CHAIN"
+contract_mutation_fails "contract: the gate chained with the squash in the indented bugfix fence is rejected" \
+  'squash-gate contract: skills/bugfix/SKILL.md' \
+  skills/bugfix/SKILL.md 'squash-gate <base>' "squash-gate <base>$GATE_CHAIN"
+contract_mutation_fails "contract: the gate chained in inline code in prose is rejected" \
+  'squash-gate contract: skills/doer/stages/05-wrapup.md' \
+  skills/doer/stages/05-wrapup.md 'Exit 1 or 2: STOP.' 'Exit 1 or 2: STOP. (Shortcut: `git-checks.sh" squash-gate <base> && git-ops.sh squash`.)'
+contract_mutation_fails "contract: the gate chained on an indented code line is rejected" \
+  'squash-gate contract: skills/doer/stages/05-wrapup.md' \
+  skills/doer/stages/05-wrapup.md 'Exit 1 or 2: STOP.' '    git-checks.sh" squash-gate <base> && git-ops.sh squash
+Exit 1 or 2: STOP.'
+contract_mutation_fails "contract: a gate split by a line continuation is rejected" \
+  'squash-gate contract: skills/bugfix/SKILL.md' \
+  skills/bugfix/SKILL.md 'squash-gate <base>' 'squash-gate <base> \
+   && git-ops.sh" squash <base> T-1 bugfix'
+contract_mutation_fails "contract: dropping 'as its own Bash command' from the bugfix skill is rejected" \
+  "squash-gate contract: skills/bugfix/SKILL.md: missing the sentence 'as its own Bash command'" \
+  skills/bugfix/SKILL.md 'as its own Bash command' 'alone'
+contract_mutation_fails "contract: dropping the exit 2 sentence from _commands.md is rejected" \
+  'exit-2 contract: skills/doer/stages/_commands.md' \
+  skills/doer/stages/_commands.md 'Exit 2 means the base is unusable or git failed' 'Exit codes are documented elsewhere'
+contract_mutation_fails "contract: piping doer-history in 05-wrapup is rejected" \
+  'exit-2 contract: skills/doer/stages/05-wrapup.md' \
+  skills/doer/stages/05-wrapup.md 'git-checks.sh" doer-history <base>' 'git-checks.sh" doer-history <base> | wc -l'
+
 # --- 2. Mutation fixtures, one per finding from the crosscheck rounds. ---
 mutate_and_expect_fail "mutation: distinctness rule removed from Step 5" mut_drop_distinctness_rule
 mutate_and_expect_fail "mutation: Step 5.5 no longer binds to Step 5's rule (drift risk)" mut_step55_no_longer_binds_to_step5

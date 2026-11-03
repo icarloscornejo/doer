@@ -129,6 +129,88 @@ else
   fail "no helper script hardcodes the raw .git/info path (worktree-safe)" "found in: $RAW_GIT_INFO_HITS"
 fi
 
+# --- (d) the squash gate is its own command, in prose and in code ---
+# A gate that exits 1 must stop the flow (DOER-5): chaining it with the squash
+# in one Bash command lets the squash run after the gate failed. A trailing
+# backslash joins a code line with the next one before any rule is applied.
+join_continuations() { # join_continuations <file>
+  awk '{ line = $0; while (line ~ /\\$/ && (getline next_line) > 0) { sub(/\\$/, "", line); line = line " " next_line } print line }' "$1"
+}
+
+# gate_fence_report <file>: "<blocks holding squash-gate> <of those not exactly one line> <blocks holding the gate command>"
+gate_fence_report() {
+  join_continuations "$1" | awk '
+    /^[[:space:]]*```/ {
+      if (in_fence) {
+        if (has_gate) { blocks++; if (non_blank != 1) multi_line++ }
+        if (has_command) command_blocks++
+        in_fence = 0
+      } else { in_fence = 1; has_gate = 0; has_command = 0; non_blank = 0 }
+      next
+    }
+    in_fence {
+      if ($0 ~ /[^[:space:]]/) non_blank++
+      if (index($0, "squash-gate")) has_gate = 1
+      if (index($0, "git-checks.sh\" squash-gate")) has_command = 1
+    }
+    END { printf "%d %d %d\n", blocks + 0, multi_line + 0, command_blocks + 0 }'
+}
+
+GATE_FILES="$(find "$ROOT/skills" "$ROOT/lib" -name '*.md' -type f -print0 2>/dev/null | xargs -0 grep -lF -- 'squash-gate' 2>/dev/null)"
+for gate_file in $GATE_FILES; do
+  gate_rel="${gate_file#"$ROOT"/}"
+  if join_continuations "$gate_file" | grep -F -- 'squash-gate' | grep -qE '&&|\|\||;|\||git-ops\.sh"? squash'; then
+    fail "squash-gate contract: $gate_rel: a line with squash-gate also holds a chain operator or the squash"
+  else
+    pass "squash-gate contract: $gate_rel: no line chains the gate with another command"
+  fi
+  read -r gate_blocks gate_multi_line gate_command_blocks <<EOF
+$(gate_fence_report "$gate_file")
+EOF
+  if [ "$gate_multi_line" -eq 0 ]; then
+    pass "squash-gate contract: $gate_rel: every fenced block with the gate holds only that one line"
+  else
+    fail "squash-gate contract: $gate_rel: a fenced block with the gate holds more than one line"
+  fi
+done
+
+for gate_stage in skills/doer/stages/05-wrapup.md skills/bugfix/SKILL.md; do
+  gate_file="$ROOT/$gate_stage"
+  read -r gate_blocks gate_multi_line gate_command_blocks <<EOF
+$(gate_fence_report "$gate_file")
+EOF
+  if [ "$gate_command_blocks" -eq 1 ]; then
+    pass "squash-gate contract: $gate_stage: exactly one fenced block runs the gate"
+  else
+    fail "squash-gate contract: $gate_stage: expected exactly one fenced block running the gate, found $gate_command_blocks"
+  fi
+  for gate_phrase in 'as its own Bash command' 'Do not squash and do not offer the squash'; do
+    if grep -qF -- "$gate_phrase" "$gate_file"; then
+      pass "squash-gate contract: $gate_stage: says '$gate_phrase'"
+    else
+      fail "squash-gate contract: $gate_stage: missing the sentence '$gate_phrase'"
+    fi
+  done
+done
+
+# --- (e) a check that can exit 2 is never piped or chained, and every caller says what exit 2 means ---
+EXIT2_PHRASE='Exit 2 means the base is unusable or git failed'
+EXIT2_FILES="$(find "$ROOT/skills" "$ROOT/lib" -name '*.md' -type f -print0 2>/dev/null \
+  | xargs -0 grep -lE 'git-checks\.sh"? (doer-history|trace|revert-in-progress|temp-rounds|classify-diff|diff-files)|stage-checks\.sh"? pre-review' 2>/dev/null)"
+for exit2_file in $EXIT2_FILES; do
+  exit2_rel="${exit2_file#"$ROOT"/}"
+  if grep -qF -- "$EXIT2_PHRASE" "$exit2_file"; then
+    pass "exit-2 contract: $exit2_rel: says what exit 2 means"
+  else
+    fail "exit-2 contract: $exit2_rel: calls a check that can exit 2 but never says '$EXIT2_PHRASE'"
+  fi
+  if join_continuations "$exit2_file" | grep -E '(git-checks\.sh|stage-checks\.sh)"? [a-z-]+' | grep -qE ' (\|\||&&|;|\|) '; then
+    fail "exit-2 contract: $exit2_rel: a check is piped or chained, which hides its exit code"
+  else
+    pass "exit-2 contract: $exit2_rel: no check is piped or chained"
+  fi
+done
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
