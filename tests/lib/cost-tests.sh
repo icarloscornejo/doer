@@ -10,9 +10,9 @@ COST_CASE_N=0
 COST_SCOPE_TEXT="whole sessions; may include non-ticket work in them"
 
 # DOER-6: the fixture rate table (round numbers, USD per million tokens) reached
-# through COST_RATES_FILE. cold_after_seconds is 120 on purpose: a hard-coded 300
-# in the helper would fail the compaction cases.
-COST_RATES_JSON='{"taken_on":"2026-11-03","source":"https://example.test/pricing","unit":"USD per million tokens","per_tokens":1000000,"compaction":{"cold_after_seconds":120},"models":{"m-a":{"input":10,"output":20,"cache_read":1,"cache_write_5m":12.5,"cache_write_1h":20},"m-b":{"input":1,"output":2,"cache_read":0.1,"cache_write_5m":1.25,"cache_write_1h":2},"m-long":{"input":1,"output":2,"cache_read":0.1,"cache_write_5m":1.25,"cache_write_1h":2,"long_prompt":{"over_tokens":100,"input":5,"output":10,"cache_read":0.5,"cache_write_5m":6.25,"cache_write_1h":10}},"m-fast":{"input":4,"output":20,"cache_read":0.2,"cache_write_5m":5,"cache_write_1h":8,"fast_multiplier":2}}}'
+# through COST_RATES_FILE. cold_after_seconds is 120 and cold_after_seconds_1h is 600
+# on purpose: a hard-coded 300 or 3600 in the helper would fail the compaction cases.
+COST_RATES_JSON='{"taken_on":"2026-11-03","source":"https://example.test/pricing","unit":"USD per million tokens","per_tokens":1000000,"compaction":{"cold_after_seconds":120,"cold_after_seconds_1h":600},"models":{"m-a":{"input":10,"output":20,"cache_read":1,"cache_write_5m":12.5,"cache_write_1h":20},"m-b":{"input":1,"output":2,"cache_read":0.1,"cache_write_5m":1.25,"cache_write_1h":2},"m-long":{"input":1,"output":2,"cache_read":0.1,"cache_write_5m":1.25,"cache_write_1h":2,"long_prompt":{"over_tokens":100,"input":5,"output":10,"cache_read":0.5,"cache_write_5m":6.25,"cache_write_1h":10}},"m-fast":{"input":4,"output":20,"cache_read":0.2,"cache_write_5m":5,"cache_write_1h":8,"fast_multiplier":2}}}'
 
 cost_case() { # fresh fake dirs plus an empty repo dir, cd'ed into
   COST_CASE_N=$((COST_CASE_N + 1))
@@ -593,7 +593,8 @@ assert_eq "cost by_stage usd: an unreadable rate table leaves tokens but no usd,
 # =====================================================================
 # Fixture table (COST_RATES_JSON): m-a 10/20/1/12.5/20, m-b 1/2/0.1/1.25/2 per million
 # (input/output/cache read/cache write 5m/cache write 1h); m-long has a long_prompt tier
-# above 100 prompt tokens; m-fast has fast_multiplier 2; cold_after_seconds is 120.
+# above 100 prompt tokens; m-fast has fast_multiplier 2; cold_after_seconds is 120
+# (5-minute cache) and cold_after_seconds_1h is 600 (1-hour cache).
 price_doc() { # <ticket> <session-id>...: a tracked ticket with these registered sessions
   local ticket="$1" sessions="[]" session_id; shift
   for session_id in "$@"; do
@@ -752,7 +753,8 @@ REC="$(cost_run record P-5b)"
 assert_eq "cost cross-check: a counter that went backwards no longer makes the record unknown, reported_usd is null" '["known",true,null]' \
   "$(rec_field '[.status, ((.total_usd - 3) | fabs) < 0.000000001, .reported_usd]')"
 
-# compaction: priced from the boundary metadata (cold: cache write 5m, warm: cache read, output = postTokens)
+# compaction: priced from the boundary metadata (cold: cache write of the tier the previous request wrote, 5m or 1h;
+# warm: cache read; output = postTokens)
 cost_case
 unset CLAUDE_CODE_SESSION_ID
 price_doc P-6a p6a
@@ -802,6 +804,79 @@ price_doc P-6f p6f
 } | tx_put proj/p6f.jsonl
 REC="$(cost_run record P-6f)"
 assert_eq "cost compaction: two boundaries add up" '[2,true]' "$(rec_field '[.compactions.count, ((.compactions.estimated_usd - 25.4) | fabs) < 0.000000001]')"
+
+# DOER-9: the cache lives as long as the tier the previous request wrote. A previous request that wrote 1-hour
+# tokens keeps the cache warm for cold_after_seconds_1h (600 in the fixture) and a cold input is a 1-hour write.
+# Values (m-a, 1000000 pre, 10000 post): warm 1.0 + 0.2 = 1.2; cold 1h 20 + 0.2 = 20.2; cold 5m 12.5 + 0.2 = 12.7.
+# These are the expected values after the fix; C1-C3, C5, C6, C8, C9 and C10 are red on the previous code.
+compaction_estimate() { # <ticket> <expected>: the record of this ticket has this estimated_usd
+  REC="$(cost_run record "$1")"
+  usd_close "$(rec_field '.compactions.estimated_usd')" "$2"
+}
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+price_doc P-7a p7a
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 0 0 1 m-a
+  tx_boundary 2026-01-01T10:05:00Z u1 1000000 10000
+} | tx_put proj/p7a.jsonl
+assert_eq "cost compaction 1h: 300 s after a 1-hour write is still warm (1.2)" "true" "$(compaction_estimate P-7a 1.2)"
+price_doc P-7b p7b
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 0 0 1 m-a
+  tx_boundary 2026-01-01T10:10:01Z u1 1000000 10000
+} | tx_put proj/p7b.jsonl
+assert_eq "cost compaction 1h: 601 s after a 1-hour write is cold and priced as a 1-hour cache write (20.2)" "true" "$(compaction_estimate P-7b 20.2)"
+price_doc P-7c p7c
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 0 0 1 m-a
+  tx_boundary 2026-01-01T10:10:00Z u1 1000000 10000
+} | tx_put proj/p7c.jsonl
+assert_eq "cost compaction 1h: exactly the 1-hour threshold is still warm (1.2)" "true" "$(compaction_estimate P-7c 1.2)"
+price_doc P-7d p7d
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 0 0 1 m-a
+  tx_synthetic 2026-01-01T10:03:20Z
+  tx_boundary 2026-01-01T10:05:00Z u1 1000000 10000
+} | tx_put proj/p7d.jsonl
+assert_eq "cost compaction 1h: a synthetic line between the 1-hour request and the boundary changes nothing (1.2)" "true" "$(compaction_estimate P-7d 1.2)"
+printf '%s' "$COST_RATES_JSON" | jq -c 'del(.compaction.cold_after_seconds_1h)' > "$COST_ROOT/no1h-rates.json"
+price_doc P-7e p7e
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 0 0 1 m-a
+  tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000
+} | tx_put proj/p7e.jsonl
+REC="$(COST_RATES_FILE="$COST_ROOT/no1h-rates.json" cost_run record P-7e)"
+assert_eq "cost compaction 1h: a table without the 1-hour threshold falls back to the 5-minute one, cold at the 1-hour write rate (20.2, known)" '["known",true]' \
+  "$(rec_field '[.status, ((.compactions.estimated_usd - 20.2) | fabs) < 0.000000001]')"
+price_doc P-7f p7f
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 0 0 0 0 1 m-long
+  tx_boundary 2026-01-01T10:10:01Z u1 1000 10
+} | tx_put proj/p7f.jsonl
+assert_eq "cost compaction 1h: the long-prompt tier applies to a cold 1-hour write (1000 x 10 + 10 x 10 per million = 0.0101)" "true" "$(compaction_estimate P-7f 0.0101)"
+price_doc P-7g p7g
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 0 5 5 m-a
+  tx_boundary 2026-01-01T10:05:00Z u1 1000000 10000
+} | tx_put proj/p7g.jsonl
+assert_eq "cost compaction 1h: a mixed 5m and 1h write counts as a 1-hour cache (warm at 300 s, 1.2)" "true" "$(compaction_estimate P-7g 1.2)"
+jq -c '.compaction.cold_after_seconds_1h = "600"' <<< "$COST_RATES_JSON" > "$COST_ROOT/string-key-rates.json"
+price_doc P-7h p7h
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 0 0 1 m-a
+  tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000
+} | tx_put proj/p7h.jsonl
+REC="$(COST_RATES_FILE="$COST_ROOT/string-key-rates.json" cost_run record P-7h)"
+assert_eq "cost compaction 1h: a non-numeric 1-hour threshold behaves like a missing one (cold at 121 s, 20.2)" '["known",true]' \
+  "$(rec_field '[.status, ((.compactions.estimated_usd - 20.2) | fabs) < 0.000000001]')"
+# regression lock, green before and after: a previous request with a cache_creation object but no write is the 5-minute tier
+price_doc P-7i p7i
+{
+  tx_split 2026-01-01T10:00:00Z a1 r1 1 0 5 0 0 m-a
+  tx_boundary 2026-01-01T10:02:01Z u1 1000000 10000
+} | tx_put proj/p7i.jsonl
+assert_eq "cost compaction 1h: a previous request that wrote no cache tokens is the 5-minute tier (cold at 121 s, 12.7)" "true" "$(compaction_estimate P-7i 12.7)"
 
 # compaction in a subagent file pairs with that file's own thread, never with the main thread
 cost_case
@@ -921,9 +996,11 @@ for rate_free_file in "$COST_SH" "${REPO_ROOT}/lib/helpers/metadata.sh"; do
     "$([ -f "$rate_free_file" ] && { grep -qiE 'opus|sonnet|haiku|fable|mythos|per_?million|per_?mtok|usd_per|1e6|1000000|1_000_000|0\.0000[0-9]' "$rate_free_file" && echo found || echo clean; } || echo missing)"
 done
 assert_eq "cost.sh: no compaction threshold literal" "clean" \
-  "$([ -f "$COST_SH" ] && { grep -qE '(^|[^0-9.])(300|120)([^0-9.]|$)' "$COST_SH" && echo found || echo clean; } || echo missing)"
+  "$([ -f "$COST_SH" ] && { grep -qE '(^|[^0-9.])(300|120|600)([^0-9.]|$)' "$COST_SH" && echo found || echo clean; } || echo missing)"
 assert_eq "cost-rates.json is valid JSON with the date, source, divisor and compaction parameter" "true" \
   "$(jq '(.taken_on | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and (.source | test("^https://")) and (.per_tokens | type == "number") and (.compaction.cold_after_seconds | type == "number") and (.models | type == "object" and length > 0)' "$COST_RATES_REAL" 2>/dev/null || echo false)"
+assert_eq "cost-rates.json: compaction.cold_after_seconds_1h is a number greater than cold_after_seconds" "true" \
+  "$(jq '(.compaction.cold_after_seconds_1h | type == "number") and (.compaction.cold_after_seconds_1h > .compaction.cold_after_seconds)' "$COST_RATES_REAL" 2>/dev/null || echo false)"
 assert_eq "cost-rates.json: every model has the five numeric rates" "true" \
   "$(jq '[.models[] | [.input, .output, .cache_read, .cache_write_5m, .cache_write_1h] | all(type == "number")] | all' "$COST_RATES_REAL" 2>/dev/null || echo false)"
 assert_eq "cost-rates.json: only claude-haiku-5-5 has a long_prompt tier" '["claude-haiku-5-5"]' \
