@@ -327,7 +327,7 @@ cost_has "bugfix Stage 6 close falls back to cost.sh unknown" "$BUGFIX_STAGE6" "
 
 # DOER-10: only the two PR-description writers run on Haiku (read budget 0, no code written or judged);
 # the clause keeps a prompt that could pass the long-prompt threshold on the session model.
-HAIKU_MODEL='model: "haiku"'
+HAIKU_MODEL='Agent with `model: "haiku"` on every dispatch of this writer, rewrite rounds included'
 HAIKU_CLAUSE='omit `model`'
 HAIKU_LIMIT='100 KB'
 WRAPUP_STEP6="$(md_section "$REPO_ROOT/skills/doer/stages/05-wrapup.md" '## 6.')"
