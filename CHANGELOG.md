@@ -2,6 +2,20 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.16.0
+
+### Added
+
+- **The cost record separates the context a session carried in from the ticket's own cost.** Each `cost.by_stage[N]` now carries `requests`, `context_entry`, `context_exit` and `growth_tokens` (context of a request = input + cache read + cache write), `inherited_cache_read_tokens` and `own_cache_read_tokens` (they add up to the stage's `cache_read_tokens`) and `own_cache_read_usd` (own reads priced at the cache-read rate of each event, long-prompt tier included). Each `cost.sessions[]` carries `entry_context_tokens`, the context of the first real main request after the session was registered. The baseline of a request is that entry context, lowered to `min(entry, postTokens)` after a main-thread compaction that came after it; reads above the baseline are the ticket's own. Subagent reads are all own and never count as main requests, a request before a session's registration is inherited, and a stage that two sessions worked reports the sum of their growths with `context_entry` and `context_exit` null. Stage 5 now ends at `stages.5.completed_at` when it parses (the in-run record, where it is still null, is unchanged), so work after close lands in `unassigned_usd`.
+- **Post-hoc procedure** (documented in `lib/state.md`): run `cost.sh record` from a scratch directory with a copy of the ticket's metadata and `env -u CLAUDE_CODE_SESSION_ID`, otherwise the invoking session is added to the ticket being measured.
+- **Measured on the DOER-10 transcript** (one session that entered the ticket with 279,282 tokens of earlier context): of the 70.7M cache-read tokens in the ticket's stages, 47.2M (67%) were inherited and 23.5M were the ticket's own; priced, the ticket's own cache read is 2.33 USD of the 14.29 USD the record shows. Stage 2 alone: 44.5M read, 32.7M inherited (73%), 11.9M own (1.18 USD of its 6.22 USD). Most of the orchestrator's cache-read cost in that ticket was context inherited from earlier work in the session, not work done in the ticket.
+
+### Documented limits
+
+- The entry context is the first request after `cost.sh enter`, so it includes `SKILL.md` and the first stage file already read, and any work the session did between the `/doer` start and `enter`. A fresh `/doer` run measured 73,632 tokens; a baseline above 92,000 (1.25 times that) is not accepted as fresh.
+- After a compaction the baseline falls to `min(entry, postTokens)`; it cannot tell which part of the kept summary came from the inherited context.
+- `total_usd` and `sessions[].cost_usd` still count whole sessions; comparisons between runs use the per-stage figures.
+
 ## 7.15.0
 
 ### Changed
