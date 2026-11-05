@@ -73,7 +73,8 @@ TRANSCRIPT_EVENTS='def amount: if type == "number" then . else 0 end;
             and ((.value.message.usage | [.input_tokens, .output_tokens, .cache_read_input_tokens, .cache_creation_input_tokens] | map(amount) | add) > 0))] | last) as $previous
       | {ckey: ($boundary.uuid // ("ts:" + ($boundary.timestamp | tostring) + "|" + ($boundary.compactMetadata | tojson))),
          ts: $boundary.timestamp, pre: ($boundary.compactMetadata.preTokens | amount), post: ($boundary.compactMetadata.postTokens | amount),
-         model: $previous.value.message.model, prev_ts: $previous.value.timestamp}]}'
+         model: $previous.value.message.model, prev_ts: $previous.value.timestamp,
+         prev_1h: ($previous.value.message.usage.cache_creation | if type == "object" then (.ephemeral_1h_input_tokens | amount) else 0 end)}]}'
 # jq-compat:end
 
 # jq-compat:begin record
@@ -110,9 +111,12 @@ def event_cost($table):
            flags: (if .search then ["\(.model) (web search fee)"] else [] end)}
       end
   end;
-# A compaction request has its own system prompt, so its input is a fresh cache write
-# unless the previous request of the thread was seconds ago (then a cache read); its
-# output is taken as postTokens (the real output is not recorded anywhere).
+# The cache lives as long as the tier the previous request of the thread wrote: a request
+# with 1-hour tokens keeps it warm for the 1-hour threshold and a cold input is a 1-hour
+# write; any other previous request means the 5-minute threshold and a 5-minute write.
+# The tier is inferred from that one line (a mixed write counts as 1-hour, a line with no
+# cache write counts as 5-minute). A warm input is a cache read; the output is taken as
+# postTokens (the real output is not recorded anywhere).
 def compaction_cost($table):
   if .model == null or .prev_ts == null then {usd: null, flag: "no previous request (compaction)"} else
     rate_for($table; .model) as $base
@@ -120,7 +124,9 @@ def compaction_cost($table):
         ((.ts | epoch) as $at | (.prev_ts | epoch) as $before | if $at == null or $before == null then null else $at - $before end) as $gap
         | if $gap == null then {usd: null, flag: "\(.model) (compaction time)"} else
             (if ($base.long_prompt | type) == "object" and .pre > $base.long_prompt.over_tokens then $base.long_prompt else $base end) as $r
-            | (if $gap > $table.compaction.cold_after_seconds then $r.cache_write_5m else $r.cache_read end) as $input_rate
+            | (.prev_1h > 0) as $one_hour
+            | (if $one_hour then ($table.compaction.cold_after_seconds_1h | if type == "number" then . else $table.compaction.cold_after_seconds end) else $table.compaction.cold_after_seconds end) as $cold_after
+            | (if $gap <= $cold_after then $r.cache_read elif $one_hour then $r.cache_write_1h else $r.cache_write_5m end) as $input_rate
             | {usd: ((.pre * $input_rate + .post * $r.output) / $table.per_tokens), flag: null}
           end
       end

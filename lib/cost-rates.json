@@ -3,7 +3,7 @@
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
   "unit": "USD per million tokens",
   "per_tokens": 1000000,
-  "compaction": {"cold_after_seconds": 300},
+  "compaction": {"cold_after_seconds": 300, "cold_after_seconds_1h": 3600},
   "models": {
     "claude-fable-5-1": {"input": 10, "output": 50, "cache_read": 0.25, "cache_write_5m": 12.5, "cache_write_1h": 20},
     "claude-fable-5": {"input": 10, "output": 50, "cache_read": 1, "cache_write_5m": 12.5, "cache_write_1h": 20},

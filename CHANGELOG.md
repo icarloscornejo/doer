@@ -2,6 +2,19 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.14.1
+
+### Fixed
+
+- **Compaction cost no longer overestimates long sessions.** A compaction was priced as cold after one fixed threshold (`compaction.cold_after_seconds`, 5 minutes) and always at the 5-minute cache-write rate. Claude Code writes its conversation cache with a 1-hour TTL, so a gap between 5 minutes and 1 hour is still a cache hit, and a truly cold input costs the 1-hour write rate. Now the tier of the cache is read from the previous request of the thread: if it wrote 1-hour tokens (`cache_creation.ephemeral_1h_input_tokens` above zero), the compaction is warm up to `compaction.cold_after_seconds_1h` (3600) and a cold input is priced at `cache_write_1h`; otherwise the 5-minute threshold and the 5-minute write rate apply as before. A gap equal to the threshold is warm. Both values live in `lib/cost-rates.json`; the script still holds no rate and no threshold. A rate table without the new key (or with a non-numeric one) falls back to `cold_after_seconds`, with the 1-hour write rate for a 1-hour tier.
+- Measured on session transcripts against Claude Code's own counter read inside the same `cost.sh record` run (computed vs reported): the session that motivated the ticket went from +9.9% to +4.7%; three other sessions with 6 or 7 compactions each stay inside 5% (-4.1% to -0.6% before, -4.3% to -2.1% after). Tickets with no compactions price exactly as before.
+
+### Documented limits
+
+- The tier is inferred from the last eligible assistant line before the boundary, not from the real cache state: a mixed 5-minute and 1-hour write counts as a 1-hour cache, and a previous request that wrote nothing counts as 5-minute. In all 22 compactions of the four calibration sessions the previous request wrote only 1-hour tokens.
+- The margins are small (the motivating session stays at about 4.7%, and it keeps growing). The output of the compaction is still `postTokens`; the real output is not recorded, so a session whose compactions summarize much less than `postTokens` can still read high.
+- This replaces the "roughly 9%" accuracy note of 7.13.0 for sessions with compactions: the measured error on the four calibration sessions is within 5%.
+
 ## 7.14.0
 
 ### Added
