@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.17.1
+
+### Fixed
+
+- **`bounded.sh run` reads ANSI-colored suite output correctly (DOER-14).** A suite that colored its FAIL and Results lines was not recognized by the line anchors, so a run with exit 0 and colored FAIL lines could read `ok` and escape bytes reached the summary and `.doer/bounded-fails.txt`. The helper now strips ANSI escape sequences (CSI including colon sub-parameters, OSC, charset and 2-byte escapes, and any lone ESC) from the output before parsing, redaction and printing, so colored and plain output give the same summary and redaction applies to the stripped text. If the strip step itself fails, the status is `error` and the output is withheld, never `ok`. Documented in the helper's usage text. Out of scope and unchanged: JSON-quoted or spaced keyword=value redaction, the output budget, the call sites and the stage text.
+
 ## 7.17.0
 
 ### Added

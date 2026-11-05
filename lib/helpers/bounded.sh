@@ -9,6 +9,11 @@
 #   the git toplevel is only the read boundary for .env files and the home of
 #   the temporary log and of .doer/bounded-fails.txt.
 #
+# ANSI: escape sequences (colors, cursor, OSC, charset, lone ESC) are stripped
+# from the command's output before parsing, redaction and printing, so colored
+# and plain output give the same summary and no ESC byte reaches the summary
+# or .doer/bounded-fails.txt.
+#
 # Output (header lines are built here and never redacted; everything taken from
 # the command's output is redacted as a whole line BEFORE any cut):
 #   BOUNDED RUN / status: ok|failed|timeout|error / exit: <code or none> /
@@ -122,7 +127,6 @@ export LC_ALL=C
 
 SECRETS="$WORK/secrets"
 CLEAN="$WORK/clean"
-tr -d '\000' < "$LOG" > "$CLEAN"
 
 build_secrets() {
   local name value found skipped path
@@ -232,7 +236,13 @@ RESULTS="$WORK/results"
 STATS="$WORK/stats"
 TAIL_OUT="$WORK/tail"
 : > "$SECTION"; : > "$RESULTS"
-build_secrets || REDACTION_OK=0
+# Two plain steps, not a pipe: each status is checked, so a failed strip is an
+# error and never a half-read log that reads as ok. Order: CSI (parameters
+# incl. ":"), OSC, charset and 2-byte escapes, then any lone ESC.
+tr -d '\000' < "$LOG" > "$WORK/nonul" \
+  && perl -pe 's/\e\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]//g; s/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e[\x20-\x2f]*[\x30-\x7e]//g; s/\e//g' "$WORK/nonul" > "$CLEAN" \
+  || REDACTION_OK=0
+if [ "$REDACTION_OK" = 1 ]; then build_secrets || REDACTION_OK=0; fi
 LINES_N=0; PASSED=0; FAILED=0; SHOWN=0; FULL=0; RSUM=""
 if [ "$REDACTION_OK" = 1 ]; then
   awk -v SECF="$SECRETS" -v FAILFILE="$FAILS_FILE" -v SECTFILE="$SECTION" -v RESFILE="$RESULTS" \
