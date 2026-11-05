@@ -36,7 +36,7 @@ DAILY_HIT='if type == "object" and has($id) then (.[$id] | if type == "number" a
 SNAPSHOT_HIT='if type == "object" and .sessionId == $id then (.sessionCostUsd | if type == "number" and . >= 0 then . else null end) else empty end'
 BEST_VALUE='map(select(. != null)) | if length == 0 then null else max end'
 SAMPLE_OBJECT='{id: $id, ts: $ts, usd: $usd}'
-UNKNOWN_RECORD='{status: "unknown", total_usd: null, reason: $reason, scope: $scope, input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_creation_tokens: null, sessions: [], by_stage: null, by_stage_reason: null, recorded_at: $ts}'
+UNKNOWN_RECORD='{status: "unknown", total_usd: null, reason: $reason, scope: $scope, input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_creation_tokens: null, sessions: [], by_stage: null, by_stage_reason: null, unassigned_usd: null, recorded_at: $ts}'
 ENTER_STATE='if (.cost_sessions | type) != "array" then "untracked" elif any(.cost_sessions[]?; type == "object" and .id == $id) then "registered" else "missing" end'
 SESSION_IDS='try ([.cost_sessions[]? | select(type == "object") | .id | select(type == "string")] | .[]) catch empty'
 ONE_OBJECT='length == 1 and (.[0] | type == "object")'
@@ -126,6 +126,11 @@ def compaction_cost($table):
       end
   end;
 
+# A stage window is (lo, hi]; an element with no parseable time is in none.
+def in_window($window): .t != null and .t > $window.lo and .t <= $window.hi;
+def outside_all($windows): map(select(. as $item | ($windows | any(.[]; . as $window | $item | in_window($window))) | not));
+def usd_sum: [.[] | .usd | select(. != null)] | add // 0;
+
 . as $doc
 | ($doc.skill_version // "" | tostring | split(".") | map(tonumber? // 0)) as $version
 | ($doc | cost_merge($sample)) as $merged
@@ -161,7 +166,8 @@ def compaction_cost($table):
 | ((($priced | map(.flags[])) + ($compactions | map(.flag // empty))) | unique) as $unpriced
 | ([$compactions[] | .usd | select(. != null)] | add // 0) as $compaction_usd
 | ($priced | map(select(.i + .o + .cr + .c5 + .c1 > 0))) as $real
-| ($events | map(. + {t: (.ts | epoch)})) as $events_all
+| ($priced | map(. + {t: (.ts | epoch)})) as $priced_at
+| ($compactions | map(. + {t: (.ts | epoch)})) as $compactions_at
 | ($now | epoch) as $now_epoch
 | ($sessions | map(.ts | epoch) | map(select(. != null)) | min) as $start
 | (($doc.stages) as $stages
@@ -175,11 +181,19 @@ def compaction_cost($table):
        | ([$start] + ($present | map(.t))) as $chain
        | if ($chain | map(select(. == null)) | length) > 0 then {value: null, reason: "timestamps are not parseable"}
          elif $chain != ($chain | sort) then {value: null, reason: "timestamps are out of order"}
-         else {value: (reduce $present[] as $bound ({lo: $start, out: {}};
-                 . as $state
-                 | .out[$bound.key] = ($events_all | map(select(.t != null and .t > $state.lo and .t <= $bound.t))
-                     | {input_tokens: total(.i), output_tokens: total(.o), cache_read_tokens: total(.cr), cache_creation_tokens: (total(.c5) + total(.c1))})
-                 | .lo = $bound.t) | .out), reason: null}
+         else
+           # Tokens always show; the dollar fields follow total_usd and are null whenever it is.
+           ([range(0; $present | length) as $position | {key: $present[$position].key, lo: $chain[$position], hi: $chain[$position + 1]}]) as $windows
+           | {value: ($windows | map(. as $window
+                 | ($priced_at | map(select(in_window($window)))) as $in_stage
+                 | ($compactions_at | map(select(in_window($window)))) as $compactions_in_stage
+                 | {key: $window.key,
+                    value: {input_tokens: ($in_stage | total(.i)), output_tokens: ($in_stage | total(.o)), cache_read_tokens: ($in_stage | total(.cr)), cache_creation_tokens: ($in_stage | total(.c5) + total(.c1)),
+                            usd: (if ($reasons | length) > 0 then null else ($in_stage | usd_sum) end),
+                            compaction_usd: (if ($reasons | length) > 0 then null else ($compactions_in_stage | usd_sum) end),
+                            unpriced_models: (([$in_stage[] | .flags[]] + [$compactions_in_stage[] | .flag // empty]) | unique)}}) | from_entries),
+              reason: null,
+              unassigned: (if ($reasons | length) > 0 then null else (($priced_at | outside_all($windows) | usd_sum) + ($compactions_at | outside_all($windows) | usd_sum)) end)}
          end
      end) as $stage_result
 | {
@@ -200,6 +214,7 @@ def compaction_cost($table):
          output_tokens: (if $found then ($mine | total(.o)) else null end)})),
     by_stage: $stage_result.value,
     by_stage_reason: $stage_result.reason,
+    unassigned_usd: $stage_result.unassigned,
     by_model: ($real | group_by(.model // "unknown model")
       | map({key: (.[0].model // "unknown model"),
              value: {input_tokens: total(.i), output_tokens: total(.o), cache_read_tokens: total(.cr), cache_creation_tokens: (total(.c5) + total(.c1)),

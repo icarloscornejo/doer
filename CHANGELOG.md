@@ -2,6 +2,19 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.14.0
+
+### Added
+
+- **USD per stage in the ticket cost record.** `cost.by_stage[N]` now carries `usd` next to its token counts: the sum of that stage's events priced with the same `event_cost` and the same rate table as `total_usd`, so the long-prompt tier and fast mode apply per event exactly as in the total. Compactions are attributed to the stage whose window holds their timestamp, in a separate `compaction_usd`, so `usd` stays comparable with the tokens. Each stage also lists its own `unpriced_models` (same wording as the top-level list); a stage with an unpriced model still counts its tokens and prices the rest.
+- **`unassigned_usd`.** Events and compactions that fall in no stage window (before the earliest session start, with an unparseable timestamp, or after the last closed stage when there is no Stage 5) are reported in a top-level `unassigned_usd` instead of being dropped. The identity is: all stages' `usd` plus `compaction_usd` plus `unassigned_usd` equals `total_usd`.
+- **No new failure modes.** Where `by_stage` is `null` it stays `null` with the same `by_stage_reason`, and `unassigned_usd` is `null`. When `total_usd` is `null` but `by_stage` is an object (a registered session without a transcript, an unreadable rate table), the tokens still show and the three new dollar fields are `null`. `total_usd`, `by_model`, `sessions` and `compactions` are computed as before.
+
+### Documented limits
+
+- Events and compactions outside every window count in the top-level `unpriced_models` but in no stage list, so the stage lists combined can be shorter than the top-level one.
+- Stage windows and ticket membership are unchanged: sessions are counted whole, and a stage window runs from the earliest registered session start to the stage's `completed_at` (Stage 5 closes at the recording time).
+
 ## 7.13.4
 
 ### Fixed
