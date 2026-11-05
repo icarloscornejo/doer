@@ -442,6 +442,10 @@ done
 # shellcheck source=lib/cost-tests.sh
 . "${REPO_ROOT}/tests/lib/cost-tests.sh"
 
+# --- DOER-13 bounded suite output: bounded.sh run (own file, same sourcing model) ---
+# shellcheck source=lib/bounded-tests.sh
+. "${REPO_ROOT}/tests/lib/bounded-tests.sh"
+
 # --- lessons.sh prune ---
 LESSONS_TEST_DIR="$TMPDIR_TEST/lessons"
 mkdir -p "$LESSONS_TEST_DIR"

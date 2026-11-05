@@ -57,6 +57,7 @@ session.sh:ensure-exclude
 stage-checks.sh:plan pre-review
 metadata.sh:check-required version-check status list
 cost.sh:enter record unknown sample summary
+bounded.sh:run
 jira.sh:detect-token-env extract-keys attachments
 lessons.sh:prune
 har.py:convert list head digest scan splice

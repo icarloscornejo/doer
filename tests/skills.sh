@@ -325,6 +325,64 @@ cost_has "bugfix Stage 6 close records cost with cost.sh record" "$BUGFIX_STAGE6
 cost_has "bugfix Stage 6 close stores .cost = \$cost[0]" "$BUGFIX_STAGE6" "$COST_SET"
 cost_has "bugfix Stage 6 close falls back to cost.sh unknown" "$BUGFIX_STAGE6" "$COST_UNKNOWN"
 
+# DOER-13: bounded suite output. Prose contract between the stage files and bounded.sh.
+bp_has() { # bp_has <desc> <text> <fixed-string>
+  if printf '%s\n' "$2" | grep -qF -- "$3"; then pass "bounded prose: $1"; else fail "bounded prose: $1"; fi
+}
+bp_lacks_re() { # bp_lacks_re <desc> <text> <extended-regex>
+  if printf '%s\n' "$2" | grep -qE -- "$3"; then fail "bounded prose: $1"; else pass "bounded prose: $1"; fi
+}
+BP_PLAN_FILE="$REPO_ROOT/skills/doer/stages/02-plan.md"
+BP_AC_FILE="$REPO_ROOT/skills/doer/stages/01-ac.md"
+BP_BUILD_FILE="$REPO_ROOT/skills/doer/stages/03-build.md"
+BP_WRAPUP_FILE="$REPO_ROOT/skills/doer/stages/05-wrapup.md"
+BP_BUGFIX_FILE="$REPO_ROOT/skills/bugfix/SKILL.md"
+BP_PLAN_SECTION="$(md_section "$BP_PLAN_FILE" '## Mechanical steps through scripts')"
+BP_AC_STEP4="$(md_section "$BP_AC_FILE" '## Step 4.')"
+BP_BUILD_CONV="$(md_section "$BP_BUILD_FILE" '## On convergence')"
+BP_BUGFIX_SUITE="$(grep '^4\. Run the full relevant suite' "$BP_BUGFIX_FILE")"
+BP_BUGFIX_WRITE="$(grep '^1\. Write every test' "$BP_BUGFIX_FILE")"
+
+bp_has "02-plan.md has the Mechanical steps section" "$BP_PLAN_SECTION" '## Mechanical steps through scripts'
+bp_has "02-plan section states the 8,000 character threshold" "$BP_PLAN_SECTION" '8,000 characters'
+bp_has "02-plan section states the 3 or more chained calls rule" "$BP_PLAN_SECTION" '3 or more'
+bp_has "02-plan section holds the inventory table header" "$BP_PLAN_SECTION" '| Step | Raw output | (a) | (b) | Decision |'
+bp_has "02-plan section states the 55 line cap" "$BP_PLAN_SECTION" '55 lines'
+bp_has "02-plan section states the 16,000 character FAIL section" "$BP_PLAN_SECTION" '16,000'
+bp_has "02-plan section states the 27,000 character total" "$BP_PLAN_SECTION" '27,000'
+bp_has "02-plan section names the fails file" "$BP_PLAN_SECTION" '.doer/bounded-fails.txt'
+bp_has "02-plan section is honest about the redaction limit" "$BP_PLAN_SECTION" 'not guaranteed'
+bp_has "02-plan section names the redaction marker" "$BP_PLAN_SECTION" '[REDACTED]'
+bp_lacks_re "02-plan section carries no ticket id" "$BP_PLAN_SECTION" 'DOER-'
+bp_lacks_re "02-plan section carries no requirement label" "$BP_PLAN_SECTION" '\bAC-[0-9]+\b'
+for bp_file in "$BP_PLAN_FILE" "$BP_AC_FILE" "$BP_BUGFIX_FILE"; do
+  bp_lacks_re "$(basename "$(dirname "$bp_file")")/$(basename "$bp_file") never names the pre-review script call literally" "$(cat "$bp_file")" 'stage-checks\.sh"? pre-review'
+done
+
+for bp_pair in "03-build On convergence:$BP_BUILD_CONV" "01-ac Step 4:$BP_AC_STEP4" "bugfix full suite step:$BP_BUGFIX_SUITE"; do
+  bp_name="${bp_pair%%:*}"
+  bp_text="${bp_pair#*:}"
+  bp_has "$bp_name calls bounded.sh run" "$bp_text" 'bounded.sh run'
+  bp_has "$bp_name uses the 540 second timeout" "$bp_text" '--timeout 540'
+  bp_has "$bp_name uses the sh -c single-quoted form" "$bp_text" "sh -c '"
+  bp_has "$bp_name states the failed status" "$bp_text" '`failed`'
+  bp_has "$bp_name states the timeout status" "$bp_text" '`timeout`'
+  bp_has "$bp_name states the error status" "$bp_text" '`error`'
+  bp_lacks_re "$bp_name carries no requirement label" "$bp_text" '\bAC-[0-9]+\b'
+done
+
+bp_lacks_re "bugfix run-the-tests-first step does not call bounded.sh" "$BP_BUGFIX_WRITE" 'bounded\.sh'
+bp_lacks_re "05-wrapup.md does not mention bounded.sh" "$(cat "$BP_WRAPUP_FILE")" 'bounded\.sh'
+bp_has "03-build keeps the raw test command for last_green_test_command" "$(cat "$BP_BUILD_FILE")" \
+  '`last_green_test_command` is the raw `metadata.test_command`, never the `bounded.sh` wrapper'
+BP_ASK_LINE="$(printf '%s\n' "$BP_AC_STEP4" | grep -niE -m1 'ask once' | cut -d: -f1)"
+BP_CALL_LINE="$(printf '%s\n' "$BP_AC_STEP4" | grep -nF -m1 'bounded.sh run' | cut -d: -f1)"
+if [ -n "$BP_ASK_LINE" ] && [ -n "$BP_CALL_LINE" ] && [ "$BP_ASK_LINE" -le "$BP_CALL_LINE" ]; then
+  pass "bounded prose: 01-ac Step 4 applies the ask-once persist rule before the call"
+else
+  fail "bounded prose: 01-ac Step 4 applies the ask-once persist rule before the call"
+fi
+
 # DOER-10: only the two PR-description writers run on Haiku (read budget 0, no code written or judged);
 # the clause keeps a prompt that could pass the long-prompt threshold on the session model.
 HAIKU_MODEL='Agent with `model: "haiku"` on every dispatch of this writer, rewrite rounds included'
