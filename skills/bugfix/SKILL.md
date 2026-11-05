@@ -11,7 +11,7 @@ description: >-
   a forced response or flag to reproduce) and /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.16.1
+version: 7.17.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -164,7 +164,7 @@ Tests first, TDD order, driven by `plan.tests` from Stage 4:
    git add -A && git commit --no-verify -m "<KEY>: <subject>"
    ```
 3. Implement `plan.steps`. Follow repo conventions and `lib/debugging.md` (no fix without root cause).
-4. Run the full relevant suite: everything green, `bug` and `regression` tests together. Green regressions after the fix are the evidence nothing sibling broke; a regression going red means the fix broke that sibling, fix it before advancing, never weaken the test to make it pass.
+4. Run the full relevant suite: everything green, `bug` and `regression` tests together. Run it through `${CLAUDE_PLUGIN_ROOT}/lib/helpers/bounded.sh run --timeout 540 -- sh -c '<relevant-suite command you pick, not persisted>'` (write each `'` inside it as `'\''`) with the Bash tool timeout set to 600000 ms; it prints at most 55 lines plus a FAIL section of at most 16,000 characters, total at most 27,000 characters, with the full list in `.doer/bounded-fails.txt` (Read it with offset and limit) when the `fails:` line reports a cut; `ok` continues, `failed` means do not advance and fix first per the rule below, `timeout`, `error` or helper exit 2 are reported and the stage stops. Green regressions after the fix are the evidence nothing sibling broke; a regression going red means the fix broke that sibling, fix it before advancing, never weaken the test to make it pass.
 5. Commit the fix, separate from the tests commit:
    ```bash
    git add -A && git commit --no-verify -m "<KEY>: <subject>"

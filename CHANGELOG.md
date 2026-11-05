@@ -2,6 +2,18 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.17.0
+
+### Added
+
+- **`bounded.sh run [--timeout SECONDS] -- <command...>` runs the repo suite and prints a bounded, redacted summary (DOER-13).** The orchestrator's three direct suite runs (Stage 1 prior work, the Stage 3 exit gate, the bugfix full relevant suite) now go through it as `bounded.sh run --timeout 540 -- sh -c '<command>'` instead of reading the raw output. The output has a fixed shape: `status:` (`ok`, `failed`, `timeout`, `error`), exit code, line count, pass and fail counts, a `fails:` line, the last `Results:` lines with their `results total`, every FAIL line with up to 5 non-PASS/FAIL lines after it, and a raw tail. Budget: at most 55 lines plus a FAIL section of 16,000 characters, 27,000 characters in total; when the FAIL section does not fit, the `fails:` line says so and the full redacted list is in `.doer/bounded-fails.txt`. `ok` needs exit 0 and zero FAIL lines; a failure in a shape the helper does not recognize reads `fails: unparsed` with the exit code and a 40-line tail, never green. Exit codes: 0 only for `ok`, 1 otherwise, 2 when it cannot start. The suite runs in its own process group, killed on timeout, INT and TERM but not after a clean run.
+- **`02-plan.md` carries the qualification rule and the inventory** for turning a mechanical step into a script: one invocation above 8,000 characters, or 3 or more chained tool calls a script call replaces, plus Bash available to the orchestrator and a cap below the raw output. Result of the inventory: only the three direct suite runs convert; the bugfix check that bug tests fail and regression tests pass, code searches (plan mode forbids Bash) and file reads stay plain tool calls. The Stage 3 `last_green_test_command` stays the raw `metadata.test_command`, never the wrapper.
+
+### Documented limits (approved by the ticket owner)
+
+- Redaction covers values and `KEY=value` texts of `.env*` files anywhere in the worktree (except under `.git`) and environment values of secret-named variables (6 or more characters), applied to the whole line before any cut. Secrets under other names or in other files cannot be detected, and a non-secret value that collides with test text shows as `[REDACTED]`.
+- The helper reads and writes only inside the worktree, but the configured test command is the project's own and cannot be sandboxed. SIGKILL of the helper leaves the suite running. The 27,000 budget assumes the Bash tool cuts very large output above it, and the 540 s default assumes the 600000 ms Bash maximum.
+
 ## 7.16.1
 
 ### Added

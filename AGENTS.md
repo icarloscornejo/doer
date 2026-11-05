@@ -35,7 +35,7 @@ doer/
 |  |- debugging.md                     # no fix without root cause
 |  |- helpers/                         # deterministic scripts every skill above calls into, never reimplements
 |     |- preferences.sh, jira.sh, metadata.sh, entrypoints.sh, session.sh
-|     |- vocab-guard.sh, git-checks.sh, git-ops.sh, workspace-guard.sh, stage-checks.sh, lessons.sh
+|     |- vocab-guard.sh, git-checks.sh, git-ops.sh, workspace-guard.sh, stage-checks.sh, lessons.sh, bounded.sh
 |     |- har.py, ac-graph.py            # HAR/Charles helpers; Stage 1 AC-graph (validate/merge/split/render-table)
 |- hooks/                              # PreToolUse guards (see hooks/hooks.json)
 |  |- git-commit-no-verify-guard.sh
