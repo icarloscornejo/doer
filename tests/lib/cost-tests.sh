@@ -1121,8 +1121,8 @@ new_doc O-2 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o2\",\"t
   tx_line 2026-01-01T00:30:00Z l3 r 5 1 70 0 m-long
 } | tx_put proj/o2.jsonl
 REC="$(cost_run record O-2)"
-assert_eq "cost split: own_cache_read_usd uses the long-prompt cache-read rate for a long prompt and the base rate otherwise (100 x 0.5 + 20 x 0.1 per million)" "true" \
-  "$(usd_close "$(rec_field '.by_stage["1"].own_cache_read_usd')" 0.000052)"
+assert_eq "cost split: own_cache_read_usd uses the long-prompt cache-read rate for a long prompt and the base rate otherwise (90 x 0.5 + 10 x 0.1 per million, the entry context being 60)" "true" \
+  "$(usd_close "$(rec_field '.by_stage["1"].own_cache_read_usd')" 0.000046)"
 
 # Compaction: the baseline after a main-thread compaction after E is min(E, postTokens).
 cost_case

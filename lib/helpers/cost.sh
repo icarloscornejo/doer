@@ -60,6 +60,7 @@ TRANSCRIPT_EVENTS='def amount: if type == "number" then . else 0 end;
       | ($usage.cache_creation | if type == "object" then (.ephemeral_1h_input_tokens | amount) else 0 end) as $write_1h
       | ($usage.cache_creation_input_tokens | amount) as $write_total
       | {mid: $line.message.id, rid: $line.requestId, ts: $line.timestamp, model: $line.message.model,
+         side: ($under_subagents or $line.isSidechain == true),
          fast: ($usage.speed == "fast"),
          search: (($usage.server_tool_use | if type == "object" then (.web_search_requests | amount) else 0 end) > 0),
          i: ($usage.input_tokens | amount), o: ($usage.output_tokens | amount), cr: ($usage.cache_read_input_tokens | amount),
@@ -72,6 +73,7 @@ TRANSCRIPT_EVENTS='def amount: if type == "number" then . else 0 end;
             and (.value.message.model | type == "string" and . != "<synthetic>")
             and ((.value.message.usage | [.input_tokens, .output_tokens, .cache_read_input_tokens, .cache_creation_input_tokens] | map(amount) | add) > 0))] | last) as $previous
       | {ckey: ($boundary.uuid // ("ts:" + ($boundary.timestamp | tostring) + "|" + ($boundary.compactMetadata | tojson))),
+         side: ($under_subagents or $boundary.isSidechain == true),
          ts: $boundary.timestamp, pre: ($boundary.compactMetadata.preTokens | amount), post: ($boundary.compactMetadata.postTokens | amount),
          model: $previous.value.message.model, prev_ts: $previous.value.timestamp,
          prev_1h: ($previous.value.message.usage.cache_creation | if type == "object" then (.ephemeral_1h_input_tokens | amount) else 0 end)}]}'
@@ -99,16 +101,17 @@ def rate_for($table; $model):
   end;
 # Price one event; usd null means "tokens counted, not priced", with the reason in flags.
 def event_cost($table):
-  if (.i + .o + .cr + .c5 + .c1) == 0 then {usd: 0, flags: []} else
+  if (.i + .o + .cr + .c5 + .c1) == 0 then {usd: 0, flags: [], cr_rate: null} else
     rate_for($table; .model) as $base
-    | if $base == null then {usd: null, flags: [(.model | if type == "string" then . else "unknown model" end)]}
-      elif .fast and (($base.fast_multiplier | type) != "number") then {usd: null, flags: ["\(.model) (fast mode)"]}
+    | if $base == null then {usd: null, flags: [(.model | if type == "string" then . else "unknown model" end)], cr_rate: null}
+      elif .fast and (($base.fast_multiplier | type) != "number") then {usd: null, flags: ["\(.model) (fast mode)"], cr_rate: null}
       else
         (.i + .cr + .c5 + .c1) as $prompt
         | (if ($base.long_prompt | type) == "object" and $prompt > $base.long_prompt.over_tokens then $base.long_prompt else $base end) as $r
         | (if .fast then $base.fast_multiplier else 1 end) as $multiplier
         | {usd: ((.i * $r.input + .o * $r.output + .cr * $r.cache_read + .c5 * $r.cache_write_5m + .c1 * $r.cache_write_1h) * $multiplier / $table.per_tokens),
-           flags: (if .search then ["\(.model) (web search fee)"] else [] end)}
+           flags: (if .search then ["\(.model) (web search fee)"] else [] end),
+           cr_rate: ($r.cache_read * $multiplier / $table.per_tokens)}
       end
   end;
 # The cache lives as long as the tier the previous request of the thread wrote: a request
@@ -136,6 +139,8 @@ def compaction_cost($table):
 def in_window($window): .t != null and .t > $window.lo and .t <= $window.hi;
 def outside_all($windows): map(select(. as $item | ($windows | any(.[]; . as $window | $item | in_window($window))) | not));
 def usd_sum: [.[] | .usd | select(. != null)] | add // 0;
+def real_main: (.side | not) and (.i + .o + .cr + .c5 + .c1) > 0 and .model != "<synthetic>";
+def context: .i + .cr + .c5 + .c1;
 
 . as $doc
 | ($doc.skill_version // "" | tostring | split(".") | map(tonumber? // 0)) as $version
@@ -163,7 +168,7 @@ def usd_sum: [.[] | .usd | select(. != null)] | add // 0;
     | group_by(if .mid == null then ["position", .pool_pos] else ["message", .mid] end)
     | map(sort_by([-(.o), .pool_pos]) | .[0])
     | sort_by(.pool_pos)) as $events
-| ($events | map(. + (if $table_ok then event_cost($rates) else {usd: null, flags: []} end))) as $priced
+| ($events | map(. + (if $table_ok then event_cost($rates) else {usd: null, flags: [], cr_rate: null} end))) as $priced
 | ([$files[].compactions[]] | to_entries | map(.value + {pool_pos: .key})
     | group_by(.ckey)
     | map(sort_by([(if .model == null then 1 else 0 end), .pool_pos]) | .[0])
@@ -172,8 +177,29 @@ def usd_sum: [.[] | .usd | select(. != null)] | add // 0;
 | ((($priced | map(.flags[])) + ($compactions | map(.flag // empty))) | unique) as $unpriced
 | ([$compactions[] | .usd | select(. != null)] | add // 0) as $compaction_usd
 | ($priced | map(select(.i + .o + .cr + .c5 + .c1 > 0))) as $real
-| ($priced | map(. + {t: (.ts | epoch)})) as $priced_at
+| ($priced | map(. + {t: (.ts | epoch)})) as $timed
 | ($compactions | map(. + {t: (.ts | epoch)})) as $compactions_at
+# Entry context E of a session: its first real main request after the session was registered.
+# A null registration time (empty or unparseable) leaves E null, which means "no known baseline".
+| ($sessions | map(. as $session | (.ts | epoch) as $reg
+    | ($timed | map(select(.sid == $session.id and real_main and $reg != null and .t != null and .t > $reg)) | sort_by([.t, .pool_pos]) | .[0]) as $first
+    | {id: $session.id, reg: $reg, entry: (if $first == null then null else ($first | context) end), entry_t: $first.t})) as $infos
+# Split every event into inherited and own cache read. Sidechain reads start from an empty
+# context so they are all own; main requests at or before registration are all inherited.
+| ($timed | map(. as $e
+    | (($infos | map(select(.id == $e.sid)) | .[0]) // {reg: null, entry: null, entry_t: null}) as $info
+    | (if $e.side then {own: $e.cr, counted: false}
+       elif $info.reg == null then {own: $e.cr, counted: ($e | real_main)}
+       elif $e.t == null or $e.t <= $info.reg then {own: 0, counted: false}
+       elif ($e | real_main | not) or $info.entry == null then {own: $e.cr, counted: false}
+       else
+         # After a main-thread compaction following E the inherited part cannot exceed what the compaction kept.
+         ([$compactions_at[] | select(.sid == $e.sid and (.side | not) and .t != null and .t > $info.entry_t and .t <= $e.t)] | sort_by([.t, .pool_pos]) | last) as $boundary
+         | (if $boundary == null then $info.entry else ([$info.entry, $boundary.post] | min) end) as $baseline
+         | {own: ([0, $e.cr - $baseline] | max), counted: true}
+       end) as $split
+    | $e + {own: $split.own, counted: $split.counted, ctx: ($e | context),
+            own_usd: (if ($e.cr_rate | type) == "number" then $split.own * $e.cr_rate else null end)})) as $priced_at
 | ($now | epoch) as $now_epoch
 | ($sessions | map(.ts | epoch) | map(select(. != null)) | min) as $start
 | (($doc.stages) as $stages
@@ -183,7 +209,7 @@ def usd_sum: [.[] | .usd | select(. != null)] | add // 0;
      elif ($with_transcript | length) == 0 then {value: null, reason: "no transcript found"}
      else
        ($stages | to_entries | map(select(.key | test("^[0-9]+$"))) | sort_by(.key | tonumber)) as $entries
-       | ($entries | map({key: .key, has: (.key == "5" or .value.completed_at != null), t: (if .key == "5" then $now_epoch else (.value.completed_at | epoch) end)}) | map(select(.has))) as $present
+       | ($entries | map({key: .key, has: (.key == "5" or .value.completed_at != null), t: (if .key == "5" then (.value.completed_at | epoch) // $now_epoch else (.value.completed_at | epoch) end)}) | map(select(.has))) as $present
        | ([$start] + ($present | map(.t))) as $chain
        | if ($chain | map(select(. == null)) | length) > 0 then {value: null, reason: "timestamps are not parseable"}
          elif $chain != ($chain | sort) then {value: null, reason: "timestamps are out of order"}
@@ -193,8 +219,16 @@ def usd_sum: [.[] | .usd | select(. != null)] | add // 0;
            | {value: ($windows | map(. as $window
                  | ($priced_at | map(select(in_window($window)))) as $in_stage
                  | ($compactions_at | map(select(in_window($window)))) as $compactions_in_stage
+                 | ($in_stage | map(select(.counted)) | group_by(.sid) | map(sort_by([.t, .pool_pos]) | {first: .[0].ctx, last: .[-1].ctx})) as $per_session
                  | {key: $window.key,
-                    value: {input_tokens: ($in_stage | total(.i)), output_tokens: ($in_stage | total(.o)), cache_read_tokens: ($in_stage | total(.cr)), cache_creation_tokens: ($in_stage | total(.c5) + total(.c1)),
+                    value: {requests: ($in_stage | map(select(.counted)) | length),
+                            context_entry: (if ($per_session | length) == 1 then $per_session[0].first else null end),
+                            context_exit: (if ($per_session | length) == 1 then $per_session[0].last else null end),
+                            growth_tokens: (if ($per_session | length) == 0 then null else ($per_session | total(.last - .first)) end),
+                            inherited_cache_read_tokens: ($in_stage | total(.cr - .own)),
+                            own_cache_read_tokens: ($in_stage | total(.own)),
+                            own_cache_read_usd: (if ($reasons | length) > 0 then null else ([$in_stage[] | .own_usd | select(. != null)] | add // 0) end),
+                            input_tokens: ($in_stage | total(.i)), output_tokens: ($in_stage | total(.o)), cache_read_tokens: ($in_stage | total(.cr)), cache_creation_tokens: ($in_stage | total(.c5) + total(.c1)),
                             usd: (if ($reasons | length) > 0 then null else ($in_stage | usd_sum) end),
                             compaction_usd: (if ($reasons | length) > 0 then null else ($compactions_in_stage | usd_sum) end),
                             unpriced_models: (([$in_stage[] | .flags[]] + [$compactions_in_stage[] | .flag // empty]) | unique)}}) | from_entries),
@@ -215,6 +249,7 @@ def usd_sum: [.[] | .usd | select(. != null)] | add // 0;
       | (($by_sid[$session.id] // {found: false}).found == true) as $found
       | ($priced | map(select(.sid == $session.id))) as $mine
       | {id: $session.id,
+         entry_context_tokens: (($infos | map(select(.id == $session.id)) | .[0].entry) // null),
          cost_usd: (if $found and $table_ok then (([$mine[] | .usd | select(. != null)] | add // 0) + ([$compactions[] | select(.sid == $session.id) | .usd | select(. != null)] | add // 0)) else null end),
          input_tokens: (if $found then ($mine | total(.i)) else null end),
          output_tokens: (if $found then ($mine | total(.o)) else null end)})),
@@ -337,7 +372,9 @@ record_inner() {
     for file in "$PROJECTS_DIR"/*/"$id".jsonl "$PROJECTS_DIR"/*/"$id"/subagents/*.jsonl; do
       [ -f "$file" ] || continue
       found=1
-      jq -cRs "$TRANSCRIPT_EVENTS" "$file" >> "$WORK/files.jsonl" 2>/dev/null || true
+      # Subagent files start from an empty context, so their lines are sidechain even without the flag.
+      case "$file" in */subagents/*) under_subagents=true ;; *) under_subagents=false ;; esac
+      jq -cRs --argjson under_subagents "$under_subagents" "$TRANSCRIPT_EVENTS" "$file" >> "$WORK/files.jsonl" 2>/dev/null || true
     done
     if [ "$found" -eq 1 ]; then
       jq -cs --arg sid "$id" "$TRANSCRIPT_SESSION" "$WORK/files.jsonl"
