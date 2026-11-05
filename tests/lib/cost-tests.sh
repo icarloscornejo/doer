@@ -1288,6 +1288,62 @@ assert_eq "cost post-hoc: the real ticket file is untouched by the procedure" "$
 assert_eq "cost post-hoc: sessions[].entry_context_tokens equals the known entry context (100 + 1000 + 900)" "2000" \
   "$(printf '%s' "$PH_PROCEDURE" | jq -c '.sessions[0].entry_context_tokens' 2>/dev/null)"
 
+# --- summary: a short text of the cost stored in the ticket metadata ---
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+SUMMARY_STAGES='{"1":{"usd":2.5,"inherited_cache_read_tokens":1240000,"own_cache_read_tokens":300000,"own_cache_read_usd":0.07},"2":{"usd":2.326,"inherited_cache_read_tokens":0,"own_cache_read_tokens":12450000,"own_cache_read_usd":3.05}}'
+new_doc S-1 "{\"cost\":{\"status\":\"known\",\"total_usd\":17.62,\"by_stage\":$SUMMARY_STAGES}}"
+assert_eq "summary: a known record prints status, total and one line per stage" \
+  "status: known|total: \$17.62|stage 1: \$2.50, inherited 1.2M, own 0.3M cache read, own cache read \$0.07|stage 2: \$2.33, inherited 0.0M, own 12.5M cache read, own cache read \$3.05" \
+  "$(cost_run summary S-1 | paste -sd '|' -)"
+cost_run summary S-1 > /dev/null; assert_eq "summary: a known record exits 0" "0" "$?"
+
+new_doc S-2 '{"title":"no cost here"}'
+assert_eq "summary: a ticket without cost prints one reason line" "cost: ticket has no cost record" "$(cost_run summary S-2)"
+new_doc S-3 '{"cost":{"status":"unknown","total_usd":null,"reason":"no tracking","by_stage":null}}'
+assert_eq "summary: an unknown record prints one line with its reason" "cost: no tracking" "$(cost_run summary S-3)"
+new_doc S-4 '{"cost":{"status":"unknown","reason":"first line\nsecond line\r\nthird"}}'
+assert_eq "summary: a multiline reason is flattened to one line" "1" "$(cost_run summary S-4 | wc -l | tr -d ' ')"
+assert_eq "summary: the flattened reason keeps its words" "cost: first line second line third" "$(cost_run summary S-4 | tr -s ' ')"
+new_doc S-5 '{"cost":{"status":"unknown"}}'
+assert_eq "summary: an unknown record without a reason still prints one line" "cost: cost record is unknown" "$(cost_run summary S-5)"
+assert_eq "summary: a missing ticket file prints one line" "cost: ticket file not found: .doer/tickets/S-NONE/metadata.json" "$(cost_run summary S-NONE)"
+assert_eq "summary: no ticket id prints one line" "cost: no ticket id given" "$(cost_run summary)"
+for summary_exit_id in S-2 S-3 S-NONE; do
+  cost_run summary "$summary_exit_id" > /dev/null; assert_eq "summary: $summary_exit_id exits 0" "0" "$?"
+done
+cost_run summary > /dev/null; assert_eq "summary: no id exits 0" "0" "$?"
+
+new_doc S-6 '{"cost":{"status":"known","total_usd":3.5,"by_stage":null,"by_stage_reason":"ticket has no stages object"}}'
+assert_eq "summary: by_stage null prints status and total without stage lines" "status: known|total: \$3.50" "$(cost_run summary S-6 | paste -sd '|' -)"
+cost_run summary S-6 > /dev/null; assert_eq "summary: by_stage null exits 0" "0" "$?"
+new_doc S-7 "{\"cost\":{\"status\":\"partial\",\"total_usd\":1,\"by_stage\":{\"5\":{\"usd\":1,\"inherited_cache_read_tokens\":0,\"own_cache_read_tokens\":0,\"own_cache_read_usd\":0}}}}"
+assert_eq "summary: a partial record prints its status and its stages" "status: partial|total: \$1.00|stage 5: \$1.00, inherited 0.0M, own 0.0M cache read, own cache read \$0.00" "$(cost_run summary S-7 | paste -sd '|' -)"
+
+new_doc S-8 '{"cost":{"status":"known","total_usd":null,"by_stage":{"3":{"usd":null}}}}'
+assert_eq "summary: missing numbers print n/a and do not fail" "status: known|total: n/a|stage 3: n/a, inherited n/a, own n/a cache read, own cache read n/a" "$(cost_run summary S-8 | paste -sd '|' -)"
+new_doc S-9 '{"cost":{"status":"known","total_usd":1,"by_stage":{"10":{"usd":1},"2":{"usd":1}}}}'
+assert_eq "summary: stages come in numeric order" "stage 2|stage 10" "$(cost_run summary S-9 | grep '^stage' | cut -d: -f1 | paste -sd '|' -)"
+
+mkdir -p .doer/tickets/S-10 .doer/tickets/S-11 .doer/tickets/S-12
+printf '{not json' > .doer/tickets/S-10/metadata.json
+printf '{"cost":{"status":"known","total_usd":1}}\ngarbage' > .doer/tickets/S-11/metadata.json
+printf '{"cost":{"status":"known","total_usd":1}}\n{"cost":{"status":"known","total_usd":2}}' > .doer/tickets/S-12/metadata.json
+assert_eq "summary: invalid JSON prints one fallback line" "cost: could not read the cost record" "$(cost_run summary S-10)"
+assert_eq "summary: valid JSON followed by garbage prints only the fallback line" "cost: could not read the cost record" "$(cost_run summary S-11)"
+assert_eq "summary: two JSON documents print one line" "cost: ticket file is not a single JSON document" "$(cost_run summary S-12)"
+for summary_bad_id in S-10 S-11 S-12; do
+  cost_run summary "$summary_bad_id" > /dev/null; assert_eq "summary: $summary_bad_id exits 0" "0" "$?"
+done
+
+printf '{"cost":{"status":"known","total_usd":9.99,"by_stage":null}}' > .doer/tickets/S-2/bugfix.json
+assert_eq "summary: --file reads the named file of the ticket" "status: known|total: \$9.99" "$(cost_run summary S-2 --file bugfix.json | paste -sd '|' -)"
+
+assert_eq "summary: lib/state.md documents cost.sh summary" "yes" \
+  "$(grep -qF 'cost.sh summary' "${REPO_ROOT}/lib/state.md" && echo yes || echo no)"
+assert_eq "summary: the 7.16.1 changelog entry mentions summary" "yes" \
+  "$(awk '/^## /{inside = ($2 == "7.16.1")} inside' "${REPO_ROOT}/CHANGELOG.md" | grep -qF 'summary' && echo yes || echo no)"
+
 unset CLAUDE_CODE_SESSION_ID COST_STATUSLINE_CACHE_DIR COST_MULTI_INSTANCE_DIR COST_PROJECTS_DIR COST_RATES_FILE MV_LOG
 cd "$JIRA_PROJECT_DIR" || exit 1
 

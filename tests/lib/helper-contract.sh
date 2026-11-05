@@ -56,7 +56,7 @@ workspace-guard.sh:acquire release
 session.sh:ensure-exclude
 stage-checks.sh:plan pre-review
 metadata.sh:check-required version-check status list
-cost.sh:enter record unknown sample
+cost.sh:enter record unknown sample summary
 jira.sh:detect-token-env extract-keys attachments
 lessons.sh:prune
 har.py:convert list head digest scan splice
