@@ -1070,6 +1070,224 @@ assert_eq "cost table: a web-search event keeps its token cost (2) and flags the
 assert_eq "cost table: the default table path works from another directory with COST_RATES_FILE and CLAUDE_PLUGIN_ROOT unset" \
   "$(jq -r '.taken_on' "$COST_RATES_REAL" 2>/dev/null)" "$(printf '%s' "$REC" | jq -r '.rates.taken_on' 2>/dev/null)"
 
+# =====================================================================
+# Inherited versus own context: per-stage request, context and cache-read split
+# =====================================================================
+# A session enters the ticket with context it already holds. The first real main request
+# after the session's registration time is its entry context E; cache reads up to E are
+# inherited, the rest are own. Fixture rates: m-a cache read is 1 per million.
+OWN_STAGES='"stages":{"1":{"status":"complete","completed_at":"2026-01-01T02:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T04:00:00Z"},"5":{"status":"in_progress"}}'
+split_of() { # <stage>: requests, entry, exit, growth, inherited, own
+  rec_field ".by_stage[\"$1\"] | [.requests, .context_entry, .context_exit, .growth_tokens, .inherited_cache_read_tokens, .own_cache_read_tokens]"
+}
+sum_identity() { # true when inherited + own equals cache_read_tokens in every stage
+  rec_field '[.by_stage[] | (.inherited_cache_read_tokens + .own_cache_read_tokens) == .cache_read_tokens] | all'
+}
+
+# Main fixture: a request before registration, a synthetic line, the entry request, growth,
+# a shrink without compaction, a sidechain line, and a subagent file line without isSidechain.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-1 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o1\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2025-12-31T23:00:00Z pre r 1 1 5000 0 m-a
+  tx_synthetic 2026-01-01T00:05:00Z
+  tx_line 2026-01-01T00:10:00Z e1 r 100 10 1000 900 m-a
+  tx_line 2026-01-01T01:00:00Z s1 r 50 10 2500 500 m-a
+  tx_line 2026-01-01T01:20:00Z sc1 r 0 5 300 0 m-a | jq -c '.isSidechain = true'
+  tx_line 2026-01-01T03:00:00Z s2a r 10 10 1500 0 m-a
+  tx_line 2026-01-01T03:30:00Z s2b r 10 10 4000 100 m-a
+} | tx_put proj/o1.jsonl
+tx_line 2026-01-01T01:10:00Z sa1 r 10 5 700 0 m-a | tx_put proj/o1/subagents/agent-a.jsonl
+REC="$(cost_run record O-1)"
+assert_eq "cost split: the entry context is the first real main request after registration, earlier requests and synthetic lines ignored" "2000" \
+  "$(rec_field '.sessions[0].entry_context_tokens')"
+assert_eq "cost split: stage 1 counts requests, entry, exit, growth and the inherited/own cache read (sidechain reads are all own)" '[2,2000,3050,1050,3000,1500]' "$(split_of 1)"
+assert_eq "cost split: a context shrink without a compaction clamps own at zero" '[2,1510,4110,2600,3500,2000]' "$(split_of 2)"
+assert_eq "cost split: inherited plus own equals the stage cache_read_tokens in every stage" "true" "$(sum_identity)"
+assert_eq "cost split: a stage with no real main request has zero requests and null context fields" '[0,null,null,null,0,0]' "$(split_of 5)"
+assert_eq "cost split: own_cache_read_usd is own cache read times the cache-read rate (sidechain included)" '[true,true,true]' \
+  "$(rec_field '[(.by_stage["1"].own_cache_read_usd | . != null and (. - 0.0015 | fabs) < 0.000000001), (.by_stage["2"].own_cache_read_usd | . != null and (. - 0.002 | fabs) < 0.000000001), .by_stage["5"].own_cache_read_usd == 0]')"
+assert_eq "cost split: the record stays known and the existing fields are unchanged" '["known",true]' \
+  "$(rec_field '[.status, (.by_stage["1"].cache_read_tokens == 4500)]')"
+
+# The long-prompt tier applies to the cache-read rate of own reads.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-2 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o2\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2026-01-01T00:10:00Z l1 r 10 1 50 0 m-long
+  tx_line 2026-01-01T00:20:00Z l2 r 10 1 150 0 m-long
+  tx_line 2026-01-01T00:30:00Z l3 r 5 1 70 0 m-long
+} | tx_put proj/o2.jsonl
+REC="$(cost_run record O-2)"
+assert_eq "cost split: own_cache_read_usd uses the long-prompt cache-read rate for a long prompt and the base rate otherwise (100 x 0.5 + 20 x 0.1 per million)" "true" \
+  "$(usd_close "$(rec_field '.by_stage["1"].own_cache_read_usd')" 0.000052)"
+
+# Compaction: the baseline after a main-thread compaction after E is min(E, postTokens).
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-3 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o3\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2026-01-01T00:10:00Z c1 r 0 1 200000 0 m-a
+  tx_boundary 2026-01-01T00:20:00Z cb-1 250000 30000
+  tx_line 2026-01-01T00:30:00Z c2 r 0 1 30000 0 m-a
+  tx_line 2026-01-01T00:40:00Z c3 r 0 1 80000 0 m-a
+} | tx_put proj/o3.jsonl
+REC="$(cost_run record O-3)"
+assert_eq "cost split: after a compaction the baseline is min(E, postTokens), so growth from 30k to 80k is own" '[3,200000,80000,-120000,260000,50000]' "$(split_of 1)"
+
+# A compaction before registration, then regrowth: B stays E.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-4 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o4\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2025-12-31T23:30:00Z q0 r 0 1 100 0 m-a
+  tx_boundary 2025-12-31T23:40:00Z cb-pre 100 10
+  tx_line 2026-01-01T00:10:00Z q1 r 0 1 1000 0 m-a
+  tx_line 2026-01-01T00:20:00Z q2 r 0 1 3000 0 m-a
+} | tx_put proj/o4.jsonl
+REC="$(cost_run record O-4)"
+assert_eq "cost split: a compaction before registration leaves the baseline at E" '[2000,2000]' \
+  "$(rec_field '[.by_stage["1"].inherited_cache_read_tokens, .by_stage["1"].own_cache_read_tokens]')"
+
+# A compaction inside a subagent file never changes the main-thread baseline.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-5 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o5\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2026-01-01T00:10:00Z d1 r 0 1 1000 0 m-a
+  tx_line 2026-01-01T00:20:00Z d2 r 0 1 3000 0 m-a
+} | tx_put proj/o5.jsonl
+{
+  tx_line 2026-01-01T00:12:00Z da r 0 1 50 0 m-a
+  tx_boundary 2026-01-01T00:13:00Z cb-sub 100 10
+} | tx_put proj/o5/subagents/agent-a.jsonl
+REC="$(cost_run record O-5)"
+assert_eq "cost split: a compaction inside a subagent file leaves the main baseline at E (own 2000 + 50 sidechain)" '[2,1000,3000,2000,2000,2050]' "$(split_of 1)"
+
+# Several sessions in one stage. m2 registers at 00:30; its 00:20 request is inherited.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-6 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"m1\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null},{\"id\":\"m2\",\"ts\":\"2026-01-01T00:30:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2026-01-01T00:10:00Z m1a r 0 1 1000 0 m-a
+  tx_line 2026-01-01T01:00:00Z m1b r 0 1 1500 0 m-a
+} | tx_put proj/m1.jsonl
+{
+  tx_line 2026-01-01T00:20:00Z m2pre r 0 1 700 0 m-a
+  tx_line 2026-01-01T00:40:00Z m2a r 0 1 2000 0 m-a
+  tx_line 2026-01-01T01:30:00Z m2b r 0 1 2600 0 m-a
+} | tx_put proj/m2.jsonl
+REC="$(cost_run record O-6)"
+assert_eq "cost split: with two sessions growth is the sum of per-session growths (500 + 600) and entry/exit are null" '[4,null,null,1100,6700,1100]' "$(split_of 1)"
+assert_eq "cost split: each session gets its own entry context" '[1000,2000]' "$(rec_field '[.sessions[] | .entry_context_tokens]')"
+assert_eq "cost split: the sum identity holds across sessions" "true" "$(sum_identity)"
+
+# A session registered later whose requests all precede its registration: inherited, not counted.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-7 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"ly\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null},{\"id\":\"lx\",\"ts\":\"2026-01-01T00:30:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2026-01-01T00:05:00Z ly1 r 0 1 100 0 m-a
+  tx_line 2026-01-01T00:40:00Z ly2 r 0 1 300 0 m-a
+} | tx_put proj/ly.jsonl
+{
+  tx_line 2026-01-01T00:10:00Z lx1 r 0 1 400 0 m-a
+  tx_line 2026-01-01T00:20:00Z lx2 r 0 1 500 0 m-a
+} | tx_put proj/lx.jsonl
+REC="$(cost_run record O-7)"
+assert_eq "cost split: requests before the session's registration are all inherited and not counted in requests or context" '[2,100,300,200,1100,200]' "$(split_of 1)"
+assert_eq "cost split: a session with no real main request after registration has a null entry context" '[100,null]' "$(rec_field '[.sessions[] | .entry_context_tokens]')"
+assert_eq "cost split: the sum identity holds when a session is entirely inherited" "true" "$(sum_identity)"
+
+# Null baselines: empty and unparseable registration times mean all own.
+for bad_ts in '' 'garbage'; do
+  cost_case
+  unset CLAUDE_CODE_SESSION_ID
+  new_doc O-8 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"na\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null},{\"id\":\"nb\",\"ts\":\"$bad_ts\",\"usd\":null}],$OWN_STAGES}"
+  tx_line 2026-01-01T00:10:00Z na1 r 0 1 50 0 m-a | tx_put proj/na.jsonl
+  {
+    tx_line 2026-01-01T00:20:00Z nb1 r 0 1 1000 0 m-a
+    tx_line 2026-01-01T00:30:00Z nb2 r 0 1 3000 0 m-a
+  } | tx_put proj/nb.jsonl
+  REC="$(cost_run record O-8)"
+  assert_eq "cost split: a registration time of '$bad_ts' gives a null entry context, all own, status known" '["known",null,50,4000]' \
+    "$(rec_field '[.status, .sessions[1].entry_context_tokens, .by_stage["1"].inherited_cache_read_tokens, .by_stage["1"].own_cache_read_tokens]')"
+  assert_eq "cost split: the sum identity holds with a null baseline ('$bad_ts')" "true" "$(sum_identity)"
+done
+
+# Unpriced model and a zero-token line: status and usd as before, own_cache_read_usd follows priced events only.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-9 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o9\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2026-01-01T00:05:00Z z0 r 0 0 0 0 m-a
+  tx_line 2026-01-01T00:10:00Z z1 r 0 1 1000 0 m-a
+  tx_line 2026-01-01T00:20:00Z z2 r 10 1 2000 0 m-x
+} | tx_put proj/o9.jsonl
+REC="$(cost_run record O-9)"
+assert_eq "cost split: an unpriced model and a zero-token line keep the record partial, never unknown" '["partial",["m-x"]]' "$(rec_field '[.status, .unpriced_models]')"
+assert_eq "cost split: the zero-token line is not a request; the unpriced model's request is" '[2,1000,2010,1010,2000,1000]' "$(split_of 1)"
+assert_eq "cost split: own_cache_read_usd skips events without a numeric rate and stays a number while usd is a number" '0' "$(rec_field '.by_stage["1"].own_cache_read_usd')"
+
+# total_usd null: the tokens show, own_cache_read_usd is null.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc O-10 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o10\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OWN_STAGES}"
+{
+  tx_line 2026-01-01T00:10:00Z u1 r 0 1 1000 0 m-a
+  tx_line 2026-01-01T00:20:00Z u2 r 0 1 3000 0 m-a
+} | tx_put proj/o10.jsonl
+REC="$(COST_RATES_FILE="$COST_ROOT/missing-rates.json" cost_run record O-10)"
+assert_eq "cost split: with no readable rate table the split tokens show and own_cache_read_usd is null" '["unknown",2000,2000,null]' \
+  "$(rec_field '[.status, .by_stage["1"].inherited_cache_read_tokens, .by_stage["1"].own_cache_read_tokens, .by_stage["1"].own_cache_read_usd]')"
+new_doc O-10b '{"skill_version":"7.13.0","cost_sessions":[{"id":"o10","ts":"2026-01-01T00:00:00Z","usd":null}]}'
+assert_eq "cost split: null by_stage paths are unchanged" '[null,"ticket has no stages object"]' \
+  "$(cost_run record O-10b | jq -c '[.by_stage, .by_stage_reason]' 2>/dev/null)"
+
+# Stage 5 ends at a parseable completed_at; work after the close is unassigned.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+CLOSED_STAGES='"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"5":{"status":"complete","completed_at":"2026-01-01T03:00:00Z"}}'
+OPEN_STAGES='"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"5":{"status":"in_progress","completed_at":null}}'
+new_doc O-11 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o11\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$CLOSED_STAGES}"
+new_doc O-12 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"o11\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],$OPEN_STAGES}"
+{
+  tx_line 2026-01-01T00:10:00Z k1 r 0 1 1000 0 m-a
+  tx_line 2026-01-01T02:00:00Z k2 r 0 1 2000 0 m-a
+  tx_line 2026-01-01T04:00:00Z k3 r 1000000 0 0 0 m-a
+} | tx_put proj/o11.jsonl
+REC="$(cost_run record O-11)"
+assert_eq "cost split: a request after a parseable stage 5 completed_at is outside stage 5 and lands in unassigned_usd" '[0,true]' \
+  "$(rec_field '[.by_stage["5"].input_tokens, ((.unassigned_usd - 10) | fabs) < 0.000000001]')"
+REC="$(cost_run record O-12)"
+assert_eq "cost split: the in-run record (null completed_at) still runs stage 5 to the record time" '[1000000,0]' \
+  "$(rec_field '[.by_stage["5"].input_tokens, .unassigned_usd]')"
+
+# Post-hoc procedure: the invoking session must not leak into the figures.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc PH-1 "{\"skill_version\":\"7.13.0\",\"cost_sessions\":[{\"id\":\"ph-reg\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":null}],\"stages\":{\"1\":{\"status\":\"complete\",\"completed_at\":\"2026-01-01T01:00:00Z\"},\"5\":{\"status\":\"in_progress\"}}}"
+tx_line 2026-01-01T00:10:00Z ph1 r 100 10 1000 900 m-a | tx_put proj/ph-reg.jsonl
+tx_line 2026-01-01T05:00:00Z ph2 r 1000000 1 0 0 m-a | tx_put proj/ph-cur.jsonl
+PH_REGISTERED="$(cost_run record PH-1)"
+PH_BEFORE="$(cksum < .doer/tickets/PH-1/metadata.json)"
+PH_HAZARD="$(CLAUDE_CODE_SESSION_ID=ph-cur cost_run record PH-1)"
+assert_eq "cost post-hoc: an unregistered invoking session with a transcript shows up in sessions[]" "true" \
+  "$(printf '%s' "$PH_HAZARD" | jq '[.sessions[].id] | index("ph-cur") != null' 2>/dev/null)"
+assert_eq "cost post-hoc: without the procedure total_usd and stage 5 grow" '[true,1000000]' \
+  "$(printf '%s' "$PH_HAZARD" | jq -c --argjson base "$(printf '%s' "$PH_REGISTERED" | jq '.total_usd')" '[.total_usd > $base, .by_stage["5"].input_tokens]' 2>/dev/null)"
+PH_SCRATCH="$COST_ROOT/ph-scratch"
+mkdir -p "$PH_SCRATCH/.doer/tickets/PH-1"
+cp .doer/tickets/PH-1/metadata.json "$PH_SCRATCH/.doer/tickets/PH-1/metadata.json"
+PH_PROCEDURE="$(cd "$PH_SCRATCH" && CLAUDE_CODE_SESSION_ID=ph-cur env -u CLAUDE_CODE_SESSION_ID "$COST_SH" record PH-1 2>/dev/null)"
+assert_eq "cost post-hoc: the documented procedure equals the registered-only figures" "true" \
+  "$(jq -n --argjson a "$PH_PROCEDURE" --argjson b "$PH_REGISTERED" '($a | del(.recorded_at)) == ($b | del(.recorded_at))' 2>/dev/null)"
+assert_eq "cost post-hoc: the real ticket file is untouched by the procedure" "$PH_BEFORE" "$(cksum < .doer/tickets/PH-1/metadata.json)"
+assert_eq "cost post-hoc: sessions[].entry_context_tokens equals the known entry context (100 + 1000 + 900)" "2000" \
+  "$(printf '%s' "$PH_PROCEDURE" | jq -c '.sessions[0].entry_context_tokens' 2>/dev/null)"
+
 unset CLAUDE_CODE_SESSION_ID COST_STATUSLINE_CACHE_DIR COST_MULTI_INSTANCE_DIR COST_PROJECTS_DIR COST_RATES_FILE MV_LOG
 cd "$JIRA_PROJECT_DIR" || exit 1
 
