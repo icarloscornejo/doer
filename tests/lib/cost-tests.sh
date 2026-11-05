@@ -475,6 +475,119 @@ REC="$(cost_run record B-5)"
 assert_eq "cost by_stage: out-of-order timestamps give null by_stage with a reason" '[null,"string"]' \
   "$(printf '%s' "$REC" | jq -c '[.by_stage, (.by_stage_reason | type)]' 2>/dev/null)"
 
+# --- record: by_stage usd ---
+# Every null by_stage path keeps its reason and carries an explicit null unassigned_usd (has(), because a missing key also reads null).
+assert_eq "cost by_stage usd: a bugfix file keeps by_stage null and gets an explicit null unassigned_usd" '[null,true,null]' \
+  "$(cost_run record BF-1 --file bugfix.json | jq -c '[.by_stage, has("unassigned_usd"), .unassigned_usd]' 2>/dev/null)"
+assert_eq "cost by_stage usd: unparseable timestamps keep their reason and get an explicit null unassigned_usd" '[null,"timestamps are not parseable",true,null]' \
+  "$(cost_run record B-4 | jq -c '[.by_stage, .by_stage_reason, has("unassigned_usd"), .unassigned_usd]' 2>/dev/null)"
+assert_eq "cost by_stage usd: out-of-order timestamps keep their reason and get an explicit null unassigned_usd" '[null,"timestamps are out of order",true,null]' \
+  "$(cost_run record B-5 | jq -c '[.by_stage, .by_stage_reason, has("unassigned_usd"), .unassigned_usd]' 2>/dev/null)"
+new_doc B-6 '{"skill_version":"7.13.0","cost_sessions":[{"id":"bs-1","ts":"2026-01-01T00:00:00Z","usd":2}]}'
+assert_eq "cost by_stage usd: a ticket without a stages object keeps its reason and gets an explicit null unassigned_usd" '[null,"ticket has no stages object",true,null]' \
+  "$(cost_run record B-6 | jq -c '[.by_stage, .by_stage_reason, has("unassigned_usd"), .unassigned_usd]' 2>/dev/null)"
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc B-7 "$STAGES_DOC"
+assert_eq "cost by_stage usd: sessions without any transcript keep their reason and get an explicit null unassigned_usd" '[null,"no transcript found",true,null]' \
+  "$(cost_run record B-7 | jq -c '[.by_stage, .by_stage_reason, has("unassigned_usd"), .unassigned_usd]' 2>/dev/null)"
+assert_eq "cost by_stage usd: the unknown record carries an explicit null unassigned_usd" '[null,true,null]' \
+  "$(cost_run unknown "why" | jq -c '[.by_stage, has("unassigned_usd"), .unassigned_usd]' 2>/dev/null)"
+
+# Two sessions, two models, stages 1 and 2 (stage 5 open). Per-event pricing: two m-long events of 60 prompt tokens
+# each stay on the base tier even though together they pass the 100-token long_prompt threshold; the 200-token one
+# is on the long tier. Outside every window: an event at exactly the earliest session start and one with an
+# unparseable timestamp (1.0 each). A compaction 10 minutes after the last stage 2 request is cold (100000 x 1.25
+# + 1000 x 2 per million = 0.127, on that request's model); one before any request has no price and only flags its stage.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc U-1 '{"skill_version":"7.13.0","cost_sessions":[{"id":"us-1","ts":"2026-01-01T00:00:00Z","usd":2},{"id":"us-2","ts":"2026-01-01T00:00:00Z","usd":1}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T02:00:00Z"},"5":{"status":"in_progress"}}}'
+{
+  tx_boundary 2026-01-01T00:10:00Z cb-null 100000 1000
+  tx_line 2026-01-01T00:00:00Z at-start 1 100000 0 0 0 m-a
+  tx_line "not-a-time" at-garbage 1 0 500000 0 0 m-b
+  tx_line 2026-01-01T00:30:00Z s1-a 1 100000 0 0 0 m-a
+  tx_line 2026-01-01T00:40:00Z s1-l1 1 60 0 0 0 m-long
+  tx_line 2026-01-01T00:50:00Z s1-l2 1 60 0 0 0 m-long
+  tx_line 2026-01-01T01:20:00Z s2-b 1 0 500000 0 0 m-b
+  tx_boundary 2026-01-01T01:30:00Z cb-cold 100000 1000
+} | tx_put proj/us-1.jsonl
+tx_line 2026-01-01T01:40:00Z s2-l 1 200 0 0 0 m-long | tx_put proj/us-2.jsonl
+REC="$(cost_run record U-1)"
+assert_eq "cost by_stage usd: each stage sums its own events at the same per-event rates as the total" "true" \
+  "$(usd_close "$(rec_field '.by_stage["1"].usd')" 1.00012)"
+assert_eq "cost by_stage usd: a long-prompt event is priced on its own tier, in the session that holds it" "true" \
+  "$(usd_close "$(rec_field '.by_stage["2"].usd')" 1.001)"
+assert_eq "cost by_stage usd: an open stage 5 with no events costs zero" "true" \
+  "$(usd_close "$(rec_field '.by_stage["5"].usd')" 0)"
+assert_eq "cost by_stage usd: events outside every window are reported, not dropped" "true" \
+  "$(usd_close "$(rec_field '.unassigned_usd')" 2)"
+assert_eq "cost by_stage usd: a compaction is attributed to the stage holding its timestamp, apart from usd" '[true,true,true]' \
+  "$(rec_field '[(.by_stage["2"].compaction_usd - 0.127 | fabs < 0.000000001), (.by_stage["1"].compaction_usd == 0), (.by_stage["2"].usd < 1.002)]')"
+assert_eq "cost by_stage usd: a compaction without a price flags its own stage only" '[["no previous request (compaction)"],[]]' \
+  "$(rec_field '[.by_stage["1"].unpriced_models, .by_stage["2"].unpriced_models]')"
+assert_eq "cost by_stage usd: stages plus compactions plus unassigned equal total_usd to the cent" "true" \
+  "$(rec_field '((([.by_stage[] | .usd, .compaction_usd] | add) + .unassigned_usd - .total_usd) | fabs) < 0.005')"
+assert_eq "cost by_stage usd: the equation also holds to float precision" "true" \
+  "$(rec_field '((([.by_stage[] | .usd, .compaction_usd] | add) + .unassigned_usd - .total_usd) | fabs) < 0.000000001')"
+assert_eq "cost by_stage usd: the total itself is unchanged by the split" "true" "$(usd_close "$(rec_field '.total_usd')" 4.12812)"
+
+# No stage 5: an event after the last completed stage is unassigned, and so is a compaction there.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc U-2 '{"skill_version":"7.13.0","cost_sessions":[{"id":"us-1","ts":"2026-01-01T00:00:00Z","usd":2}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T02:00:00Z"}}}'
+{
+  tx_line 2026-01-01T00:30:00Z a 1 100000 0 0 0 m-a
+  tx_line 2026-01-01T03:00:00Z late 1 100000 0 0 0 m-a
+  tx_boundary 2026-01-01T03:30:00Z cb-late 100000 1000
+} | tx_put proj/us-1.jsonl
+REC="$(cost_run record U-2)"
+assert_eq "cost by_stage usd: without a stage 5 there is no key for it" "false" "$(rec_field '.by_stage | has("5")')"
+assert_eq "cost by_stage usd: an event and a compaction after the last bound land in unassigned_usd (1.0 + 1.27)" "true" \
+  "$(usd_close "$(rec_field '.unassigned_usd')" 2.27)"
+assert_eq "cost by_stage usd: the equation holds when the tail is unassigned" "true" \
+  "$(rec_field '((([.by_stage[] | .usd, .compaction_usd] | add) + .unassigned_usd - .total_usd) | fabs) < 0.000000001')"
+
+# Equal bounds: the first stage owns the events at the bound, the second window is empty.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc U-3 '{"skill_version":"7.13.0","cost_sessions":[{"id":"us-1","ts":"2026-01-01T00:00:00Z","usd":2}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"5":{"status":"in_progress"}}}'
+tx_line 2026-01-01T00:30:00Z a 1 100000 0 0 0 m-a | tx_put proj/us-1.jsonl
+REC="$(cost_run record U-3)"
+assert_eq "cost by_stage usd: equal bounds give the whole cost to the first stage and an empty window to the second" '[true,true]' \
+  "$(rec_field '[(.by_stage["1"].usd - 1 | fabs < 0.000000001), (.by_stage["2"].usd == 0)]')"
+
+# A model missing from the rate table: its tokens count in its stage, usd covers the priced events only.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc U-4 '{"skill_version":"7.13.0","cost_sessions":[{"id":"us-1","ts":"2026-01-01T00:00:00Z","usd":2}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T02:00:00Z"}}}'
+{
+  tx_line 2026-01-01T00:30:00Z a 1 100000 0 0 0 m-a
+  tx_line 2026-01-01T01:20:00Z b 1 0 500000 0 0 m-b
+  tx_line 2026-01-01T01:30:00Z x 1 1000 2000 0 0 m-x
+} | tx_put proj/us-1.jsonl
+REC="$(cost_run record U-4)"
+assert_eq "cost by_stage usd: an unpriced model keeps its tokens in the stage" '[1000,502000]' \
+  "$(rec_field '[.by_stage["2"].input_tokens, .by_stage["2"].output_tokens]')"
+assert_eq "cost by_stage usd: an unpriced model leaves the stage usd to the priced events and lists the model" '[true,["m-x"],[]]' \
+  "$(rec_field '[(.by_stage["2"].usd - 1 | fabs < 0.000000001), .by_stage["2"].unpriced_models, .by_stage["1"].unpriced_models]')"
+assert_eq "cost by_stage usd: top-level status and unpriced_models stay as before" '["partial",["m-x"]]' \
+  "$(rec_field '[.status, .unpriced_models]')"
+
+# total_usd null while by_stage is an object (a registered session without a transcript, or no readable rate table):
+# the new usd fields are null too, tokens stay.
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc U-5 '{"skill_version":"7.13.0","cost_sessions":[{"id":"us-1","ts":"2026-01-01T00:00:00Z","usd":2},{"id":"us-gone","ts":"2026-01-01T00:00:00Z","usd":1}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"5":{"status":"in_progress"}}}'
+tx_line 2026-01-01T00:30:00Z a 1 100000 0 0 0 m-a | tx_put proj/us-1.jsonl
+REC="$(cost_run record U-5)"
+assert_eq "cost by_stage usd: a session without a transcript leaves tokens but no usd, compaction_usd or unassigned_usd" '[null,100000,null,null,null,true]' \
+  "$(rec_field '[.total_usd, .by_stage["1"].input_tokens, .by_stage["1"].usd, .by_stage["1"].compaction_usd, .unassigned_usd, (.by_stage["1"] | has("usd") and has("compaction_usd"))]')"
+new_doc U-6 '{"skill_version":"7.13.0","cost_sessions":[{"id":"us-1","ts":"2026-01-01T00:00:00Z","usd":2}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"5":{"status":"in_progress"}}}'
+REC="$(COST_RATES_FILE="$COST_ROOT/missing-rates.json" cost_run record U-6)"
+assert_eq "cost by_stage usd: an unreadable rate table leaves tokens but no usd, compaction_usd or unassigned_usd" '["unknown",100000,null,null,null,true]' \
+  "$(rec_field '[.status, .by_stage["1"].input_tokens, .by_stage["1"].usd, .by_stage["1"].compaction_usd, .unassigned_usd, (.by_stage["1"] | has("usd") and has("compaction_usd"))]')"
+
 # =====================================================================
 # DOER-6: the cost is priced from the transcripts with a shipped rate table
 # =====================================================================
