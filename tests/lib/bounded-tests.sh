@@ -461,6 +461,119 @@ bf_suite 0
 bf_lacks "temp directory path form (symlinked var) still honors an in-tree env" "varpathsecretGG"
 bf_lacks "temp directory path form adds no skip notice" "env: skipped"
 
+# --- ANSI escape stripping ---
+ESC=$'\033'
+BEL=$'\007'
+bf_esc_count() { LC_ALL=C grep -ac "$ESC" "$1" 2>/dev/null || true; }
+bf_esc_free() { # <desc>: no ESC byte in the output file nor in the fails file
+  local fails_file="$BF_D/$BF_FAILS_REL" fails_count=0
+  [ -e "$fails_file" ] && fails_count="$(bf_esc_count "$fails_file")"
+  bf_eq "$1: no ESC in the output" "0" "$(bf_esc_count "$BF_OUTF")"
+  bf_eq "$1: no ESC in the fails file" "0" "$fails_count"
+}
+bf_twin() { # <exit-code>: run a plain input and its colored twin, compare outputs and fails files
+  local code="$1" plain_out colored_out plain_fails colored_fails
+  bf_new
+  printf '%s\n' 'FAIL  alpha' '  err-a1' '  err-a2' 'PASS  ok1' 'FAIL  beta' 'PASS  ok2' '  stray-after-pass' \
+    'com.x.Suite > case1 FAILED' 'Results: 3 passed, 1 failed' 'Results: 4 passed, 0 failed' > "$BF_IN"
+  bf_suite "$code"
+  plain_out="$BF_OUTF.plain"; cp "$BF_OUTF" "$plain_out"
+  plain_fails="$BF_OUTF.plainfails"; cp "$BF_D/$BF_FAILS_REL" "$plain_fails" 2>/dev/null || : > "$plain_fails"
+  printf '%s\n' "${ESC}[31mFAIL  alpha${ESC}[0m" "${ESC}[2m  err-a1${ESC}[0m" "  ${ESC}[1;33merr-a2${ESC}[0m" \
+    "${ESC}[32mPASS  ok1${ESC}[0m" "${ESC}[31mFAIL  beta${ESC}[0m" "${ESC}[32mPASS  ok2${ESC}[0m" "  stray-after-pass" \
+    "com.x.Suite > case1 FAILED${ESC}[0m" "${ESC}[1mResults: 3 passed, 1 failed${ESC}[0m" \
+    "${ESC}[1mResults: 4 passed, 0 failed${ESC}[0m" > "$BF_IN"
+  bf_suite "$code"
+  colored_out="$BF_OUTF.colored"; cp "$BF_OUTF" "$colored_out"
+  colored_fails="$BF_OUTF.coloredfails"; cp "$BF_D/$BF_FAILS_REL" "$colored_fails" 2>/dev/null || : > "$colored_fails"
+  bf_eq "twin exit $code: counts match" "$(grep -m1 '^counts: ' "$plain_out")" "$(bf_hdr 'counts: ')"
+  bf_eq "twin exit $code: fails match" "$(grep -m1 '^fails: ' "$plain_out")" "$(bf_hdr 'fails: ')"
+  bf_eq "twin exit $code: results total matches" "$(grep -m1 '^results total: ' "$plain_out")" "$(bf_hdr 'results total: ')"
+  bf_eq "twin exit $code: colored counts are 2 passed 3 failed" "counts: passed=2 failed=3" "$(bf_hdr 'counts: ')"
+  bf_eq "twin exit $code: colored and plain output are byte-identical" "yes" "$(cmp -s "$plain_out" "$colored_out" && echo yes || echo no)"
+  bf_eq "twin exit $code: colored and plain fails files are identical" "yes" "$(cmp -s "$plain_fails" "$colored_fails" && echo yes || echo no)"
+  bf_esc_free "twin exit $code"
+}
+bf_twin 1
+bf_twin 0
+
+bf_new
+printf '%s\n' "${ESC}[31mFAIL  colored-only${ESC}[0m" > "$BF_IN"
+bf_suite 0
+bf_eq "colored FAIL with exit 0: status failed" "status: failed" "$(bf_hdr 'status: ')"
+bf_eq "colored FAIL with exit 0: helper exit 1" "1" "$BF_EXIT"
+
+bf_new
+printf '%s\n' "${ESC}[1;31;40mFAIL  multi-sgr${ESC}[0m" "${ESC}[38:2:255:0:0mFAIL  truecolor-colon${ESC}[0m" \
+  "${ESC}[38:5:196mFAIL  indexed-colon${ESC}[0m" "${ESC}]0;window title${BEL}FAIL  osc-bel" "${ESC}]2;other title${ESC}\\FAIL  osc-st" \
+  "${ESC}[31mFAIL ${ESC}(B${ESC}[m  tput-shape" "${ESC}7FAIL  save-cursor" "${ESC}=FAIL  keypad" "FAIL  trailing-lone${ESC}" > "$BF_IN"
+bf_suite 0
+bf_eq "escape zoo: nine FAIL lines counted" "fails: 9" "$(bf_hdr 'fails: ')"
+bf_eq "escape zoo with exit 0: status failed" "status: failed" "$(bf_hdr 'status: ')"
+bf_esc_free "escape zoo"
+bf_has "escape zoo: SGR with several parameters stripped" "FAIL  multi-sgr"
+bf_has "escape zoo: colon sub-parameters stripped" "FAIL  truecolor-colon"
+bf_has "escape zoo: OSC with BEL terminator stripped" "FAIL  osc-bel"
+bf_has "escape zoo: OSC with ST terminator stripped" "FAIL  osc-st"
+bf_has "escape zoo: charset escape stripped" "FAIL   "
+
+bf_new
+printf '%s\n' "${ESC}[31mFAIL ${ESC}(B${ESC}[m  x" > "$BF_IN"
+bf_suite 0
+bf_eq "tput shape counts as a FAIL" "fails: 1" "$(bf_hdr 'fails: ')"
+bf_eq "tput shape with exit 0: status failed" "status: failed" "$(bf_hdr 'status: ')"
+
+bf_new
+printf 'PASS  a\n%s\n' "trailing lone${ESC}" > "$BF_IN"
+bf_suite 0
+bf_eq "lone trailing ESC on an ok run: status ok" "status: ok" "$(bf_hdr 'status: ')"
+bf_esc_free "lone trailing ESC"
+
+bf_new
+printf 'a\000b\n' > "$BF_IN"
+head -c 3000 /dev/urandom >> "$BF_IN"
+bf_suite 1
+bf_esc_free "random bytes"
+
+# redaction must see the stripped text
+bf_new
+printf '%s\n' "FAIL  ${ESC}[36mpassword${ESC}[0m=hunter22xyz" > "$BF_IN"
+bf_suite 1
+bf_lacks "colored keyword=value is redacted in the output" "hunter22xyz"
+bf_eq "colored keyword=value is redacted in the fails file" "0" "$(grep -c 'hunter22xyz' "$BF_D/$BF_FAILS_REL")"
+
+bf_new
+printf 'COLORENV=Zp4Rq8Lw3Tn\n' > "$BF_D/.env"
+printf '%s\n' "FAIL  value Zp4R${ESC}[1mq8Lw3Tn split" "tail Zp4R${ESC}[1mq8Lw3Tn split" > "$BF_IN"
+bf_suite 1
+bf_lacks "env value split by an escape is redacted in the output" "Zp4Rq8Lw3Tn"
+bf_lacks "env value fragment Zp4R does not leak" "Zp4R"
+bf_lacks "env value fragment q8Lw3Tn does not leak" "q8Lw3Tn"
+bf_eq "env value split by an escape is redacted in the fails file" "0" "$(grep -c 'Zp4R\|q8Lw3Tn' "$BF_D/$BF_FAILS_REL")"
+
+# bracket text without ESC is not an escape sequence
+bf_new
+printf '%s\n' 'FAIL  a[31m-literal' > "$BF_IN"
+bf_suite 1
+bf_has "bracket text without ESC stays unchanged" "FAIL  a[31m-literal"
+
+# a failing strip must withhold the log
+bf_new
+STUB_BIN="$BF_D.stubbin"
+mkdir -p "$STUB_BIN"
+printf '#!/bin/sh\nexit 1\n' > "$STUB_BIN/tr"
+chmod +x "$STUB_BIN/tr"
+printf 'FAIL  logmarker_q1\nPASS  logmarker_q2\n' > "$BF_IN"
+PATH="$STUB_BIN:$PATH" bf_suite 1
+bf_eq "failing strip: status error" "status: error" "$(bf_hdr 'status: ')"
+bf_eq "failing strip: helper exit 1" "1" "$BF_EXIT"
+bf_lacks "failing strip: no FAIL log content printed" "logmarker_q1"
+bf_lacks "failing strip: no PASS log content printed" "logmarker_q2"
+
+# docs
+bf_eq "header comment of bounded.sh mentions ANSI" "yes" "$(sed -n '1,45p' "$BOUNDED_SH" | grep -qi ansi && echo yes || echo no)"
+bf_eq "CHANGELOG has a 7.17.1 entry" "yes" "$(grep -q '^## 7\.17\.1' "${REPO_ROOT}/CHANGELOG.md" && echo yes || echo no)"
+
 # --- bash 3.2 reruns (the system shell on macOS) ---
 if [ -x /bin/bash ]; then
   bf_new
@@ -474,6 +587,9 @@ if [ -x /bin/bash ]; then
   printf 'PASS  a\n' > "$BF_IN"
   bf_suite 0
   bf_eq "bash 3.2: ok run" "status: ok" "$(bf_hdr 'status: ')"
+  printf '%s\n' "${ESC}[31mFAIL  old-shell-colored${ESC}[0m" > "$BF_IN"
+  bf_suite 0
+  bf_eq "bash 3.2: colored FAIL with exit 0 gives status failed" "status: failed" "$(bf_hdr 'status: ')"
   bf_go run -- nosuchbinary_doer13
   bf_eq "bash 3.2: unknown binary is status error" "status: error" "$(bf_hdr 'status: ')"
   printf 'ENVV=oldshellsecretHH\n' > "$BF_D/.env"
