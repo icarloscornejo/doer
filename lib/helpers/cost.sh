@@ -13,6 +13,7 @@
 #   enter <ID> [--file F]      register the current session for the ticket
 #   record <ID> [--file F]     print the cost record (one JSON object, exit 0)
 #   unknown "<reason>"         print an unknown record (fallback for prose)
+#   summary <ID> [--file F]    short text of the cost stored in the ticket metadata (exit 0)
 #
 # Sources (env overrides exist for tests):
 #   COST_RATES_FILE            the rate table, default lib/cost-rates.json next to this helper
@@ -269,6 +270,44 @@ def context: .i + .cr + .c5 + .c1;
   }'
 # jq-compat:end
 
+# jq-compat:begin summary
+# Reads the whole file (-s) so trailing garbage or a second document never yields a partial
+# summary. Tenths of millions: a token count over one hundred thousand, rounded.
+SUMMARY_PROGRAM='def usd: if type == "number" then (. * 100 | round) as $cents | ($cents % 100 | tostring) as $rest
+    | "$\($cents / 100 | floor).\(if ($rest | length) == 1 then "0" + $rest else $rest end)" else "n/a" end;
+def millions: if type == "number" then (. / 100000 | round) as $tenths | "\($tenths / 10 | floor).\($tenths % 10)M" else "n/a" end;
+if length != 1 then "cost: ticket file is not a single JSON document" else
+  first as $doc
+  | ($doc | if type == "object" then .cost else null end) as $cost
+  | if ($cost | type) != "object" then "cost: ticket has no cost record"
+    elif $cost.status == "unknown" then
+      "cost: \($cost.reason | if type == "string" and length > 0 then gsub("[\r\n]+"; " ") else "cost record is unknown" end)"
+    else
+      "status: \($cost.status // "n/a")",
+      "total: \($cost.total_usd | usd)",
+      (if ($cost.by_stage | type) == "object" then
+        ($cost.by_stage | to_entries | sort_by(.key | tonumber? // 0)[]
+          | .key as $stage | (.value | if type == "object" then . else {} end) as $row
+          | "stage \($stage): \($row.usd | usd), inherited \($row.inherited_cache_read_tokens | millions), own \($row.own_cache_read_tokens | millions) cache read, own cache read \($row.own_cache_read_usd | usd)")
+      else empty end)
+    end
+end'
+# jq-compat:end
+
+cmd_summary() {
+  local output
+  [ $# -ge 1 ] || { echo "cost: no ticket id given"; return 0; }
+  parse_ticket_args "$@"
+  [ -f "$TARGET" ] || { echo "cost: ticket file not found: $TARGET"; return 0; }
+  # Print only a complete result: a jq failure must leave exactly the one fallback line.
+  if output="$(jq -rs "$SUMMARY_PROGRAM" "$TARGET" 2>/dev/null)" && [ -n "$output" ]; then
+    printf '%s\n' "$output"
+  else
+    echo "cost: could not read the cost record"
+  fi
+  return 0
+}
+
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # first_hit <program> <sid> <file>...: value from the first (newest) file that
@@ -406,6 +445,7 @@ case "${1:-}" in
   enter) shift; cmd_enter "$@" ;;
   record) shift; cmd_record "$@" ;;
   unknown) shift; cmd_unknown "$@" ;;
-  *) echo "Usage: cost.sh sample | enter <ID> [--file F] | record <ID> [--file F] | unknown \"<reason>\"" >&2; exit 2 ;;
+  summary) shift; cmd_summary "$@" ;;
+  *) echo "Usage: cost.sh sample | enter <ID> [--file F] | record <ID> [--file F] | unknown \"<reason>\" | summary <ID> [--file F]" >&2; exit 2 ;;
 esac
 exit 0

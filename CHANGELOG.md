@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.16.1
+
+### Added
+
+- **`cost.sh summary <ID> [--file F]` prints a short text of the stored cost record.** It reads the `cost` already in the ticket metadata (nothing is recomputed, `cost.sh record` and the record shape are unchanged): `status:`, `total:` and one line per stage with USD, inherited and own cache-read tokens in millions with one decimal, and own cache-read USD. A record with `by_stage: null` prints only status and total. A ticket with no cost, an `unknown` record (its reason on one line), a missing file or a file that is not exactly one JSON document prints a single `cost: <reason>` line. It always exits 0, like the other cost subcommands. Documented in `lib/state.md`.
+
 ## 7.16.0
 
 ### Added
