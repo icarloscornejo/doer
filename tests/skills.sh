@@ -325,6 +325,27 @@ cost_has "bugfix Stage 6 close records cost with cost.sh record" "$BUGFIX_STAGE6
 cost_has "bugfix Stage 6 close stores .cost = \$cost[0]" "$BUGFIX_STAGE6" "$COST_SET"
 cost_has "bugfix Stage 6 close falls back to cost.sh unknown" "$BUGFIX_STAGE6" "$COST_UNKNOWN"
 
+# DOER-10: only the two PR-description writers run on Haiku (read budget 0, no code written or judged);
+# the clause keeps a prompt that could pass the long-prompt threshold on the session model.
+HAIKU_MODEL='model: "haiku"'
+HAIKU_CLAUSE='omit `model`'
+HAIKU_LIMIT='100 KB'
+WRAPUP_STEP6="$(md_section "$REPO_ROOT/skills/doer/stages/05-wrapup.md" '## 6.')"
+for haiku_section in "WRAPUP_STEP6:05-wrapup.md Step 6 PR writer" "BUGFIX_STAGE6:bugfix Stage 6 PR writer"; do
+  haiku_var="${haiku_section%%:*}"
+  haiku_text="${!haiku_var}"
+  haiku_desc="${haiku_section#*:}"
+  for haiku_needle in "$HAIKU_MODEL" "$HAIKU_CLAUSE" "$HAIKU_LIMIT"; do
+    if printf '%s\n' "$haiku_text" | grep -qF -- "$haiku_needle"; then pass "model prose: $haiku_desc names $haiku_needle"; else fail "model prose: $haiku_desc names $haiku_needle"; fi
+  done
+done
+HAIKU_FILES="$(cd "$REPO_ROOT" && grep -rlF 'model: "' skills lib 2>/dev/null | sort | tr '\n' ' ')"
+if [ "$HAIKU_FILES" = "skills/bugfix/SKILL.md skills/doer/stages/05-wrapup.md " ]; then
+  pass "model prose: only the two PR writers name an Agent model (no other dispatch, no 04-verify.md)"
+else
+  fail "model prose: only the two PR writers name an Agent model (found: $HAIKU_FILES)"
+fi
+
 ANALYZE_CONFIRM="$(md_section "$REPO_ROOT/skills/bugfix/analyze.md" '## 4. Confirm')"
 cost_has "analyze.md Confirm write records cost with cost.sh record" "$ANALYZE_CONFIRM" "$COST_RECORD"
 cost_has "analyze.md Confirm write stores .cost = \$cost[0]" "$ANALYZE_CONFIRM" "$COST_SET"
