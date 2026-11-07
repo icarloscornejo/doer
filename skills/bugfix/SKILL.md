@@ -10,8 +10,9 @@ description: >-
   planned, fixed, and verified on device with /wk:replay (if the scenario needs
   a forced response or flag to reproduce) and /wk:protologs; a bug that is not
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
-  to post to Jira. Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.17.1
+  to post to Jira. Pass --no-pr at start for a branch that merges straight to
+  its base branch (no PR description, merge-and-push closing line). Use /wk:doer for planned feature/refactor tickets instead.
+version: 7.18.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---
@@ -64,6 +65,7 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
   "entry_points_topic": null,
   "plan": null,
   "replay": null,
+  "no_pr": false,
   "commit_message": null, "pr_description": null,
   "stages": {"0": "pending", "1": "pending", "2": "pending", "3": "pending", "4": "pending", "5": "pending", "6": "pending"},
   "notes": []
@@ -78,9 +80,9 @@ A deterministic pipeline: **Jira ticket → ordered context → investigation (p
 
 ## Stage 0 - Init & Resume
 
-1. Parse the ticket **KEY** from the argument (full URL or bare key; regex `[A-Z]+-\d+`).
-2. If `./.doer/tickets/<KEY>/bugfix.json` exists → **resume**: read it, announce `current_stage`, jump to the next incomplete stage. Never redo work flagged `done`. First register this session for cost: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" enter "<KEY>" --file bugfix.json` (writes only when the session is not yet in `cost_sessions`).
-3. Otherwise run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<KEY>" bugfix` (contract: `lib/workspace-guard.md`), then create the folders and the initial `bugfix.json` (`status=in_progress`, `current_stage=0`, all stages pending, `artifacts_dir` set). `cost.sh enter` runs before `init` and leaves `cost-entry.json` for it; `--track-cost` adds `cost_sessions` with the current session:
+1. Parse the ticket **KEY** from the argument (full URL or bare key; regex `[A-Z]+-\d+`). Strip an optional `--no-pr` first (it is not part of the key) and hold whether it was given.
+2. If `./.doer/tickets/<KEY>/bugfix.json` exists → **resume**: a `--no-pr` typed here is ignored with a one-line narration (the mode is fixed at creation and lives in `no_pr`; a file without the field is the PR flow). Read it, announce `current_stage`, jump to the next incomplete stage. Never redo work flagged `done`. First register this session for cost: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" enter "<KEY>" --file bugfix.json` (writes only when the session is not yet in `cost_sessions`).
+3. Otherwise run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<KEY>" bugfix` (contract: `lib/workspace-guard.md`), then create the folders and the initial `bugfix.json` (`status=in_progress`, `current_stage=0`, all stages pending, `artifacts_dir` set, `no_pr` true only when `--no-pr` was given, else false). `cost.sh enter` runs before `init` and leaves `cost-entry.json` for it; `--track-cost` adds `cost_sessions` with the current session:
    ```bash
    mkdir -p "$HOME/Downloads/<KEY>/charles" "$HOME/Downloads/<KEY>/screenshots" ".doer/tickets/<KEY>"
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" enter "<KEY>"
@@ -210,12 +212,17 @@ Mark stage 5 complete → Stage 6.
    printf '%s' "<chosen message>" | "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-ops.sh" squash <base> <KEY> bugfix
    ```
    prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash itself (backup ref, `reset --soft`, commit, verify exactly 1 commit remains, all atomic); narrate the backup ref (rollback: `git reset --hard <ref>`). Exit 1 means it refused for a stated reason (dirty tree, base not an ancestor) and changed nothing; exit 2 after a `BACKUP <ref>` line means a git step failed after the backup, so narrate the ref and the rollback and stop. Never append a `Co-Authored-By` trailer to any candidate; `git-ops.sh squash` strips one and prints `STRIPPED Co-Authored-By trailer`, and exits 1 if a repo-side git hook re-injects it.
-9. **PR description.** Auto-detect a template:
+9. **PR description.**
+   **No-PR.** When `no_pr` in `bugfix.json` is true, do not detect templates, dispatch the writer or ask for approval: narrate one line, "PR description skipped: this ticket has no PR", hold the literal `"skipped"` for step 10's write and go to step 10. Otherwise auto-detect a template:
    ```bash
    "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" pr-templates
    ```
    One found → use it; several → ask which; none → ask the dev to paste one, or reply `default` (Summary / Changes / How to test / Verification / Notes) or `skip`. Dispatch a PR-description writer Agent with `model: "haiku"` on every dispatch of this writer, rewrite rounds included (it only turns inlined text into text: it writes no code and judges none; every other dispatch inherits the session model). If the whole inlined prompt would pass 100 KB (about 33k tokens of ordinary prose, which with the roughly 38k fixed tokens of any subagent stays under the 100k-token long-prompt threshold), omit `model` and never trim the input. (Read budget 0; inline `title`, `signals` (`repro`/`expected`/`actual`/`env`), the root cause and steps from `plan`, `notes`, and a one-line on-device verification outcome from step 3). Rules for the output: fill every template section (`> N/A for this ticket.` where not applicable), preserve headings and directives verbatim, terse prose + bullets, no em-dashes, no internal labels (no `PROTOLOG`, no `REPLAY`, no stage names, no verdict jargon like `app_bug`). Validate with `vocab-guard.sh` (same as step 7) before presenting; scrub or regenerate on a match. Present wrapped in a four-backtick fence (four backticks on their own line before and after) so the description's own markdown, including any triple-backtick blocks inside it, renders literally in chat and copies verbatim. Then ask a plain-chat question ("keep it as is, or want changes?") and **end the turn there** (`lib/narration.md` turn boundary 4); never `AskUserQuestion` for this. Persisting `pr_description` or running step 10 before the dev's reply is prohibited. On requested changes, rewrite, re-validate with `vocab-guard.sh`, re-present, and ask again, as many rounds as needed. Only an explicit ok (or `skip`) unlocks step 10; on `skip`, hold the literal `"skipped"` for step 10's write.
 10. **Close.** Precondition: step 9 has the dev's explicit approval (or `"skipped"`); if not, this step does not run. ONE `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" write ... --file bugfix.json` call setting `status=complete`, `completed_at`, `commit_message` (step 7's choice), `pr_description` (step 9's approved result, or `"skipped"`), `replay` (step 1's summary, or `null`), `.cost = $cost[0]` and `stages.6="complete"`. Before the write run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" record "<KEY>" --file bugfix.json > .doer/tickets/<KEY>/cost-record.json` and pass `--slurpfile cost .doer/tickets/<KEY>/cost-record.json`, deleting `cost-record.json` after the successful write; if the output is empty or not a JSON object use `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" unknown "<reason>"`, so cost never blocks the close. Release the lock and session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<KEY>"`.
+
+    With `no_pr` true, finish by saying:
+
+    *"Ticket <KEY> complete. <N> commit(s) on `<branch>`. Run your pre-commit checks, use the commit message above, then merge `<branch>` into `<base>` and push when you approve (or keep everything as is)."*
 
 ## Notes
 

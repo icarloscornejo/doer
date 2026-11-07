@@ -501,6 +501,88 @@ mutate_and_expect_fail "mutation: fidelity no longer resets on a later text chan
 mutate_and_expect_fail "mutation: attention rows no longer trigger the how-to-proceed question" mut_attention_rows_no_question
 mutate_and_expect_fail "mutation: edit cap auto-advances with attention pending" mut_edit_cap_auto_advances
 
+# --- 1e. Per-ticket --no-pr parameter: prose contracts. Fixed strings on
+# purpose; they ARE the contract between the skills, lib/state.md and metadata.sh.
+np_has() { # np_has <desc> <text> <fixed-string>
+  if printf '%s\n' "$2" | grep -qF -- "$3"; then pass "no-pr prose: $1"; else fail "no-pr prose: $1"; fi
+}
+np_lacks() { # np_lacks <desc> <text> <fixed-string>
+  if printf '%s\n' "$2" | grep -qF -- "$3"; then fail "no-pr prose: $1"; else pass "no-pr prose: $1"; fi
+}
+# np_closing_line <desc> <text>: the one no-PR closing line (merge <branch> into <base>)
+# must offer a push on approval and never mention a PR. Absent line fails.
+np_closing_line() {
+  local line
+  line="$(printf '%s\n' "$2" | grep -F 'merge `<branch>` into `<base>`')"
+  if [ -n "$line" ] && printf '%s' "$line" | grep -qF 'push' && printf '%s' "$line" | grep -qF 'when you approve' \
+     && ! printf '%s' "$line" | grep -qF 'PR'; then pass "no-pr prose: $1"; else fail "no-pr prose: $1"; fi
+}
+
+DOER_SKILL_MD="$REPO_ROOT/skills/doer/SKILL.md"
+WRAPUP_MD="$REPO_ROOT/skills/doer/stages/05-wrapup.md"
+DOER_FRONT="$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$DOER_SKILL_MD")"
+DOER_DISPATCH="$(md_section "$DOER_SKILL_MD" '## Entry-point dispatch')"
+np_has "doer frontmatter is version 7.18.0" "$DOER_FRONT" 'version: 7.18.0'
+np_has "doer description mentions --no-pr" "$DOER_FRONT" '--no-pr'
+np_has "doer dispatch shows <ID> [--no-pr]" "$DOER_DISPATCH" '<ID> [--no-pr]'
+np_has "doer dispatch mentions --no-pr" "$DOER_DISPATCH" '--no-pr'
+np_has "doer dispatch says a resume --no-pr is ignored" "$DOER_DISPATCH" 'ignored'
+np_has "01-ac Step 3 records no_pr" "$AC_STEP3" 'no_pr'
+
+STATE_TEXT="$(cat "$REPO_ROOT/$STATE_REL")"
+np_has "state.md documents no_pr" "$STATE_TEXT" 'no_pr'
+if grep -F 'no_pr' "$REPO_ROOT/$STATE_REL" | grep -qF 'absent'; then pass "no-pr prose: state.md says absent no_pr means the PR flow"; else fail "no-pr prose: state.md says absent no_pr means the PR flow"; fi
+
+WRAPUP_INTRO="$(sed -n 3p "$WRAPUP_MD")"
+WRAPUP_STEP5="$(md_section "$WRAPUP_MD" '## 5.')"
+WRAPUP_STEP6="$(md_section "$WRAPUP_MD" '## 6.')"
+WRAPUP_TEXT="$(cat "$WRAPUP_MD")"
+WRAPUP_NOPR_PARA="$(printf '%s\n' "$WRAPUP_STEP6" | grep -F '**No-PR.**')"
+np_has "wrapup intro says step 6 is skipped in no-PR mode" "$WRAPUP_INTRO" 'In no-PR mode step 6 is skipped with a recorded one-line message instead of a reply.'
+np_has "wrapup step 5 defines PR-ready for no-PR mode" "$WRAPUP_STEP5" 'In no-PR mode (`metadata.no_pr` is true) read "PR-ready" as: one commit on top of the base branch.'
+np_has "wrapup step 5 keeps the three candidates" "$WRAPUP_STEP5" 'Draft THREE candidates'
+np_has "wrapup step 5 keeps the squash gate offer" "$WRAPUP_STEP5" 'Squash gate, then offer to squash now'
+np_has "wrapup step 5 keeps the squash command" "$WRAPUP_STEP5" 'git-ops.sh" squash <base> <TICKET-ID> doer'
+np_has "wrapup step 5 keeps the squash sentence" "$WRAPUP_STEP5" 'The dev squashes the per-stage commits into one PR-ready commit.'
+np_has "wrapup step 6 has a No-PR paragraph" "$WRAPUP_NOPR_PARA" '**No-PR.**'
+np_has "wrapup step 6 No-PR paragraph keys on metadata.no_pr" "$WRAPUP_NOPR_PARA" 'metadata.no_pr'
+np_has "wrapup step 6 No-PR paragraph prints the skip message" "$WRAPUP_NOPR_PARA" 'PR description skipped: this ticket has no PR'
+np_has "wrapup step 6 No-PR paragraph records via metadata.sh write" "$WRAPUP_NOPR_PARA" 'metadata.sh write'
+np_has "wrapup step 6 No-PR paragraph stores \"skipped\"" "$WRAPUP_NOPR_PARA" '"skipped"'
+np_has "wrapup step 6 keeps pr-templates" "$WRAPUP_STEP6" 'git-checks.sh" pr-templates'
+np_has "wrapup step 6 keeps the writer Agent dispatch" "$WRAPUP_STEP6" 'Dispatch a PR-description writer Agent'
+np_has "wrapup step 6 keeps the approval question" "$WRAPUP_STEP6" 'keep it as is, or want changes?'
+np_has "wrapup step 8 precondition accepts \"skipped\"" "$(md_section "$WRAPUP_MD" '## 8.')" 'Precondition: step 6 has the dev'"'"'s explicit approval of the PR description (or `"skipped"`)'
+np_has "wrapup keeps the default closing line" "$WRAPUP_TEXT" 'Run your pre-commit checks, use the commit message and PR description above, then push and open the PR manually (or keep everything as is).'
+np_closing_line "wrapup has a no-PR closing line without PR wording" "$WRAPUP_TEXT"
+
+BUGFIX_FRONT="$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$BUGFIX_MD")"
+BUGFIX_TEXT="$(cat "$BUGFIX_MD")"
+np_has "bugfix frontmatter is version 7.18.0" "$BUGFIX_FRONT" 'version: 7.18.0'
+np_has "bugfix description mentions --no-pr" "$BUGFIX_FRONT" '--no-pr'
+np_has "bugfix Stage 0 mentions --no-pr" "$BUGFIX_STAGE0" '--no-pr'
+np_has "bugfix Stage 0 records no_pr" "$BUGFIX_STAGE0" 'no_pr'
+np_has "bugfix Stage 0 says a resume --no-pr is ignored" "$BUGFIX_STAGE0" 'ignored'
+np_has "bugfix schema carries \"no_pr\": false" "$BUGFIX_TEXT" '"no_pr": false'
+np_has "bugfix Stage 6 has a No-PR clause" "$BUGFIX_STAGE6" '**No-PR.**'
+np_has "bugfix Stage 6 prints the skip message" "$BUGFIX_STAGE6" 'PR description skipped: this ticket has no PR'
+np_has "bugfix Stage 6 stores \"skipped\"" "$BUGFIX_STAGE6" '"skipped"'
+np_has "bugfix Stage 6 keeps pr-templates" "$BUGFIX_STAGE6" 'pr-templates'
+np_has "bugfix Stage 6 keeps the approval question" "$BUGFIX_STAGE6" 'keep it as is, or want changes?'
+np_has "bugfix Stage 6 keeps the squash gate offer" "$BUGFIX_STAGE6" 'Squash gate, then offer to squash now'
+np_has "bugfix Stage 6 step 10 precondition accepts \"skipped\"" "$BUGFIX_STAGE6" 'Precondition: step 9 has the dev'"'"'s explicit approval (or `"skipped"`)'
+np_closing_line "bugfix Stage 6 has a no-PR closing line without PR wording" "$BUGFIX_STAGE6"
+np_lacks "bugfix never says open the PR" "$BUGFIX_TEXT" 'open the PR'
+
+PLUGIN_JSON_VERSION="$(jq -r '.version' "$REPO_ROOT/.claude-plugin/plugin.json")"
+if [ "$PLUGIN_JSON_VERSION" = "7.18.0" ]; then pass "no-pr prose: plugin.json version is 7.18.0"; else fail "no-pr prose: plugin.json version is 7.18.0"; fi
+np_has "README mentions --no-pr" "$(cat "$REPO_ROOT/README.md")" '--no-pr'
+np_has "README states Plugin version 7.18.0" "$(cat "$REPO_ROOT/README.md")" 'Plugin version 7.18.0'
+CHANGELOG_718="$(awk '/^## 7\.18\.0/{g=1;next} g&&/^## /{exit} g' "$REPO_ROOT/CHANGELOG.md")"
+np_has "CHANGELOG has a 7.18.0 heading" "$(cat "$REPO_ROOT/CHANGELOG.md")" '## 7.18.0'
+np_has "CHANGELOG 7.18.0 entry mentions --no-pr" "$CHANGELOG_718" '--no-pr'
+np_has "CHANGELOG keeps the 7.17.1 heading" "$(cat "$REPO_ROOT/CHANGELOG.md")" '## 7.17.1'
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

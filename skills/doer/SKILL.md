@@ -8,9 +8,11 @@ description: >-
   "/doer list", "/doer cleanup-history <ID>". Also
   activates implicitly when the user references an active /doer ticket in
   natural language ("continue", "pause", "keep going with ABC-123"). Stops
-  before PR and deploy. For bug triage from a Jira ticket use /wk:bugfix instead.
+  before PR and deploy. Pass --no-pr at start ("/doer <ID> --no-pr") for a
+  branch that merges straight to its base branch: no PR description, and the closing line
+  says merge and push. For bug triage from a Jira ticket use /wk:bugfix instead.
   For locale or Jira config use /wk:setup, /wk:locale, or /wk:jira instead.
-version: 7.17.1
+version: 7.18.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent, Skill, EnterPlanMode, ExitPlanMode]
 ---
@@ -54,9 +56,9 @@ Every `/doer ...` invocation, in order:
 1. **Resolve locale** (first action): `LOCALE="$("${CLAUDE_PLUGIN_ROOT}/lib/helpers/preferences.sh" get-locale)"`. All chat output binds to it (persistent state stays English; see `lib/narration.md`).
 2. **Route by command:**
    - `/doer list`, `/doer status <ID>`, `/doer cleanup-history <ID>` → read `_commands.md`, execute, end turn.
-   - `/doer <ID>` → check `./.doer/tickets/<ID>/metadata.json`:
-     - Exists → read `_resume.md` and ONLY that file. Do NOT re-ask intake questions.
-     - Missing → read `01-ac.md` and ONLY that file (intake lives there).
+   - `/doer <ID> [--no-pr]` → strip `--no-pr` from the arguments first (it is not part of the ID), then check `./.doer/tickets/<ID>/metadata.json`:
+     - Exists → read `_resume.md` and ONLY that file. Do NOT re-ask intake questions. A `--no-pr` typed here is ignored with a one-line narration: the mode is fixed when the ticket is created and lives in `metadata.no_pr`.
+     - Missing → read `01-ac.md` and ONLY that file (intake lives there); hold whether `--no-pr` was given for its Step 3.
 3. **Workspace Guard + lock** (ticket-scoped commands only, not `list`/`status`): run `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" acquire "<TICKET-ID>" doer` (contract: `lib/workspace-guard.md`) before touching metadata.
 
 **Version stamp.** New tickets record `skill_version` from this frontmatter. On resume, `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/metadata.sh" version-check "<TICKET-ID>" "<this frontmatter's version>"` compares the ticket's MAJOR against the current MAJOR; on `incompatible <old> vs <current>` (exit 1), stop and narrate: the ticket was created with an incompatible schema; finish it by hand or recreate it. No auto-migration machinery exists; if a future 7.x change ever needs one, it will be written then.

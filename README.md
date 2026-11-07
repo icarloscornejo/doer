@@ -1,6 +1,6 @@
 # Doer Work Kit (`wk`)
 
-**Four skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.9.0.
+**Four skills for daily dev work in Claude Code, plus three one-off config commands.** Plugin version 7.18.0.
 
 | Slash command | Purpose |
 |---|---|
@@ -56,6 +56,7 @@ To update the plugin: `/plugins` panel → `wk` → Update now, or `claude plugi
 | Command | Description |
 |---|---|
 | `/wk:doer <TICKET-ID>` | Start new or resume (auto-detected). |
+| `/wk:doer <TICKET-ID> --no-pr` | Start a ticket on a branch that merges straight to the base branch: Stage 5 still squashes to one commit, skips the PR description, and closes with "merge and push when you approve". Per ticket, stored in the ticket, ignored on resume. `/wk:bugfix <KEY> --no-pr` does the same. |
 | `/wk:doer status <TICKET-ID>` | Current stage, loop state, blockers. |
 | `/wk:doer list` | All tickets (doer and bugfix) under `./.doer/tickets/`. |
 | `/wk:doer cleanup-history <TICKET-ID>` | Scrub `.doer/` from branch history (auto-offered at wrapup). |

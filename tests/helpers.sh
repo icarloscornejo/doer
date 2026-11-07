@@ -2412,6 +2412,21 @@ assert_eq "doer repo: .doer-gate-ignore exists" "yes" "$([ -f "$FC_DOER_ROOT/.do
 
 cd "$REPO_ROOT" || exit 1
 
+# --- per-ticket no_pr flag: metadata.sh must carry it untouched and validate with or without it ---
+NO_PR_WORKDIR="$(mktemp -d)"
+cd "$NO_PR_WORKDIR" || exit 1
+NO_PR_STAGE5_DOC='{"summary":"s","commit_message":"c","pr_description":"skipped","cost":{"status":"unknown"},"stages":{"5":{"completed_at":"t"}}}'
+printf '%s' "$NO_PR_STAGE5_DOC" | jq -c '.no_pr = true' | "$METADATA_SH" init NP-1 > /dev/null
+"$METADATA_SH" write NP-1 '.unrelated = "x"' > /dev/null
+assert_eq "no_pr: init keeps no_pr true through an unrelated write" "true" "$(jq -r '.no_pr' ./.doer/tickets/NP-1/metadata.json)"
+printf '%s' "$NO_PR_STAGE5_DOC" | jq -c '.no_pr = true' | "$METADATA_SH" check-required 5 complete - > /dev/null 2>&1
+assert_eq "no_pr: check-required 5 complete passes with pr_description skipped" "0" "$?"
+printf '%s' "$NO_PR_STAGE5_DOC" | "$METADATA_SH" init NP-2 > /dev/null
+assert_eq "no_pr: a document without it validates" "0" "$(printf '%s' "$NO_PR_STAGE5_DOC" | "$METADATA_SH" check-required 5 complete - > /dev/null 2>&1; echo $?)"
+assert_eq "no_pr: absent reads as false" "false" "$(jq -r '.no_pr // false' ./.doer/tickets/NP-2/metadata.json)"
+cd "$REPO_ROOT" || exit 1
+rm -rf "$NO_PR_WORKDIR"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

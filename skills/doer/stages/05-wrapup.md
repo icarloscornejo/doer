@@ -1,6 +1,6 @@
 # Stage 5. Wrapup
 
-**Goal:** validate assumptions, capture lessons, check docs, deliver commit message + PR description, clean `.doer/` from branch history, close the ticket. Steps run in this order; 5 and 6 are the two the dev came for and are NEVER skipped silently (the dev may decline 6 with `skip`, which is recorded).
+**Goal:** validate assumptions, capture lessons, check docs, deliver commit message + PR description, clean `.doer/` from branch history, close the ticket. Steps run in this order; 5 and 6 are the two the dev came for and are NEVER skipped silently (the dev may decline 6 with `skip`, which is recorded). In no-PR mode step 6 is skipped with a recorded one-line message instead of a reply.
 
 ## 1. Validate assumptions
 
@@ -43,6 +43,8 @@ Draft `metadata.summary`: one paragraph in English (what was delivered, what act
 
 ## 5. Recommended commit message
 
+In no-PR mode (`metadata.no_pr` is true) read "PR-ready" as: one commit on top of the base branch. Everything else in this step runs as written.
+
 The dev squashes the per-stage commits into one PR-ready commit. Draft THREE candidates,
 each `<TICKET-ID>: <Subject ≤72 chars>` with the subject starting uppercase, specific to the actual change, in plain business
 language. Each candidate takes a genuinely different angle (the user-visible behavior, the
@@ -74,6 +76,8 @@ prints `SKIP: 1 commit` (nothing to do) or `BACKUP <ref>` followed by the squash
 
 ## 6. PR description
 
+**No-PR.** When `metadata.no_pr` is true, do not detect templates, dispatch the writer or ask for approval: narrate one line, "PR description skipped: this ticket has no PR", and persist the literal `"skipped"` to `metadata.pr_description` with one `metadata.sh write`, the same way a `skip` reply does below. Then go to step 7. Step 8's self-check reads the saved field, so it must be written here.
+
 Auto-detect a template:
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/lib/helpers/git-checks.sh" pr-templates
@@ -101,3 +105,7 @@ Prints `BACKUP <ref>` before rewriting anything, then backs up, runs `filter-bra
 Precondition: step 6 has the dev's explicit approval of the PR description (or `"skipped"`); if not, this step does not run. Release the lock and the session marker: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/workspace-guard.sh" release "<TICKET-ID>"`. Self-check: `metadata.commit_message` and `metadata.pr_description` are non-null (or `"skipped"`); if either is missing, jump back to that step now, before any closing narration. Record the cost first: `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" record "<TICKET-ID>" > .doer/tickets/<TICKET-ID>/cost-record.json` (prints one JSON object, never fails). If that output is empty or not a JSON object, use `"${CLAUDE_PLUGIN_ROOT}/lib/helpers/cost.sh" unknown "<reason>"` instead, so a close is never blocked by cost. Build ONE jq filter that in a single pass sets `metadata.summary`, `metadata.status = "complete"`, `metadata.completed_at` (all held from step 4), `.cost = $cost[0]` and `stages.5` complete (`completed_at`); call `metadata.sh write "<TICKET-ID>" '<filter>' --slurpfile cost .doer/tickets/<TICKET-ID>/cost-record.json --require 5:complete` exactly once, then delete `cost-record.json` after the successful write. `--require` validates the required fields per `lib/state.md` against the transformed document before swapping; on failure, back-fill and write again as a NEW transition.
 
 Closing narration (in the operating locale): render `metadata.summary`, then: *"Ticket <TICKET-ID> complete. <N> commit(s) on `<branch>`. Run your pre-commit checks, use the commit message and PR description above, then push and open the PR manually (or keep everything as is)."*
+
+With `metadata.no_pr` true, say this instead of the line above:
+
+*"Ticket <TICKET-ID> complete. <N> commit(s) on `<branch>`. Run your pre-commit checks, use the commit message above, then merge `<branch>` into `<base>` and push when you approve (or keep everything as is)."*

@@ -2,6 +2,16 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.18.0
+
+### Added
+
+- **`--no-pr` for `/wk:doer` and `/wk:bugfix` (DOER-15).** `/wk:doer <ID> --no-pr` marks a ticket whose branch merges straight into the base branch. It is per ticket only (no repo or global default), stored as `no_pr` in `metadata.json` / `bugfix.json` when the ticket is created, and ignored if typed again on a resume. In no-PR mode the wrap-up still drafts three commit messages and squashes to one commit, but it skips template detection, the writer agent and the approval round (`pr_description` is recorded as `"skipped"`), and the closing line says to merge the branch into the base branch and push when the dev approves instead of "open the PR". The kit still never merges or pushes. Without the flag, and for tickets whose metadata has no `no_pr`, the PR flow is unchanged.
+
+### Fixed
+
+- README stated "Plugin version 7.9.0"; it now follows the release version.
+
 ## 7.17.1
 
 ### Fixed
