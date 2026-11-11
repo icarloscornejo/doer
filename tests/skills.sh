@@ -522,7 +522,7 @@ DOER_SKILL_MD="$REPO_ROOT/skills/doer/SKILL.md"
 WRAPUP_MD="$REPO_ROOT/skills/doer/stages/05-wrapup.md"
 DOER_FRONT="$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$DOER_SKILL_MD")"
 DOER_DISPATCH="$(md_section "$DOER_SKILL_MD" '## Entry-point dispatch')"
-np_has "doer frontmatter is version 7.18.0" "$DOER_FRONT" 'version: 7.18.0'
+np_has "doer frontmatter is version 7.19.0" "$DOER_FRONT" 'version: 7.19.0'
 np_has "doer description mentions --no-pr" "$DOER_FRONT" '--no-pr'
 np_has "doer dispatch shows <ID> [--no-pr]" "$DOER_DISPATCH" '<ID> [--no-pr]'
 np_has "doer dispatch mentions --no-pr" "$DOER_DISPATCH" '--no-pr'
@@ -558,7 +558,7 @@ np_closing_line "wrapup has a no-PR closing line without PR wording" "$WRAPUP_TE
 
 BUGFIX_FRONT="$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$BUGFIX_MD")"
 BUGFIX_TEXT="$(cat "$BUGFIX_MD")"
-np_has "bugfix frontmatter is version 7.18.0" "$BUGFIX_FRONT" 'version: 7.18.0'
+np_has "bugfix frontmatter is version 7.19.0" "$BUGFIX_FRONT" 'version: 7.19.0'
 np_has "bugfix description mentions --no-pr" "$BUGFIX_FRONT" '--no-pr'
 np_has "bugfix Stage 0 mentions --no-pr" "$BUGFIX_STAGE0" '--no-pr'
 np_has "bugfix Stage 0 records no_pr" "$BUGFIX_STAGE0" 'no_pr'
@@ -575,9 +575,9 @@ np_closing_line "bugfix Stage 6 has a no-PR closing line without PR wording" "$B
 np_lacks "bugfix never says open the PR" "$BUGFIX_TEXT" 'open the PR'
 
 PLUGIN_JSON_VERSION="$(jq -r '.version' "$REPO_ROOT/.claude-plugin/plugin.json")"
-if [ "$PLUGIN_JSON_VERSION" = "7.18.0" ]; then pass "no-pr prose: plugin.json version is 7.18.0"; else fail "no-pr prose: plugin.json version is 7.18.0"; fi
+if [ "$PLUGIN_JSON_VERSION" = "7.19.0" ]; then pass "no-pr prose: plugin.json version is 7.19.0"; else fail "no-pr prose: plugin.json version is 7.19.0"; fi
 np_has "README mentions --no-pr" "$(cat "$REPO_ROOT/README.md")" '--no-pr'
-np_has "README states Plugin version 7.18.0" "$(cat "$REPO_ROOT/README.md")" 'Plugin version 7.18.0'
+np_has "README states Plugin version 7.19.0" "$(cat "$REPO_ROOT/README.md")" 'Plugin version 7.19.0'
 CHANGELOG_718="$(awk '/^## 7\.18\.0/{g=1;next} g&&/^## /{exit} g' "$REPO_ROOT/CHANGELOG.md")"
 np_has "CHANGELOG has a 7.18.0 heading" "$(cat "$REPO_ROOT/CHANGELOG.md")" '## 7.18.0'
 np_has "CHANGELOG 7.18.0 entry mentions --no-pr" "$CHANGELOG_718" '--no-pr'

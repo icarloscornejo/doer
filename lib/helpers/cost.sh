@@ -14,6 +14,39 @@
 #   record <ID> [--file F]     print the cost record (one JSON object, exit 0)
 #   unknown "<reason>"         print an unknown record (fallback for prose)
 #   summary <ID> [--file F]    short text of the cost stored in the ticket metadata (exit 0)
+#   floor <session.jsonl>      how much context one session re-sends on every call (exit 0)
+#
+# cost.sh floor <session.jsonl>: input is a main session file (projects/*/<session>.jsonl). A file whose
+# assistant lines are all sidechain (a subagent file) prints "no assistant calls
+# found". Streaming copies of one message count once (the copy with the largest
+# output wins); synthetic and zero-context lines are not calls. Output:
+#   floor: N calls                    the calls counted.
+#   context per call: avg A, max M    context = fresh input + cache write + cache read,
+#                                     the tokens the model reads on that call. The average
+#                                     is rounded down.
+#   weighted cost split (...)         each kind of token weighted by its price relative to
+#                                     fresh input: fresh input 1x, cache read 0.1x, cache
+#                                     write 2x, output 5x. Shares are whole percents and
+#                                     can add to 99 or 101. A big cache read share means
+#                                     every call re-sends a large context.
+#   compactions: N, then one line each   a call whose context is more than 40% below the
+#                                     previous call (exactly 40% is not). It prints the
+#                                     minute, the context before and the context after,
+#                                     which is the floor: what a fresh start already
+#                                     costs once the compaction summary is loaded. A
+#                                     timestamp that is not a date prints "?".
+#   biggest pieces ...                the ten largest things loaded before the first
+#                                     answer after the last compaction (or at session
+#                                     start when there was none), grouped by attachment
+#                                     type, summary or entry type. Sizes are an estimate:
+#                                     characters of the stored JSON divided by 4, rounded
+#                                     per entry. Only labels and numbers are printed, never
+#                                     message or attachment text.
+#
+# What to do when the floor grows: read the biggest pieces and trim what loads
+# at the start (instruction files, memory, skill and tool listings, hook output),
+# then compact or start a fresh session earlier. Repeated compaction summaries
+# raise the floor too, so a fresh session beats a third compaction.
 #
 # Sources (env overrides exist for tests):
 #   COST_RATES_FILE            the rate table, default lib/cost-rates.json next to this helper
@@ -308,6 +341,83 @@ cmd_summary() {
   return 0
 }
 
+# jq-compat:begin floor
+# Reads the whole file as one string (-R -s). ponytail: the whole file sits in memory,
+# so the ceiling is a transcript that fits in RAM; stream it per line when that bites.
+# Parsed lines keep only the fields the report needs; the text of a window line is
+# parsed again by position, and only to measure its size.
+FLOOR_PROGRAM='def amount: if type == "number" then . else 0 end;
+def safe_label($fallback): if type == "string" and test("^[A-Za-z0-9_:.-]{1,40}$") then . else $fallback end;
+def pad_left($width): tostring | ([range($width - length)] | map(" ") | join("")) + .;
+def percent($part; $whole): ($part * 100 / $whole) | round;
+["file-history-snapshot", "api-request-blob", "api-request-shape", "api-request", "last-prompt", "session-owner",
+ "bridge-session", "pr-link", "frame-link", "queue-operation", "custom-title", "agent-name", "mode",
+ "permission-mode", "atis-latch"] as $bookkeeping
+| split("\n") as $raw
+| [$raw | to_entries[] | .key as $at | (.value | fromjson? | select(type == "object"))
+    | (.message | if type == "object" then {id, model, usage} else {} end) as $message
+    | {at: $at, type, subtype, summary: (.isCompactSummary == true), side: (.isSidechain == true), ts: .timestamp,
+       attachment: ((.attachment | type) == "object"), attachment_type: (.attachment | if type == "object" then .type else null end),
+       has_message: has("message"), message_id: $message.id, model: $message.model, usage: $message.usage}] as $lines
+# The copy with the largest output wins, at the earliest position; a line with no id counts alone.
+| ([$lines[] | select(.type == "assistant" and (.usage | type) == "object" and (.side | not) and .model != "<synthetic>")
+    | .usage as $usage
+    | {at, ts, mid: .message_id, i: ($usage.input_tokens | amount), o: ($usage.output_tokens | amount),
+       cr: ($usage.cache_read_input_tokens | amount), cw: ($usage.cache_creation_input_tokens | amount)}
+    | . + {context: (.i + .cr + .cw)} | select(.context > 0)]
+   | group_by(if .mid == null then ["position", .at] else ["message", .mid] end)
+   | map(sort_by([-(.o), .at]) | .[0])
+   | sort_by(.at)) as $calls
+| if ($calls | length) == 0 then "floor: no assistant calls found in \($path)" else
+    ($calls | length) as $count
+    | ($calls | map(.context)) as $contexts
+    | ([{name: "cache read", weight: (($calls | map(.cr) | add) * 1)},
+        {name: "cache write", weight: (($calls | map(.cw) | add) * 20)},
+        {name: "output", weight: (($calls | map(.o) | add) * 50)},
+        {name: "fresh input", weight: (($calls | map(.i) | add) * 10)}]) as $parts
+    | ($parts | map(.weight) | add) as $whole
+    # A drop of more than 40% between two calls only happens on a compaction.
+    | [range(1; $count) | {before: $contexts[. - 1], after: $contexts[.], ts: $calls[.].ts} | select(.after * 10 < .before * 6)] as $drops
+    | ($lines | map(select(.summary or (.type == "system" and .subtype == "compact_boundary"))) | last | .at) as $marker
+    | ($marker // 0) as $start
+    | (([$lines[] | select(.type == "assistant" and .at >= $start) | .at] | first) // ($raw | length)) as $stop
+    | ($lines | map(select(.at >= $start and .at < $stop
+          and (. as $line | $bookkeeping | any(.[]; . == $line.type) | not)
+          and (.type == "summary" and (.summary | not) | not)
+          and (.type == "system" and .subtype == "compact_boundary" | not)))
+      | map(. as $line | ($raw[.at] | fromjson) as $entry
+          | (if $line.attachment then $entry.attachment elif $line.has_message then $entry.message else $entry end) as $payload
+          | {label: (if $line.attachment then "attachment:" + ($line.attachment_type | safe_label("unknown"))
+                     elif $line.summary then "summary"
+                     else ($line.type | safe_label("unknown")) end),
+             size: (($payload | tojson | length) / 4 | floor)})
+      | group_by(.label) | map({label: .[0].label, size: (map(.size) | add)})
+      | sort_by([-(.size), .label]) | .[0:10]) as $pieces
+    | ([
+        "floor: \($count) calls",
+        "context per call: avg \($contexts | add / $count | floor), max \($contexts | max)",
+        "weighted cost split (fresh input = 1x): \($parts | map("\(.name) \(percent(.weight; $whole))%") | join(", "))"]
+       + (if ($drops | length) == 0 then ["compactions: none"] else
+            ["compactions: \($drops | length)"] + ($drops | map("  \(.ts | if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}") then .[0:16] else "?" end) context \(.before) -> floor \(.after)"))
+          end)
+       + [if $marker == null then "biggest pieces at session start (estimated tokens):" else "biggest pieces after the last compaction (estimated tokens):" end]
+       + ($pieces | map("  \(.size | pad_left(7))  \(.label)"))) | .[]
+  end'
+# jq-compat:end
+
+cmd_floor() {
+  local output
+  [ $# -ge 1 ] || { echo "floor: no session file given"; return 0; }
+  [ -f "$1" ] || { echo "floor: session file not found: $1"; return 0; }
+  # Same capture as summary: a jq failure leaves exactly the one fallback line, never half a report.
+  if output="$(jq -rRs --arg path "$1" "$FLOOR_PROGRAM" "$1" 2>/dev/null)" && [ -n "$output" ]; then
+    printf '%s\n' "$output"
+  else
+    echo "floor: could not read the session file"
+  fi
+  return 0
+}
+
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # first_hit <program> <sid> <file>...: value from the first (newest) file that
@@ -446,6 +556,7 @@ case "${1:-}" in
   record) shift; cmd_record "$@" ;;
   unknown) shift; cmd_unknown "$@" ;;
   summary) shift; cmd_summary "$@" ;;
-  *) echo "Usage: cost.sh sample | enter <ID> [--file F] | record <ID> [--file F] | unknown \"<reason>\" | summary <ID> [--file F]" >&2; exit 2 ;;
+  floor) shift; cmd_floor "$@" ;;
+  *) echo "Usage: cost.sh sample | enter <ID> [--file F] | record <ID> [--file F] | unknown \"<reason>\" | summary <ID> [--file F] | floor <session.jsonl>" >&2; exit 2 ;;
 esac
 exit 0

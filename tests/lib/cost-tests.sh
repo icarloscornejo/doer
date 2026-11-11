@@ -1344,6 +1344,202 @@ assert_eq "summary: lib/state.md documents cost.sh summary" "yes" \
 assert_eq "summary: the 7.16.1 changelog entry mentions summary" "yes" \
   "$(awk '/^## /{inside = ($2 == "7.16.1")} inside' "${REPO_ROOT}/CHANGELOG.md" | grep -qF 'summary' && echo yes || echo no)"
 
+# --- floor: how much context a session re-sends on every call ---
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+FLOOR_MARKER="LEAKMARKER_7f3a"
+fl_pad() { head -c "$1" /dev/zero | tr '\0' x; } # <n>: n filler characters
+fl_att() { jq -nc --arg t "$1" --arg c "$(fl_pad "$2")" '{type:"attachment",attachment:{type:$t,content:$c}}'; } # <type> <n>
+fl_msg() { jq -nc --arg t "$1" --arg c "$(fl_pad "$2")" '{type:$t,message:{role:"user",content:$c}}'; } # <entry-type> <n>
+fl_summary() { jq -nc --arg c "$(fl_pad "$1")" '{type:"user",isCompactSummary:true,message:{role:"user",content:$c}}'; } # <n>
+fl_book() { jq -nc --arg t "$1" --arg c "$(fl_pad 4000)" '{type:$t,payload:$c}'; } # <entry-type>: a bookkeeping entry, big on purpose
+fl_ctx() { tx_line "$1" "$2" "r-$2" "$3" 5 0 0; } # <ts> <message-id> <context>: a call whose context is all fresh input
+fl_norm() { awk '{$1=$1}1'; }
+fl_report() { cost_run floor "$1"; }
+fl_compactions() { fl_report "$1" | awk '/^compactions/{inside=1} /^biggest/{inside=0} inside' | fl_norm | paste -sd '|' -; }
+fl_pieces() { fl_report "$1" | sed -n '/^biggest pieces/,$p' | tail -n +2 | fl_norm | paste -sd '|' -; }
+fl_line() { fl_report "$1" | sed -n "${2}p"; }
+
+# calls, average (floored) and max context
+FL_CALLS="$COST_ROOT/calls.jsonl"
+{
+  tx_line 2026-11-02T10:00:00Z a1 r1 10 5 100 50
+  tx_line 2026-11-02T10:01:00Z a2 r2 20 5 200 0
+  tx_line 2026-11-02T10:02:00Z a3 r3 0 5 250 0
+  tx_line 2026-11-02T10:03:00Z a4 r4 1 5 260 0
+} > "$FL_CALLS"
+assert_eq "floor: the first line counts the calls" "floor: 4 calls" "$(fl_line "$FL_CALLS" 1)"
+assert_eq "floor: average (floored, 891 / 4) and max context are input + cache write + cache read" \
+  "context per call: avg 222, max 261" "$(fl_line "$FL_CALLS" 2)"
+cost_run floor "$FL_CALLS" > /dev/null; assert_eq "floor: a normal report exits 0" "0" "$?"
+assert_eq "floor: no compaction prints none" "compactions: none" "$(fl_line "$FL_CALLS" 4)"
+
+# weighted split: input 100x1, read 5000x0.1, write 300x2, output 160x5 = 2000 weighted
+FL_SPLIT="$COST_ROOT/split.jsonl"
+{
+  tx_line 2026-11-02T10:00:00Z s1 r1 50 80 2500 150
+  tx_line 2026-11-02T10:01:00Z s2 r2 50 80 2500 150
+} > "$FL_SPLIT"
+assert_eq "floor: the weighted split is cache read, cache write, output, fresh input" \
+  "weighted cost split (fresh input = 1x): cache read 25%, cache write 30%, output 40%, fresh input 5%" "$(fl_line "$FL_SPLIT" 3)"
+
+# compactions
+FL_C1="$COST_ROOT/c1.jsonl"
+{
+  fl_ctx 2026-11-02T10:00:10Z c1 1000
+  fl_ctx 2026-11-02T10:01:30Z c2 500
+  fl_ctx 2026-11-02T10:02:30Z c3 300
+  fl_ctx 2026-11-02T10:03:30Z c4 210
+} > "$FL_C1"
+assert_eq "floor: a 50% drop is listed, a drop of exactly 40% and one of 30% are not" \
+  "compactions: 1|2026-11-02T10:01 context 1000 -> floor 500" "$(fl_compactions "$FL_C1")"
+FL_C2="$COST_ROOT/c2.jsonl"
+{
+  fl_ctx 2026-11-02T10:00:10Z d1 1000
+  fl_ctx 2026-11-02T10:01:10Z d2 400
+  fl_ctx 2026-11-02T10:02:10Z d3 1000
+  fl_ctx 2026-11-02T10:03:10Z d4 300
+} > "$FL_C2"
+assert_eq "floor: two compactions give two lines" \
+  "compactions: 2|2026-11-02T10:01 context 1000 -> floor 400|2026-11-02T10:03 context 1000 -> floor 300" "$(fl_compactions "$FL_C2")"
+FL_C3="$COST_ROOT/c3.jsonl"
+{
+  fl_ctx 2026-11-02T10:00:10Z e1 1000
+  fl_ctx 2026-11-02T10:01:10Z e2 400 | jq -c '.timestamp = 12345'
+  fl_ctx 2026-11-02T10:02:10Z e3 1000
+  fl_ctx 2026-11-02T10:03:10Z e4 300 | jq -c 'del(.timestamp)'
+  fl_ctx 2026-11-02T10:04:10Z e5 1000
+  fl_ctx 2026-11-02T10:05:10Z e6 350 | jq -c '.timestamp = "not-a-time"'
+} > "$FL_C3"
+assert_eq "floor: a numeric, missing or malformed timestamp prints a question mark" \
+  "compactions: 3|? context 1000 -> floor 400|? context 1000 -> floor 300|? context 1000 -> floor 350" "$(fl_compactions "$FL_C3")"
+
+# biggest pieces after the last compaction
+FL_P1="$COST_ROOT/p1.jsonl"
+{
+  fl_att old_thing 800
+  fl_ctx 2026-11-02T10:00:00Z p1 1000
+  tx_boundary 2026-11-02T10:00:30Z u1 1000 100
+  fl_att mid_thing 800
+  fl_summary 400
+  fl_att skill_listing 101
+  fl_att skill_listing 202
+  fl_msg user 53
+  fl_book file-history-snapshot
+  fl_book api-request-blob
+  fl_book custom-title
+  fl_book summary
+  fl_ctx 2026-11-02T10:01:00Z p2 400
+  fl_att late_thing 800
+} > "$FL_P1"
+assert_eq "floor: pieces start at the last compaction marker, rounding is per entry, bookkeeping never listed" \
+  "107 summary|93 attachment:skill_listing|20 user" "$(fl_pieces "$FL_P1")"
+assert_eq "floor: a marker gives the after-the-last-compaction heading" \
+  "yes" "$(fl_report "$FL_P1" | grep -qxF 'biggest pieces after the last compaction (estimated tokens):' && echo yes || echo no)"
+# a compact_boundary alone (no summary entry) also starts the window and is not a piece itself
+FL_P2="$COST_ROOT/p2.jsonl"
+{
+  fl_att old_thing 800
+  fl_ctx 2026-11-02T10:00:00Z q1 1000
+  tx_boundary 2026-11-02T10:00:30Z u2 1000 100
+  fl_msg user 53
+  fl_ctx 2026-11-02T10:01:00Z q2 400
+} > "$FL_P2"
+assert_eq "floor: a compact_boundary alone starts the window and is skipped" "20 user" "$(fl_pieces "$FL_P2")"
+# no marker: the window starts at the beginning of the file
+FL_P3="$COST_ROOT/p3.jsonl"
+{
+  for n in 01 02 03 04 05 06 07 08 09 10 11 12; do fl_att "t$n" "$((10#$n * 100))"; done
+  fl_ctx 2026-11-02T10:00:00Z w1 1000
+  fl_att late_thing 5000
+} > "$FL_P3"
+assert_eq "floor: no marker gives the at-session-start heading" \
+  "yes" "$(fl_report "$FL_P3" | grep -qxF 'biggest pieces at session start (estimated tokens):' && echo yes || echo no)"
+assert_eq "floor: 12 distinct labels give exactly 10 piece lines" "10" "$(fl_report "$FL_P3" | sed -n '/^biggest pieces/,$p' | tail -n +2 | wc -l | tr -d ' ')"
+assert_eq "floor: the top 10 are the biggest, in descending order" \
+  "attachment:t12|attachment:t03" "$(fl_pieces "$FL_P3" | tr '|' '\n' | awk '{print $2}' | sed -n '1p;10p' | paste -sd '|' -)"
+assert_eq "floor: pieces after the first assistant call are not counted" \
+  "no" "$(fl_report "$FL_P3" | grep -qF 'late_thing' && echo yes || echo no)"
+
+# dedupe: streaming copies, entries without an id, sidechain and synthetic entries
+FL_D1="$COST_ROOT/d1.jsonl"
+{
+  tx_line 2026-11-02T10:00:00Z m1 r1 100 10 0 0
+  tx_line 2026-11-02T10:00:01Z m1 r1 100 50 0 0
+  tx_line 2026-11-02T10:00:02Z m9 r9 9999 9999 9999 9999 | jq -c '.isSidechain = true'
+  tx_synthetic 2026-11-02T10:00:03Z
+} > "$FL_D1"
+assert_eq "floor: streaming entries of one message id count once" "floor: 1 calls" "$(fl_line "$FL_D1" 1)"
+assert_eq "floor: the copy with the largest output wins (output 50 = 71%, fresh input 29%), sidechain and synthetic excluded" \
+  "weighted cost split (fresh input = 1x): cache read 0%, cache write 0%, output 71%, fresh input 29%" "$(fl_line "$FL_D1" 3)"
+FL_D2="$COST_ROOT/d2.jsonl"
+{
+  tx_line 2026-11-02T10:00:00Z n1 r1 100 10 0 0
+  tx_line 2026-11-02T10:00:01Z n1 r1 100 50 0 0
+  tx_line 2026-11-02T10:00:02Z x r2 100 5 0 0 | jq -c 'del(.message.id)'
+  tx_line 2026-11-02T10:00:03Z x r3 100 5 0 0 | jq -c 'del(.message.id)'
+  tx_line 2026-11-02T10:00:04Z n9 r9 100 5 0 0 | jq -c '.isSidechain = true'
+  tx_synthetic 2026-11-02T10:00:05Z
+} > "$FL_D2"
+assert_eq "floor: entries without a message id each count" "floor: 3 calls" "$(fl_line "$FL_D2" 1)"
+
+# data problems: one line each, exit 0
+assert_eq "floor: no argument prints one line" "floor: no session file given" "$(cost_run floor)"
+cost_run floor > /dev/null; assert_eq "floor: no argument exits 0" "0" "$?"
+assert_eq "floor: a missing file prints one line" "floor: session file not found: $COST_ROOT/none.jsonl" "$(cost_run floor "$COST_ROOT/none.jsonl")"
+cost_run floor "$COST_ROOT/none.jsonl" > /dev/null; assert_eq "floor: a missing file exits 0" "0" "$?"
+: > "$COST_ROOT/empty.jsonl"
+assert_eq "floor: an empty file prints one line" "floor: no assistant calls found in $COST_ROOT/empty.jsonl" "$(cost_run floor "$COST_ROOT/empty.jsonl")"
+cost_run floor "$COST_ROOT/empty.jsonl" > /dev/null; assert_eq "floor: an empty file exits 0" "0" "$?"
+fl_msg user 10 > "$COST_ROOT/nocalls.jsonl"
+assert_eq "floor: a file without assistant calls prints one line" "floor: no assistant calls found in $COST_ROOT/nocalls.jsonl" "$(cost_run floor "$COST_ROOT/nocalls.jsonl")"
+assert_eq "floor: a file without assistant calls is one line long" "1" "$(cost_run floor "$COST_ROOT/nocalls.jsonl" | wc -l | tr -d ' ')"
+assert_eq "floor: a missing file is one line long" "1" "$(cost_run floor "$COST_ROOT/none.jsonl" | wc -l | tr -d ' ')"
+assert_eq "floor: an empty file is one line long" "1" "$(cost_run floor "$COST_ROOT/empty.jsonl" | wc -l | tr -d ' ')"
+assert_eq "floor: no argument is one line long" "1" "$(cost_run floor | wc -l | tr -d ' ')"
+cost_run floor "$COST_ROOT/nocalls.jsonl" > /dev/null; assert_eq "floor: a file without assistant calls exits 0" "0" "$?"
+FL_BAD="$COST_ROOT/bad.jsonl"
+{
+  tx_line 2026-11-02T10:00:00Z b1 r1 10 5 100 50
+  printf '{not json\n'
+  printf 'garbage\n'
+  tx_line 2026-11-02T10:01:00Z b2 r2 20 5 200 0
+} > "$FL_BAD"
+assert_eq "floor: malformed lines are skipped and the report is normal" "floor: 2 calls" "$(fl_line "$FL_BAD" 1)"
+assert_eq "floor: a report with malformed lines has the context line" "context per call: avg 190, max 220" "$(fl_line "$FL_BAD" 2)"
+FL_ODD="$COST_ROOT/odd.jsonl"
+{
+  tx_line 2026-11-02T10:00:00Z o1 r1 10 5 100 50 | jq -c '.timestamp = 12345'
+  tx_line 2026-11-02T10:01:00Z o2 r2 0 5 200 0 | jq -c '.message.usage.input_tokens = "abc"'
+} > "$FL_ODD"
+assert_eq "floor: a numeric timestamp and a string token count still give a normal report" "floor: 2 calls" "$(fl_line "$FL_ODD" 1)"
+assert_eq "floor: a string token count counts as 0 (contexts 160 and 200)" "context per call: avg 180, max 200" "$(fl_line "$FL_ODD" 2)"
+cost_run floor "$FL_ODD" > /dev/null; assert_eq "floor: odd values exit 0" "0" "$?"
+
+# message and attachment text is never printed
+FL_LEAK="$COST_ROOT/leak.jsonl"
+{
+  jq -nc --arg m "$FLOOR_MARKER" '{type:"user",message:{role:"user",content:$m}}'
+  jq -nc --arg m "$FLOOR_MARKER" '{type:"attachment",attachment:{type:"note",content:$m}}'
+  jq -nc --arg m "$FLOOR_MARKER" '{type:"attachment",attachment:{type:{secret:$m},content:"x"}}'
+  tx_line 2026-11-02T10:00:00Z k1 r1 100 5 0 0 | jq -c --arg m "$FLOOR_MARKER" '.message.content = [{type:"text",text:$m}]'
+} > "$FL_LEAK"
+assert_eq "floor: text in messages, attachments and a non-string attachment type never reaches the output" \
+  "no" "$(fl_report "$FL_LEAK" | grep -qF "$FLOOR_MARKER" && echo yes || echo no)"
+assert_eq "floor: the leak fixture still prints a normal report" "floor: 1 calls" "$(fl_line "$FL_LEAK" 1)"
+assert_eq "floor: a non-string attachment type gets the unknown label" \
+  "yes" "$(fl_report "$FL_LEAK" | grep -qF 'attachment:unknown' && echo yes || echo no)"
+
+# documentation
+assert_eq "floor: the cost.sh header documents the command" "yes" \
+  "$(grep -qF 'cost.sh floor <session.jsonl>' "$COST_SH" && echo yes || echo no)"
+assert_eq "floor: the cost.sh header says what to do when the floor grows" "yes" \
+  "$(grep -qF 'when the floor grows' "$COST_SH" && echo yes || echo no)"
+assert_eq "floor: lib/state.md documents cost.sh floor" "yes" \
+  "$(grep -qF 'cost.sh floor' "${REPO_ROOT}/lib/state.md" && echo yes || echo no)"
+assert_eq "floor: the 7.19.0 changelog entry mentions floor" "yes" \
+  "$(awk '/^## /{inside = ($2 == "7.19.0")} inside' "${REPO_ROOT}/CHANGELOG.md" | grep -qF 'floor' && echo yes || echo no)"
+
 unset CLAUDE_CODE_SESSION_ID COST_STATUSLINE_CACHE_DIR COST_MULTI_INSTANCE_DIR COST_PROJECTS_DIR COST_RATES_FILE MV_LOG
 cd "$JIRA_PROJECT_DIR" || exit 1
 

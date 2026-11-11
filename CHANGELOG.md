@@ -2,6 +2,12 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.19.0
+
+### Added
+
+- **`cost.sh floor <session.jsonl>` measures how much context a session re-sends on every call (DOER-16).** For one main session transcript it prints the number of calls, the average and max context per call, the weighted cost split (cache read, cache write, output and fresh input, weighted by price relative to fresh input), every compaction with its floor (the context of the first call after it), and the ten biggest pieces loaded before the first answer after the last compaction, with estimated tokens. Streaming copies of one message count once, sidechain and synthetic lines are not calls, and only labels and numbers are printed, never message text. Data problems print one line and exit 0. The usage and what to do when the floor grows are documented in the helper header and `lib/state.md`.
+
 ## 7.18.0
 
 ### Added

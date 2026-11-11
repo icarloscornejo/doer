@@ -12,7 +12,7 @@ description: >-
   the app's fault (API / CMS / backend / data / env) produces a mini-spike ready
   to post to Jira. Pass --no-pr at start for a branch that merges straight to
   its base branch (no PR description, merge-and-push closing line). Use /wk:doer for planned feature/refactor tickets instead.
-version: 7.18.0
+version: 7.19.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, WebFetch, EnterPlanMode, ExitPlanMode, Skill, Agent]
 ---

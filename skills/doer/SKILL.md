@@ -12,7 +12,7 @@ description: >-
   branch that merges straight to its base branch: no PR description, and the closing line
   says merge and push. For bug triage from a Jira ticket use /wk:bugfix instead.
   For locale or Jira config use /wk:setup, /wk:locale, or /wk:jira instead.
-version: 7.18.0
+version: 7.19.0
 user-invocable: true
 allowed-tools: [Read, Write, Edit, Grep, Glob, Bash, AskUserQuestion, Agent, Skill, EnterPlanMode, ExitPlanMode]
 ---

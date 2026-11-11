@@ -56,7 +56,7 @@ workspace-guard.sh:acquire release
 session.sh:ensure-exclude
 stage-checks.sh:plan pre-review
 metadata.sh:check-required version-check status list
-cost.sh:enter record unknown sample summary
+cost.sh:enter record unknown sample summary floor
 bounded.sh:run
 jira.sh:detect-token-env extract-keys attachments
 lessons.sh:prune
