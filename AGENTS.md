@@ -10,7 +10,7 @@ claude plugin install wk@wk
 claude plugin list
 ```
 
-Initial setup (locale, per-project Jira config) is in `README.md` → Setup.
+Initial setup (locale, per-project Jira config) is in `docs/commands.md` → Setup.
 
 ## Repo structure
 
