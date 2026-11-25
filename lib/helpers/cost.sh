@@ -70,7 +70,7 @@ DAILY_HIT='if type == "object" and has($id) then (.[$id] | if type == "number" a
 SNAPSHOT_HIT='if type == "object" and .sessionId == $id then (.sessionCostUsd | if type == "number" and . >= 0 then . else null end) else empty end'
 BEST_VALUE='map(select(. != null)) | if length == 0 then null else max end'
 SAMPLE_OBJECT='{id: $id, ts: $ts, usd: $usd}'
-UNKNOWN_RECORD='{status: "unknown", total_usd: null, reason: $reason, scope: $scope, input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_creation_tokens: null, sessions: [], by_stage: null, by_stage_reason: null, unassigned_usd: null, recorded_at: $ts}'
+UNKNOWN_RECORD='{status: "unknown", total_usd: null, reason: $reason, scope: $scope, input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_creation_tokens: null, sessions: [], by_stage: null, by_stage_reason: $reason, unassigned_usd: null, recorded_at: $ts}'
 ENTER_STATE='if (.cost_sessions | type) != "array" then "untracked" elif any(.cost_sessions[]?; type == "object" and .id == $id) then "registered" else "missing" end'
 SESSION_IDS='try ([.cost_sessions[]? | select(type == "object") | .id | select(type == "string")] | .[]) catch empty'
 ONE_OBJECT='length == 1 and (.[0] | type == "object")'
@@ -242,14 +242,21 @@ def context: .i + .cr + .c5 + .c1;
      elif any($stages | to_entries[]; (.value | type) != "object") then {value: null, reason: "stage values are not objects"}
      elif ($with_transcript | length) == 0 then {value: null, reason: "no transcript found"}
      else
-       ($stages | to_entries | map(select(.key | test("^[0-9]+$"))) | sort_by(.key | tonumber)) as $entries
+       # During the close the ticket is still in progress, and an old ticket may have no stage 5 object yet:
+       # stage 5 is implied then, so the closing work is not pushed into unassigned_usd.
+       ($stages | to_entries | map(select(.key | test("^[0-9]+$")))
+         | if $doc.status == "in_progress" and ($stages | has("5") | not) then . + [{key: "5", value: {}}] else . end
+         | sort_by(.key | tonumber)) as $entries
        | ($entries | map({key: .key, has: (.key == "5" or .value.completed_at != null), t: (if .key == "5" then (.value.completed_at | epoch) // $now_epoch else (.value.completed_at | epoch) end)}) | map(select(.has))) as $present
-       | ([$start] + ($present | map(.t))) as $chain
-       | if ($chain | map(select(. == null)) | length) > 0 then {value: null, reason: "timestamps are not parseable"}
-         elif $chain != ($chain | sort) then {value: null, reason: "timestamps are out of order"}
+       | ($present | map(.t)) as $closes
+       | ($entries | map(select(.key != "5" and (.value.status == "complete" or .value.status == "skipped") and .value.completed_at == null) | .key)) as $closed_without_time
+       # Only the closes are checked against each other; the first registration is the lower bound of every window.
+       | if ($closed_without_time | length) > 0 then {value: null, reason: "stage \($closed_without_time[0]) is closed without completed_at"}
+         elif (([$start] + $closes) | map(select(. == null)) | length) > 0 then {value: null, reason: "timestamps are not parseable"}
+         elif $closes != ($closes | sort) then {value: null, reason: "timestamps are out of order"}
          else
            # Tokens always show; the dollar fields follow total_usd and are null whenever it is.
-           ([range(0; $present | length) as $position | {key: $present[$position].key, lo: $chain[$position], hi: $chain[$position + 1]}]) as $windows
+           ([range(0; $present | length) as $position | {key: $present[$position].key, lo: (if $position == 0 then $start else ([$closes[$position - 1], $start] | max) end), hi: $closes[$position]}]) as $windows
            | {value: ($windows | map(. as $window
                  | ($priced_at | map(select(in_window($window)))) as $in_stage
                  | ($compactions_at | map(select(in_window($window)))) as $compactions_in_stage

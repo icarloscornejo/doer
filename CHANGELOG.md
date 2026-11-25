@@ -2,6 +2,17 @@
 
 All notable changes to the Doer Work Kit. Follows SemVer. History for 1.x through 6.9.0 is archived at [`docs/CHANGELOG-archive-6x.md`](./docs/CHANGELOG-archive-6x.md).
 
+## 7.20.0
+
+### Fixed
+
+- **`metadata.sh write` stamps the close time of every stage from the clock (DOER-1).** `cost.by_stage` was null on many closed tickets because the model wrote each stage's `completed_at` by hand, rounded, date-only or as a placeholder, and `cost.sh record` could not split the sessions by stage. A stage that changes into `complete` or `skipped` (a skipped Stage 4 included) now gets the current UTC time with seconds in the same write, before `--require` validates, whatever the filter passes. A stage that was already closed keeps its value, a typed value on an open or `imported` stage is dropped, and writes that do not touch stages change nothing. Known limit: when RETURN_TO_BUILD closes Stage 3 a second time, Stage 3 keeps its first close time and the second build round counts toward Stage 4. Bugfix files are untouched. A `--require N:<status>` write whose filter leaves the stage open is now refused (it used to pass on a typed time).
+- **Old tickets close with a reason instead of a silent gap (DOER-1).** `cost.sh record` now returns a null `by_stage` with the reason `stage <N> is closed without completed_at` when a closed stage has no time (it used to drop the stage without a word), and `cost.sh unknown` and the failure fallback fill `by_stage_reason`. Only the stage closes are checked for order: a first session registered after the first closes no longer gives "timestamps are out of order", the registration is the lower bound of the windows. While the ticket is in progress a missing stage 5 object is implied, so the closing work lands in stage 5.
+
+### Changed
+
+- Rebuilding `by_stage` for tickets that are already closed is not part of this release; it moved to its own ticket.
+
 ## 7.19.0
 
 ### Added

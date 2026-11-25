@@ -176,6 +176,33 @@ COST_MERGE_DEF='def cost_merge($sample):
 COST_SAMPLE_OK='type == "object" and (.id | type) == "string" and (.id | length) > 0 and (.ts | type) == "string" and (.usd == null or (.usd | type) == "number")'
 # jq-compat:end
 
+# Stage close times come from the clock, never from the caller: the model types them rounded,
+# date-only or as "t", which leaves cost.by_stage null. A stage that changes into complete or
+# skipped gets $now; every other stage keeps what the stored document had (a stage closed
+# before keeps its time, a typed value on an open or imported stage is dropped). The def is
+# total like cost_merge: on any internal error the caller's own result comes back.
+# jq-compat:begin stamp
+WK_STAMP_DEF='def wk_closed: type == "object" and (.status == "complete" or .status == "skipped");
+def wk_stamp($before; $now):
+  . as $wk_doc
+  | try (
+      if (.stages | type) != "object" then .
+      else
+        ($before | if type == "object" and (.stages | type) == "object" then .stages else {} end) as $old_stages
+        | .stages |= with_entries(
+            .key as $stage_key
+            | ($old_stages[$stage_key]) as $old
+            | .value |= (
+                if type != "object" then .
+                elif wk_closed and (($old | wk_closed) | not) then .completed_at = $now
+                elif ($old | type) == "object" and ($old | has("completed_at")) and (wk_closed or $old.completed_at == null) then .completed_at = $old.completed_at
+                else del(.completed_at)
+                end))
+      end
+    ) catch $wk_doc;
+'
+# jq-compat:end
+
 # jq-compat:begin cost_line
 COST_LINE_DEF='def usd_text:
   (. * 100 | round) as $cents
@@ -335,6 +362,11 @@ case "$CMD" in
     [ -f "$TARGET" ] || { echo "metadata.sh: $TARGET does not exist; use 'init' first" >&2; exit 1; }
     FILTER="$1"; shift
     TMP="${TARGET}.tmp.$$"
+    # The stamp always applies, tracked document or not, and runs before --require validates.
+    FILTER="${WK_STAMP_DEF}. as \$wk_before | (
+${FILTER}
+) | wk_stamp(\$wk_before; \$wk_now)"
+    STAMP_ARGS=(--arg wk_now "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
     # A tracked document folds one cost sample into this same transform, so the
     # write stays a single rename. Newlines around the caller's filter keep a
     # trailing # comment from swallowing the merge.
@@ -348,7 +380,7 @@ ${FILTER}
         SAMPLE_ARGS=(--argjson cost_sample "$WRITE_SAMPLE")
       fi
     fi
-    if ! jq "$FILTER" "${SAMPLE_ARGS[@]+"${SAMPLE_ARGS[@]}"}" "$@" "$TARGET" > "$TMP"; then
+    if ! jq "$FILTER" "${STAMP_ARGS[@]}" "${SAMPLE_ARGS[@]+"${SAMPLE_ARGS[@]}"}" "$@" "$TARGET" > "$TMP"; then
       rm -f "$TMP"
       echo "metadata.sh: jq transform failed, $TARGET left untouched" >&2
       exit 1

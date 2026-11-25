@@ -913,11 +913,11 @@ cost_case
 unset CLAUDE_CODE_SESSION_ID
 new_doc C-1 '{"summary":"s","commit_message":"c","pr_description":"p","stages":{"5":{"status":"in_progress"}}}'
 BEFORE_C1="$(cat .doer/tickets/C-1/metadata.json)"
-"$METADATA_SH" write C-1 '.stages["5"].completed_at = "t"' --require 5:complete > /dev/null 2>&1
+"$METADATA_SH" write C-1 '.stages["5"].status = "complete"' --require 5:complete > /dev/null 2>&1
 assert_eq "cost close: write --require 5:complete without a cost is refused, exit 1" "1" "$?"
 assert_eq "cost close: the refused write leaves the file byte-identical" "$BEFORE_C1" "$(cat .doer/tickets/C-1/metadata.json)"
 cost_run unknown "$TRICKY_REASON" > "$COST_ROOT/unk.json"
-"$METADATA_SH" write C-1 '.stages["5"].completed_at = "t" | .cost = $cost[0]' --slurpfile cost "$COST_ROOT/unk.json" --require 5:complete > /dev/null 2>&1
+"$METADATA_SH" write C-1 '.stages["5"].status = "complete" | .cost = $cost[0]' --slurpfile cost "$COST_ROOT/unk.json" --require 5:complete > /dev/null 2>&1
 assert_eq "cost close: write --require 5:complete accepts an unknown cost record" "0" "$?"
 assert_eq "cost close: --slurpfile stores the record byte for byte" "$(jq -cS . "$COST_ROOT/unk.json")" "$(ticket_jq C-1 '.cost' | jq -cS . 2>/dev/null)"
 
@@ -1539,6 +1539,162 @@ assert_eq "floor: lib/state.md documents cost.sh floor" "yes" \
   "$(grep -qF 'cost.sh floor' "${REPO_ROOT}/lib/state.md" && echo yes || echo no)"
 assert_eq "floor: the 7.19.0 changelog entry mentions floor" "yes" \
   "$(awk '/^## /{inside = ($2 == "7.19.0")} inside' "${REPO_ROOT}/CHANGELOG.md" | grep -qF 'floor' && echo yes || echo no)"
+
+# =====================================================================
+# DOER-1: stage completed_at comes from the clock, by_stage survives old formats
+# =====================================================================
+# `date` is shimmed through PATH: with FAKE_NOW set the helper sees that instant, so a stamp can be
+# told apart from a valid-looking value the caller typed, or from one that merely sorts correctly.
+STAMP_DATE_BIN="$TMPDIR_TEST/stamp-datebin"; mkdir -p "$STAMP_DATE_BIN"
+printf '#!/usr/bin/env bash\nif [ -n "${FAKE_NOW:-}" ]; then echo "$FAKE_NOW"; else exec /bin/date "$@"; fi\n' > "$STAMP_DATE_BIN/date"
+chmod +x "$STAMP_DATE_BIN/date"
+stamp_write() { # <fake-now> <ticket> <filter> [write args...]
+  local fake_now="$1"; shift
+  FAKE_NOW="$fake_now" PATH="$STAMP_DATE_BIN:$PATH" "$METADATA_SH" write "$@" > /dev/null 2>&1
+}
+stage_at() { ticket_jq "$1" ".stages[\"$2\"].completed_at"; }
+
+# AC1: the clock stamps a closing stage and a typed value is ignored, tracked or not
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc S-1 '{"stages":{"1":{"status":"in_progress"},"2":{"status":"pending"}}}'
+stamp_write 2026-02-03T04:05:06Z S-1 '.stages["1"].status = "complete" | .stages["1"].completed_at = "garbage"'
+assert_eq "stamp: closing a stage stores the clock, not the typed value" '"2026-02-03T04:05:06Z"' "$(stage_at S-1 1)"
+stamp_write 2026-02-03T05:00:00Z S-1 '.stages["2"].status = "complete" | .stages["2"].completed_at = "2020-01-01"'
+assert_eq "stamp: a second close at another instant stores that instant" '["2026-02-03T04:05:06Z","2026-02-03T05:00:00Z"]' \
+  "$(ticket_jq S-1 '[.stages["1"].completed_at, .stages["2"].completed_at]')"
+stamp_write 2026-02-03T06:00:00Z S-1 '.stages["1"].completed_at = "typed" | .stages["1"].status = "complete"'
+assert_eq "stamp: a stage that was already closed keeps its stored value" '"2026-02-03T04:05:06Z"' "$(stage_at S-1 1)"
+new_doc S-1b '{"stages":{"3":{"status":"complete","completed_at":"2026-01-01T00:00:00Z"},"4":{"status":"in_progress"}}}'
+stamp_write 2026-02-03T07:00:00Z S-1b '.stages["3"].status = "complete" | .stages["4"].status = "skipped" | .stages["4"].skipped_reason = "docs" | .stages["4"].skipped_acknowledged_by = "dev"' --require 4:skipped
+assert_eq "stamp: a repeated close of stage 3 keeps its value and the skipped stage 4 is stamped" '["2026-01-01T00:00:00Z","2026-02-03T07:00:00Z"]' \
+  "$(ticket_jq S-1b '[.stages["3"].completed_at, .stages["4"].completed_at]')"
+new_doc S-2 '{"summary":"s","commit_message":"c","pr_description":"p","cost":{"status":"unknown"},"stages":{"5":{"status":"in_progress"}}}'
+FAKE_NOW=2026-02-03T08:00:00Z PATH="$STAMP_DATE_BIN:$PATH" "$METADATA_SH" write S-2 '.stages["5"].status = "complete" # closing' --require 5:complete > /dev/null 2>&1
+S2_EXIT=$?
+assert_eq "stamp: --require 5:complete passes with no completed_at in the filter, even with a trailing comment" "0" "$S2_EXIT"
+assert_eq "stamp: that close stores the clock" '"2026-02-03T08:00:00Z"' "$(stage_at S-2 5)"
+new_doc S-2b '{"summary":"s","commit_message":"c","pr_description":"p","cost":{"status":"unknown"},"stages":{"5":{"status":"in_progress"}}}'
+"$METADATA_SH" write S-2b '.stages["5"].completed_at = "typed"' --require 5:complete > /dev/null 2>&1
+assert_eq "stamp: --require 5:complete while the stage stays open is refused, a typed time does not count" "1" "$?"
+new_doc S-3 '{"cost_sessions":[],"stages":{"1":{"status":"in_progress"}}}'
+export CLAUDE_CODE_SESSION_ID=sess-S3
+cost_snapshot inst sess-S3 1
+stamp_write 2026-02-03T09:00:00Z S-3 '.stages["1"].status = "complete"'
+unset CLAUDE_CODE_SESSION_ID
+assert_eq "stamp: a tracked document with a cost sample is stamped too" '"2026-02-03T09:00:00Z"' "$(stage_at S-3 1)"
+
+# hand-typed values on open or imported stages are dropped, null and array shapes survive
+new_doc S-4 '{"stages":{"1":{"status":"imported"},"2":{"status":"in_progress"},"3":{"status":"pending","completed_at":null}}}'
+stamp_write 2026-02-03T10:00:00Z S-4 '.stages["1"].completed_at = "2026-01-01" | .stages["2"].completed_at = "t" | .a = 1'
+assert_eq "stamp: typed times on imported and in-progress stages are dropped, a stored null stays" '[false,false,true,null]' \
+  "$(ticket_jq S-4 '[(.stages["1"] | has("completed_at")), (.stages["2"] | has("completed_at")), (.stages["3"] | has("completed_at")), .stages["3"].completed_at]')"
+new_doc S-4b '{"stages":{"1":{"status":"complete","completed_at":"2026-01-01T00:00:00Z"}}}'
+stamp_write 2026-02-03T10:30:00Z S-4b '.stages["1"].status = "in_progress"'
+assert_eq "stamp: a reopened stage drops its old close time" "false" "$(ticket_jq S-4b '.stages["1"] | has("completed_at")')"
+stamp_write 2026-02-03T10:40:00Z S-4b '.stages["1"].status = "complete"'
+assert_eq "stamp: closing it again stamps the clock" '"2026-02-03T10:40:00Z"' "$(stage_at S-4b 1)"
+new_doc S-5 '{"stages":[]}'
+stamp_write 2026-02-03T11:00:00Z S-5 '.stages = {"1":{"status":"complete"}}'
+assert_eq "stamp: a write turning an array stages into an object keeps the caller result and stamps the new close" '"2026-02-03T11:00:00Z"' "$(stage_at S-5 1)"
+printf '%s' '{"ticket_id":"BF-S","stages":{"0":"complete","1":"in_progress"}}' | "$METADATA_SH" init BF-S --file bugfix.json > /dev/null 2>&1
+"$METADATA_SH" write BF-S '.a = 1' --file bugfix.json > /dev/null 2>&1
+assert_eq "stamp: bugfix string stages are left alone" '{"0":"complete","1":"in_progress"}' "$(ticket_jq BF-S '.stages' bugfix.json)"
+cost_case
+export CLAUDE_CODE_SESSION_ID=sess-E3
+cost_snapshot inst sess-E3 1
+new_doc E-3 '{"cost_sessions":[],"stages":{"1":{"status":"complete","completed_at":"hand"},"2":{"status":"in_progress"}}}'
+BEFORE_E3="$(ticket_jq E-3 '.stages')"
+cost_run enter E-3 > /dev/null
+assert_eq "stamp: cost enter registers the session and leaves every stage unchanged" "$BEFORE_E3" "$(ticket_jq E-3 '.stages')"
+unset CLAUDE_CODE_SESSION_ID
+
+# AC2: the real close order (stages written with typed garbage, record, then the close write) keeps all five keys
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc R-1 '{"ticket_id":"R-1","status":"in_progress","cost_sessions":[{"id":"rc-1","ts":"2026-01-01T00:00:00Z","usd":1}],"stages":{"1":{"status":"pending"},"2":{"status":"pending"},"3":{"status":"pending"},"4":{"status":"pending"},"5":{"status":"pending"}}}'
+tx_line 2026-01-01T00:30:00Z a 1 100000 0 0 0 m-a | tx_put proj/rc-1.jsonl
+"$METADATA_SH" write R-1 '.ac = {} | .stages["1"].status = "complete" | .stages["1"].completed_at = "2026-11-09"' --require 1:complete > /dev/null 2>&1
+"$METADATA_SH" write R-1 '.plan = {} | .stages["2"].status = "complete" | .stages["2"].completed_at = "10:30"' --require 2:complete > /dev/null 2>&1
+"$METADATA_SH" write R-1 '.last_green_sha = "x" | .stages["3"].status = "complete" | .stages["3"].iterations = 1 | .stages["3"].loop_outcome = "converged" | .stages["3"].completed_at = "yesterday"' --require 3:complete > /dev/null 2>&1
+"$METADATA_SH" write R-1 '.stages["4"].status = "skipped" | .stages["4"].skipped_reason = "docs" | .stages["4"].skipped_acknowledged_by = "dev"' --require 4:skipped > /dev/null 2>&1
+assert_eq "close order: stages 1 to 4 (a skipped stage 4 included) each carry a clock stamp, in order" '[true,true]' \
+  "$(ticket_jq R-1 '[([.stages["1","2","3","4"].completed_at] | all(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))), ([.stages["1","2","3","4"].completed_at] == ([.stages["1","2","3","4"].completed_at] | sort))]')"
+REC="$(cost_run record R-1)"
+printf '%s\n' "$REC" > "$COST_ROOT/r1-record.json"
+"$METADATA_SH" write R-1 '.status = "complete" | .summary = "s" | .commit_message = "c" | .pr_description = "skipped" | .cost = $cost[0] | .stages["5"].status = "complete"' --slurpfile cost "$COST_ROOT/r1-record.json" --require 5:complete > /dev/null 2>&1
+assert_eq "close order: the close write succeeds and stamps stage 5" "0" "$?"
+assert_eq "close order: the persisted cost has an entry for each of the five stages and no reason" '[["1","2","3","4","5"],null]' \
+  "$(ticket_jq R-1 '[(.cost.by_stage | keys), .cost.by_stage_reason]')"
+assert_eq "close order: all five stages have a stamp" "true" \
+  "$(ticket_jq R-1 '[.stages[] | .completed_at] | all(type == "string")')"
+
+# AC2/AC3: an old ticket without a stage 5 object, closed while in progress, still gets its closing work in stage 5
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+OLD_FIVE_STAGES='"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T02:00:00Z"},"3":{"status":"complete","completed_at":"2026-01-01T03:00:00Z"},"4":{"status":"skipped","completed_at":"2026-01-01T04:00:00Z"}'
+new_doc IS-1 "{\"skill_version\":\"7.13.0\",\"status\":\"in_progress\",\"cost_sessions\":[{\"id\":\"is-1\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":1}],\"stages\":{$OLD_FIVE_STAGES}}"
+new_doc IS-2 "{\"skill_version\":\"7.13.0\",\"status\":\"in_progress\",\"cost_sessions\":[{\"id\":\"is-1\",\"ts\":\"2026-01-01T00:00:00Z\",\"usd\":1}],\"stages\":{$OLD_FIVE_STAGES,\"5\":{\"status\":\"in_progress\"}}}"
+tx_line 2026-01-01T05:00:00Z closing 1 100000 0 0 0 m-a | tx_put proj/is-1.jsonl
+REC="$(cost_run record IS-1)"
+assert_eq "implied stage 5: an in-progress ticket without a stage 5 object gets key 5 with the closing work, nothing unassigned" '[100000,true]' \
+  "$(rec_field '[.by_stage["5"].input_tokens, (.unassigned_usd == 0)]')"
+IS1_TOTAL="$(rec_field '.total_usd')"
+assert_eq "implied stage 5: the total equals the same ticket with an explicit stage 5" "$IS1_TOTAL" "$(cost_run record IS-2 | jq -c '.total_usd' 2>/dev/null)"
+printf '%s\n' "$REC" > "$COST_ROOT/is1-record.json"
+"$METADATA_SH" write IS-1 '.status = "complete" | .summary = "s" | .commit_message = "c" | .pr_description = "skipped" | .cost = $cost[0] | .stages["5"].status = "complete"' --slurpfile cost "$COST_ROOT/is1-record.json" --require 5:complete > /dev/null 2>&1
+assert_eq "implied stage 5: the close write creates and stamps the missing stage 5" '["0","string"]' \
+  "$(printf '["%s","%s"]' "$?" "$(ticket_jq IS-1 '.stages["5"].completed_at | type' | tr -d '"')")"
+
+# AC3: a first session registered after the first closes does not turn ordered closes into "out of order"
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc LR-1 '{"skill_version":"7.13.0","cost_sessions":[{"id":"lr-1","ts":"2026-01-01T03:00:00Z","usd":1}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T02:00:00Z"},"5":{"status":"in_progress"}}}'
+{
+  tx_line 2026-01-01T01:30:00Z between 1 100000 0 0 0 m-a
+  tx_line 2026-01-01T03:00:00Z at-registration 1 100000 0 0 0 m-a
+  tx_line 2026-01-01T03:30:00Z after 1 100000 0 0 0 m-a
+} | tx_put proj/lr-1.jsonl
+REC="$(cost_run record LR-1)"
+assert_eq "late registration: by_stage exists with keys 1, 2 and 5 and no reason" '[["1","2","5"],null]' "$(rec_field '[(.by_stage | keys), .by_stage_reason]')"
+assert_eq "late registration: only the event after the registration is in a stage, the two earlier ones stay unassigned" '[0,0,100000,true,true]' \
+  "$(rec_field '[.by_stage["1"].input_tokens, .by_stage["2"].input_tokens, .by_stage["5"].input_tokens, (.unassigned_usd - 2 | fabs < 0.000000001), (.total_usd - 3 | fabs < 0.000000001)]')"
+new_doc LR-2 '{"skill_version":"7.13.0","cost_sessions":[{"id":"lr-2","ts":"2026-01-01T00:00:00Z","usd":1}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"5":{"status":"in_progress"}}}'
+{
+  tx_line 2026-01-01T00:30:00Z first 1 100000 0 0 0 m-a
+  tx_line 2026-01-01T01:00:00Z at-bound 1 100000 0 0 0 m-a
+} | tx_put proj/lr-2.jsonl
+REC="$(cost_run record LR-2)"
+assert_eq "equal bounds: an event exactly at a shared bound stays in the first stage, the second window is empty" '[200000,0]' \
+  "$(rec_field '[.by_stage["1"].input_tokens, .by_stage["2"].input_tokens]')"
+
+# AC3: old formats close, the reason is recorded, the close goes on
+cost_case
+unset CLAUDE_CODE_SESSION_ID
+new_doc OF-1 '{"skill_version":"7.13.0","status":"in_progress","cost_sessions":[{"id":"of-1","ts":"2026-01-01T00:00:00Z","usd":1}],"stages":{"2":{"status":"complete","completed_at":"2026-11-09"},"3":{"status":"complete","completed_at":"10:30"},"5":{"status":"in_progress"}}}'
+tx_line 2026-01-01T00:30:00Z a 1 100000 0 0 0 m-a | tx_put proj/of-1.jsonl
+REC="$(cost_run record OF-1)"
+printf '%s\n' "$REC" > "$COST_ROOT/of1-record.json"
+"$METADATA_SH" write OF-1 '.status = "complete" | .summary = "s" | .commit_message = "c" | .pr_description = "skipped" | .cost = $cost[0] | .stages["5"].status = "complete"' --slurpfile cost "$COST_ROOT/of1-record.json" --require 5:complete > /dev/null 2>&1
+assert_eq "old format: a ticket with date-only and missing stages closes with exit 0" "0" "$?"
+assert_eq "old format: the close persists a null by_stage with a reason and keeps the old values" '[null,"string","2026-11-09","10:30"]' \
+  "$(ticket_jq OF-1 '[.cost.by_stage, (.cost.by_stage_reason | type), .stages["2"].completed_at, .stages["3"].completed_at]')"
+new_doc OF-2 '{"skill_version":"7.13.0","cost_sessions":[{"id":"of-1","ts":"2026-01-01T00:00:00Z","usd":1}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"skipped"},"5":{"status":"in_progress"}}}'
+REC="$(cost_run record OF-2)"
+assert_eq "old format: a closed stage with no completed_at gives a null by_stage and a reason naming it" '[null,true]' \
+  "$(rec_field '[.by_stage, (.by_stage_reason | test("stage 2"))]')"
+new_doc OF-3 '{"skill_version":"7.13.0","cost_sessions":[{"id":"of-1","ts":"2026-01-01T00:00:00Z","usd":1}],"stages":{"1":{"status":"complete","completed_at":"2026-01-01T01:00:00Z"},"2":{"status":"imported"},"5":{"status":"in_progress"}}}'
+REC="$(cost_run record OF-3)"
+assert_eq "old format: an imported stage without a time still merges forward and by_stage is computed" '[true,null]' \
+  "$(rec_field '[(.by_stage | type == "object"), .by_stage_reason]')"
+assert_eq "old format: the unknown record carries its cause in by_stage_reason" '"why not"' \
+  "$(cost_run unknown "why not" | jq -c '.by_stage_reason' 2>/dev/null)"
+
+# AC5: docs, changelog and version
+assert_eq "DOER-1: lib/state.md documents that write stamps completed_at" "yes" \
+  "$(grep -qF 'stamps `completed_at`' "${REPO_ROOT}/lib/state.md" && echo yes || echo no)"
+assert_eq "DOER-1: the 7.20.0 changelog entry mentions completed_at and by_stage" "yes" \
+  "$(awk '/^## /{inside = ($2 == "7.20.0")} inside' "${REPO_ROOT}/CHANGELOG.md" | grep -F 'completed_at' | grep -qF 'by_stage' && echo yes || echo no)"
 
 unset CLAUDE_CODE_SESSION_ID COST_STATUSLINE_CACHE_DIR COST_MULTI_INSTANCE_DIR COST_PROJECTS_DIR COST_RATES_FILE MV_LOG
 cd "$JIRA_PROJECT_DIR" || exit 1

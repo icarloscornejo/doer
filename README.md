@@ -104,4 +104,4 @@ written to disk.
 
 ---
 
-<p align="center"><sub>Plugin version 7.19.0. MIT licensed.</sub></p>
+<p align="center"><sub>Plugin version 7.20.0. MIT licensed.</sub></p>
